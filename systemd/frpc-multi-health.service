@@ -1,0 +1,10 @@
+[Unit]
+Description=frpc multi-instance health check
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+Environment=PROJECT_DIR=/opt/frpc-multi
+ExecStart=/opt/frpc-multi/scripts/check-health.sh
+

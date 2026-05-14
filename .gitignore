@@ -1,0 +1,7 @@
+backups/*.tar.gz
+backups/*.tgz
+logs/*
+!.gitkeep
+.env
+.DS_Store
+

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run frpc multi-instance health check every day
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target
+
