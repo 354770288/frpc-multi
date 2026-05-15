@@ -26,6 +26,25 @@ x-frpc-common: &frpc-common
       max-file: "3"
 
 services:
+  frpc-webui:
+    build:
+      context: ./webui
+    container_name: frpc-webui
+    restart: unless-stopped
+    environment:
+      PROJECT_DIR: /opt/frpc-multi
+      WEBUI_HOST: 0.0.0.0
+      WEBUI_PORT: 8081
+      WEBUI_USERNAME: ${WEBUI_USERNAME:-admin}
+      WEBUI_PASSWORD: ${WEBUI_PASSWORD:-change-this-password}
+    ports:
+      - "${WEBUI_HOST:-127.0.0.1}:${WEBUI_PORT:-8081}:8081"
+    volumes:
+      - ./:/opt/frpc-multi
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - frpc-outbound
+
   frpc-client-01:
     <<: *frpc-common
     container_name: frpc-client-01
