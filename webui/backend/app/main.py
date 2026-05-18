@@ -266,13 +266,14 @@ def regenerate(_: Annotated[str, Depends(require_auth)]):
 @app.get("/api/summary")
 def summary(_: Annotated[str, Depends(require_auth)]):
     instances = list_instances(_)
-    stats = docker().collect_status()
+    status = docker().collect_status()
+    containers = status.get("containers", {})
     running = 0
     stopped = 0
     error = 0
     enriched: list[dict] = []
     for item in instances:
-        stat = stats.get(item["name"], {})
+        stat = containers.get(item["name"], {})
         state = stat.get("state", "")
         if state == "running":
             running += 1
@@ -286,6 +287,7 @@ def summary(_: Annotated[str, Depends(require_auth)]):
         "running": running,
         "stopped": stopped,
         "error": error,
+        "dockerAvailable": status.get("available", False),
         "instances": enriched,
     }
 

@@ -62,12 +62,17 @@ class DockerService:
     def recreate(self, instance_name: str) -> subprocess.CompletedProcess[str]:
         return self.compose("up", "-d", "--no-deps", "--force-recreate", self.service_name(instance_name))
 
-    def collect_status(self) -> dict[str, dict[str, Any]]:
+    def collect_status(self) -> dict[str, Any]:
         ps_result = self.ps()
         stats_result = self.stats()
 
+        available = ps_result.returncode == 0
+        error_message = ""
+        if not available:
+            error_message = (ps_result.stderr or ps_result.stdout or "").strip()
+
         ps_entries: list[dict[str, Any]] = []
-        if ps_result.returncode == 0 and ps_result.stdout.strip():
+        if available and ps_result.stdout.strip():
             stdout = ps_result.stdout.strip()
             if stdout.startswith("["):
                 try:
@@ -98,17 +103,17 @@ class DockerService:
                 if container_name:
                     stats_by_name[container_name] = payload
 
-        result: dict[str, dict[str, Any]] = {}
+        containers: dict[str, dict[str, Any]] = {}
         for entry in ps_entries:
             service = entry.get("Service") or ""
             container_name = entry.get("Name") or ""
             container_id = entry.get("ID") or entry.get("Id") or ""
-            if not service.startswith("frpc-"):
+            if not service.startswith("frpc-") or service == "frpc-webui":
                 continue
             instance = service[len("frpc-"):]
             stat = stats_by_name.get(container_name) or {}
             restarts = self._inspect_restart_count(container_id) if container_id else 0
-            result[instance] = {
+            containers[instance] = {
                 "service": service,
                 "containerName": container_name,
                 "containerId": container_id,
@@ -124,7 +129,7 @@ class DockerService:
                 "pids": stat.get("PIDs") or "",
                 "restartCount": restarts,
             }
-        return result
+        return {"available": available, "error": error_message, "containers": containers}
 
     def _inspect_restart_count(self, container_id: str) -> int:
         result = self.inspect(container_id)

@@ -68,6 +68,12 @@ type InstanceStats = {
 
 type StatsMap = Record<string, InstanceStats>;
 
+type StatsResponse = {
+  available: boolean;
+  error: string;
+  containers: StatsMap;
+};
+
 type SystemInfo = {
   projectDir: string;
   webuiHost: string;
@@ -343,6 +349,8 @@ function bytesToHuman(bytes: number): string {
 function Overview({
   instances,
   stats,
+  dockerAvailable,
+  dockerError,
   system,
   onSelect,
   onPage,
@@ -350,6 +358,8 @@ function Overview({
 }: {
   instances: Instance[];
   stats: StatsMap;
+  dockerAvailable: boolean;
+  dockerError: string;
   system: SystemInfo | null;
   onSelect: (name: string) => void;
   onPage: (page: Page) => void;
@@ -479,9 +489,12 @@ function Overview({
             <h3>健康检查</h3>
             <p className="check ok">实例目录 可读取</p>
             <p className="check ok">配置文件 可读取</p>
-            <p className={Object.keys(stats).length > 0 ? 'check ok' : 'check'}>
-              Docker 状态 {Object.keys(stats).length > 0 ? '已连接' : '未连接'}
+            <p className={dockerAvailable ? 'check ok' : 'check'}>
+              Docker 状态 {dockerAvailable ? '已连接' : '未连接'}
             </p>
+            {!dockerAvailable && dockerError && (
+              <p className="muted" style={{ marginTop: 4 }}>{dockerError}</p>
+            )}
           </div>
           <div className="panel">
             <h3>磁盘使用</h3>
@@ -685,6 +698,8 @@ function Console({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
   const [page, setPage] = useState<Page>('overview');
   const [instances, setInstances] = useState<Instance[]>([]);
   const [stats, setStats] = useState<StatsMap>({});
+  const [dockerAvailable, setDockerAvailable] = useState(false);
+  const [dockerError, setDockerError] = useState('');
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [selected, setSelected] = useState('');
 
@@ -695,8 +710,16 @@ function Console({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
   }
 
   async function loadStats() {
-    const data = await api<StatsMap>('/api/stats').catch(() => ({} as StatsMap));
-    setStats(data);
+    try {
+      const data = await api<StatsResponse>('/api/stats');
+      setStats(data.containers || {});
+      setDockerAvailable(!!data.available);
+      setDockerError(data.error || '');
+    } catch {
+      setStats({});
+      setDockerAvailable(false);
+      setDockerError('无法访问 /api/stats');
+    }
   }
 
   async function loadSystem() {
@@ -720,13 +743,13 @@ function Console({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
   }
 
   const body = useMemo(() => {
-    if (page === 'overview') return <Overview instances={instances} stats={stats} system={system} onSelect={setSelected} onPage={setPage} onAction={action} />;
+    if (page === 'overview') return <Overview instances={instances} stats={stats} dockerAvailable={dockerAvailable} dockerError={dockerError} system={system} onSelect={setSelected} onPage={setPage} onAction={action} />;
     if (page === 'detail') return <Detail name={selected} stats={stats} onPage={setPage} onAction={action} />;
     if (page === 'config') return <ConfigEditor name={selected} />;
     if (page === 'create') return <CreateInstance onCreated={(name) => { setSelected(name); refreshAll(); }} />;
     if (page === 'backups') return <Placeholder title="备份管理" />;
     return <Placeholder title="系统设置" />;
-  }, [page, instances, stats, system, selected]);
+  }, [page, instances, stats, dockerAvailable, dockerError, system, selected]);
 
   return (
     <div className="app-shell">
