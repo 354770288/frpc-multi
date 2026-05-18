@@ -247,6 +247,11 @@ def recreate_instance(name: str, _: Annotated[str, Depends(require_auth)]):
     return command_response(docker().recreate(name))
 
 
+@app.get("/api/stats")
+def get_stats(_: Annotated[str, Depends(require_auth)]):
+    return docker().collect_status()
+
+
 @app.get("/api/backups")
 def list_backups(_: Annotated[str, Depends(require_auth)], instance: str | None = None):
     return backups().list_backups(instance)
@@ -261,15 +266,27 @@ def regenerate(_: Annotated[str, Depends(require_auth)]):
 @app.get("/api/summary")
 def summary(_: Annotated[str, Depends(require_auth)]):
     instances = list_instances(_)
+    stats = docker().collect_status()
     running = 0
     stopped = 0
     error = 0
+    enriched: list[dict] = []
+    for item in instances:
+        stat = stats.get(item["name"], {})
+        state = stat.get("state", "")
+        if state == "running":
+            running += 1
+        elif state in {"exited", "dead", "removing"} and stat.get("exitCode") not in (None, 0):
+            error += 1
+        else:
+            stopped += 1
+        enriched.append({**item, "runtime": stat})
     return {
         "total": len(instances),
         "running": running,
         "stopped": stopped,
         "error": error,
-        "instances": instances,
+        "instances": enriched,
     }
 
 

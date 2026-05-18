@@ -49,6 +49,33 @@ type InstanceDetail = Instance & {
   errors: string[];
 };
 
+type InstanceStats = {
+  service: string;
+  containerName: string;
+  containerId: string;
+  state: string;
+  status: string;
+  health: string;
+  exitCode: number | null;
+  cpuPercent: string;
+  memUsage: string;
+  memPercent: string;
+  netIO: string;
+  blockIO: string;
+  pids: string;
+  restartCount: number;
+};
+
+type StatsMap = Record<string, InstanceStats>;
+
+type SystemInfo = {
+  projectDir: string;
+  webuiHost: string;
+  webuiPort: number;
+  version: string;
+  disk: { total: number; used: number; free: number };
+};
+
 type Page = 'overview' | 'detail' | 'config' | 'create' | 'backups' | 'system';
 
 type AuthState = {
@@ -280,30 +307,111 @@ function MetricCard({ icon, title, value, hint, tone = 'blue' }: { icon: React.R
   );
 }
 
+function parsePercent(value: string): number {
+  if (!value) return 0;
+  const parsed = Number.parseFloat(value.replace('%', '').trim());
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function instanceStateLabel(stat: InstanceStats | undefined, enabled: boolean): { label: string; cls: string } {
+  if (!stat || !stat.state) return { label: enabled ? '未运行' : '未启用', cls: 'status stopped' };
+  const state = stat.state;
+  if (state === 'running') return { label: '运行中', cls: 'status ok' };
+  if (state === 'restarting') return { label: '重启中', cls: 'status' };
+  if (state === 'paused') return { label: '已暂停', cls: 'status' };
+  if (state === 'exited' || state === 'dead') {
+    if (stat.exitCode !== null && stat.exitCode !== 0) {
+      return { label: `异常退出 (${stat.exitCode})`, cls: 'status' };
+    }
+    return { label: '已停止', cls: 'status stopped' };
+  }
+  return { label: stat.status || state, cls: 'status' };
+}
+
+function bytesToHuman(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[index]}`;
+}
+
 function Overview({
   instances,
+  stats,
+  system,
   onSelect,
   onPage,
   onAction
 }: {
   instances: Instance[];
+  stats: StatsMap;
+  system: SystemInfo | null;
   onSelect: (name: string) => void;
   onPage: (page: Page) => void;
   onAction: (name: string, action: string) => void;
 }) {
-  const running = instances.filter((item) => item.enabled).length;
-  const stopped = instances.length - running;
+  const [keyword, setKeyword] = useState('');
+
+  let running = 0;
+  let stopped = 0;
+  let error = 0;
+  let restartTotal = 0;
+  let cpuTotal = 0;
+  let memTotal = 0;
+  let cpuSamples = 0;
+  let memSamples = 0;
+  for (const item of instances) {
+    const stat = stats[item.name];
+    const state = stat?.state || '';
+    if (state === 'running') running += 1;
+    else if ((state === 'exited' || state === 'dead') && stat?.exitCode && stat.exitCode !== 0) error += 1;
+    else stopped += 1;
+    restartTotal += stat?.restartCount || 0;
+    if (stat?.cpuPercent) {
+      cpuTotal += parsePercent(stat.cpuPercent);
+      cpuSamples += 1;
+    }
+    if (stat?.memPercent) {
+      memTotal += parsePercent(stat.memPercent);
+      memSamples += 1;
+    }
+  }
+
+  const lower = keyword.toLowerCase();
+  const filtered = lower
+    ? instances.filter((item) =>
+        item.name.toLowerCase().includes(lower) || (item.displayName || '').toLowerCase().includes(lower)
+      )
+    : instances;
+
+  const diskRatio = system && system.disk.total > 0 ? (system.disk.used / system.disk.total) * 100 : 0;
 
   return (
     <main className="content">
       <h2>运行摘要 <span>共 {instances.length} 个 frpc 实例</span></h2>
       <section className="metrics">
-        <MetricCard icon={<Server size={20} />} title="已启用" value={String(running)} hint="配置已纳入 Compose" />
-        <MetricCard icon={<AlertTriangle size={20} />} title="异常" value="0" hint="等待接入实时 Docker 状态" tone="orange" />
-        <MetricCard icon={<Square size={20} />} title="未启用" value={String(stopped)} hint="未写入动态运行清单" tone="gray" />
-        <MetricCard icon={<RotateCcw size={20} />} title="重启次数" value="--" hint="接入 Docker 后统计" tone="purple" />
-        <MetricCard icon={<HardDrive size={20} />} title="内存占用" value="--" hint="docker stats 快照" tone="green" />
-        <MetricCard icon={<Cpu size={20} />} title="CPU 占用" value="--" hint="docker stats 快照" />
+        <MetricCard icon={<Server size={20} />} title="运行中" value={String(running)} hint="docker compose ps 状态" />
+        <MetricCard icon={<AlertTriangle size={20} />} title="异常" value={String(error)} hint="exited 且 exitCode 非 0" tone="orange" />
+        <MetricCard icon={<Square size={20} />} title="已停止" value={String(stopped)} hint="未运行的实例数" tone="gray" />
+        <MetricCard icon={<RotateCcw size={20} />} title="累计重启" value={String(restartTotal)} hint="docker inspect 中 RestartCount 累加" tone="purple" />
+        <MetricCard
+          icon={<HardDrive size={20} />}
+          title="内存占用"
+          value={memSamples ? `${memTotal.toFixed(1)}%` : '0%'}
+          hint={memSamples ? `${memSamples} 个容器汇总` : '暂无运行容器'}
+          tone="green"
+        />
+        <MetricCard
+          icon={<Cpu size={20} />}
+          title="CPU 占用"
+          value={cpuSamples ? `${cpuTotal.toFixed(1)}%` : '0%'}
+          hint={cpuSamples ? `${cpuSamples} 个容器汇总` : '暂无运行容器'}
+        />
       </section>
 
       <section className="dashboard-grid">
@@ -312,7 +420,11 @@ function Overview({
             <h3>实例列表</h3>
             <div className="search">
               <Search size={16} />
-              <input placeholder="搜索实例名" />
+              <input
+                placeholder="搜索实例名"
+                value={keyword}
+                onChange={(event) => setKeyword(event.target.value)}
+              />
             </div>
           </div>
           <table>
@@ -328,23 +440,36 @@ function Overview({
               </tr>
             </thead>
             <tbody>
-              {instances.map((item) => (
-                <tr key={item.name}>
-                  <td><button className="link" onClick={() => { onSelect(item.name); onPage('detail'); }}>{item.displayName || item.name}</button></td>
-                  <td><span className={item.enabled ? 'status ok' : 'status stopped'} />{item.enabled ? '已启用' : '未启用'}</td>
-                  <td>--</td>
-                  <td>--</td>
-                  <td>--</td>
-                  <td>{item.configPath}</td>
-                  <td className="row-actions">
-                    <button onClick={() => onAction(item.name, 'start')}>启动</button>
-                    <button onClick={() => onAction(item.name, 'stop')}>停止</button>
-                    <button onClick={() => onAction(item.name, 'restart')}>重启</button>
-                    <button onClick={() => { onSelect(item.name); onPage('detail'); }}>日志</button>
-                    <button onClick={() => { onSelect(item.name); onPage('config'); }}>编辑配置</button>
-                  </td>
+              {filtered.map((item) => {
+                const stat = stats[item.name];
+                const { label, cls } = instanceStateLabel(stat, item.enabled);
+                return (
+                  <tr key={item.name}>
+                    <td>
+                      <button className="link" onClick={() => { onSelect(item.name); onPage('detail'); }}>
+                        {item.displayName || item.name}
+                      </button>
+                    </td>
+                    <td><span className={cls} />{label}</td>
+                    <td>{stat?.cpuPercent || '--'}</td>
+                    <td>{stat?.memUsage || '--'}</td>
+                    <td>{stat ? stat.restartCount : '--'}</td>
+                    <td>{item.configPath}</td>
+                    <td className="row-actions">
+                      <button onClick={() => onAction(item.name, 'start')}>启动</button>
+                      <button onClick={() => onAction(item.name, 'stop')}>停止</button>
+                      <button onClick={() => onAction(item.name, 'restart')}>重启</button>
+                      <button onClick={() => { onSelect(item.name); onPage('detail'); }}>日志</button>
+                      <button onClick={() => { onSelect(item.name); onPage('config'); }}>编辑配置</button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="muted">没有匹配的实例</td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
         </div>
@@ -354,15 +479,30 @@ function Overview({
             <h3>健康检查</h3>
             <p className="check ok">实例目录 可读取</p>
             <p className="check ok">配置文件 可读取</p>
-            <p className="check">Docker 状态 待连接</p>
+            <p className={Object.keys(stats).length > 0 ? 'check ok' : 'check'}>
+              Docker 状态 {Object.keys(stats).length > 0 ? '已连接' : '未连接'}
+            </p>
           </div>
           <div className="panel">
             <h3>磁盘使用</h3>
-            <div className="donut">--</div>
+            {system ? (
+              <>
+                <div className="donut">{diskRatio.toFixed(0)}%</div>
+                <p className="muted">
+                  已用 {bytesToHuman(system.disk.used)} / 总 {bytesToHuman(system.disk.total)}
+                </p>
+              </>
+            ) : (
+              <div className="donut">--</div>
+            )}
           </div>
           <div className="panel">
             <h3>最近告警</h3>
-            <p className="muted">暂无告警</p>
+            {error > 0 ? (
+              <p className="check">检测到 {error} 个实例异常退出</p>
+            ) : (
+              <p className="muted">暂无告警</p>
+            )}
           </div>
         </aside>
       </section>
@@ -370,7 +510,17 @@ function Overview({
   );
 }
 
-function Detail({ name, onPage, onAction }: { name: string; onPage: (page: Page) => void; onAction: (name: string, action: string) => void }) {
+function Detail({
+  name,
+  stats,
+  onPage,
+  onAction
+}: {
+  name: string;
+  stats: StatsMap;
+  onPage: (page: Page) => void;
+  onAction: (name: string, action: string) => void;
+}) {
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [keyword, setKeyword] = useState('');
@@ -384,16 +534,18 @@ function Detail({ name, onPage, onAction }: { name: string; onPage: (page: Page)
   if (!name) return <main className="content"><h2>请选择实例</h2></main>;
 
   const visibleLogs = keyword ? logs.filter((line) => line.toLowerCase().includes(keyword.toLowerCase())) : logs;
+  const stat = stats[name];
+  const stateInfo = instanceStateLabel(stat, detail?.enabled ?? false);
 
   return (
     <main className="content">
       <button className="back" onClick={() => onPage('overview')}>返回</button>
-      <h2>实例详情：{name}</h2>
+      <h2>实例详情：{name} <span>{stateInfo.label}</span></h2>
       <section className="summary-card">
-        <div><span className="status ok" />{detail?.displayName || name}</div>
-        <div><small>CPU 占用</small><strong>--</strong></div>
-        <div><small>内存占用</small><strong>--</strong></div>
-        <div><small>重启次数</small><strong>--</strong></div>
+        <div><span className={stateInfo.cls} />{detail?.displayName || name}</div>
+        <div><small>CPU 占用</small><strong>{stat?.cpuPercent || '--'}</strong></div>
+        <div><small>内存占用</small><strong>{stat?.memUsage || '--'}</strong></div>
+        <div><small>重启次数</small><strong>{stat ? stat.restartCount : '--'}</strong></div>
         <div><small>配置路径</small><strong>{detail?.configPath || '--'}</strong></div>
       </section>
 
@@ -532,6 +684,8 @@ function Placeholder({ title }: { title: string }) {
 function Console({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) {
   const [page, setPage] = useState<Page>('overview');
   const [instances, setInstances] = useState<Instance[]>([]);
+  const [stats, setStats] = useState<StatsMap>({});
+  const [system, setSystem] = useState<SystemInfo | null>(null);
   const [selected, setSelected] = useState('');
 
   async function loadInstances() {
@@ -540,29 +694,45 @@ function Console({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
     if (!selected && data[0]) setSelected(data[0].name);
   }
 
+  async function loadStats() {
+    const data = await api<StatsMap>('/api/stats').catch(() => ({} as StatsMap));
+    setStats(data);
+  }
+
+  async function loadSystem() {
+    const data = await api<SystemInfo>('/api/system').catch(() => null);
+    setSystem(data);
+  }
+
+  async function refreshAll() {
+    await Promise.all([loadInstances(), loadStats(), loadSystem()]);
+  }
+
   useEffect(() => {
-    loadInstances();
+    refreshAll();
+    const timer = window.setInterval(loadStats, 5000);
+    return () => window.clearInterval(timer);
   }, []);
 
   async function action(name: string, verb: string) {
     await api(`/api/instances/${name}/${verb}`, { method: 'POST' });
-    await loadInstances();
+    await Promise.all([loadInstances(), loadStats()]);
   }
 
   const body = useMemo(() => {
-    if (page === 'overview') return <Overview instances={instances} onSelect={setSelected} onPage={setPage} onAction={action} />;
-    if (page === 'detail') return <Detail name={selected} onPage={setPage} onAction={action} />;
+    if (page === 'overview') return <Overview instances={instances} stats={stats} system={system} onSelect={setSelected} onPage={setPage} onAction={action} />;
+    if (page === 'detail') return <Detail name={selected} stats={stats} onPage={setPage} onAction={action} />;
     if (page === 'config') return <ConfigEditor name={selected} />;
-    if (page === 'create') return <CreateInstance onCreated={(name) => { setSelected(name); loadInstances(); }} />;
+    if (page === 'create') return <CreateInstance onCreated={(name) => { setSelected(name); refreshAll(); }} />;
     if (page === 'backups') return <Placeholder title="备份管理" />;
     return <Placeholder title="系统设置" />;
-  }, [page, instances, selected]);
+  }, [page, instances, stats, system, selected]);
 
   return (
     <div className="app-shell">
       <Sidebar page={page} onPage={setPage} />
       <div className="main-shell">
-        <Topbar onRefresh={loadInstances} username={auth.username} onLogout={onLogout} />
+        <Topbar onRefresh={refreshAll} username={auth.username} onLogout={onLogout} />
         {body}
       </div>
     </div>
