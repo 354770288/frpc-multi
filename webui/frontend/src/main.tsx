@@ -9,6 +9,7 @@ import {
   Gauge,
   HardDrive,
   Home,
+  LogOut,
   Menu,
   Play,
   Plus,
@@ -18,6 +19,7 @@ import {
   Search,
   Server,
   Settings,
+  ShieldCheck,
   Square,
   Trash2
 } from 'lucide-react';
@@ -49,6 +51,14 @@ type InstanceDetail = Instance & {
 
 type Page = 'overview' | 'detail' | 'config' | 'create' | 'backups' | 'system';
 
+type AuthState = {
+  token: string;
+  username: string;
+  expiresAt: number;
+};
+
+const TOKEN_STORAGE_KEY = 'frpc-webui-auth';
+
 const emptyConfig = `serverAddr = "frps.example.com"
 serverPort = 7000
 
@@ -69,19 +79,137 @@ localPort = 22
 remotePort = 6001
 `;
 
+class AuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthError';
+  }
+}
+
+function loadAuth(): AuthState | null {
+  try {
+    const raw = localStorage.getItem(TOKEN_STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as AuthState;
+    if (!data.token || !data.expiresAt) return null;
+    if (data.expiresAt * 1000 <= Date.now()) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function saveAuth(state: AuthState) {
+  localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(state));
+}
+
+function clearAuth() {
+  localStorage.removeItem(TOKEN_STORAGE_KEY);
+}
+
+let onUnauthorized: () => void = () => {};
+let currentToken: string | null = null;
+
+function setAuthToken(token: string | null) {
+  currentToken = token;
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {})
-    }
-  });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...((init?.headers as Record<string, string>) || {})
+  };
+  if (currentToken) {
+    headers.Authorization = `Bearer ${currentToken}`;
+  }
+  const response = await fetch(path, { ...init, headers });
+  if (response.status === 401) {
+    onUnauthorized();
+    throw new AuthError('登录已过期，请重新登录');
+  }
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || response.statusText);
   }
+  if (response.status === 204) return undefined as T;
   return response.json();
+}
+
+function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError('');
+    if (!username || !password) {
+      setError('请输入用户名和密码');
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      if (!result.ok) {
+        const text = await result.text();
+        let detail = '登录失败';
+        try {
+          const data = JSON.parse(text);
+          if (typeof data?.detail === 'string') detail = data.detail;
+        } catch {
+          if (text) detail = text;
+        }
+        throw new Error(detail);
+      }
+      const data = (await result.json()) as { token: string; username: string; expiresAt: number };
+      onSuccess({ token: data.token, username: data.username, expiresAt: data.expiresAt });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '登录失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="login-shell">
+      <form className="login-card" onSubmit={submit}>
+        <div className="login-brand">
+          <Boxes size={32} />
+          <div>
+            <strong>frpc 多实例管理</strong>
+            <span>WebUI 控制台登录</span>
+          </div>
+        </div>
+        <label>用户名</label>
+        <input
+          autoFocus
+          autoComplete="username"
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
+          placeholder="admin"
+        />
+        <label>密码</label>
+        <input
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          placeholder="请输入密码"
+        />
+        {error && <p className="login-error">{error}</p>}
+        <button className="primary" type="submit" disabled={loading}>
+          <ShieldCheck size={16} />
+          {loading ? '登录中...' : '登录'}
+        </button>
+        <p className="login-hint">默认凭证由 .env 中的 WEBUI_USERNAME / WEBUI_PASSWORD 控制。</p>
+      </form>
+    </div>
+  );
 }
 
 function Sidebar({ page, onPage }: { page: Page; onPage: (page: Page) => void }) {
@@ -118,7 +246,7 @@ function Sidebar({ page, onPage }: { page: Page; onPage: (page: Page) => void })
   );
 }
 
-function Topbar({ onRefresh }: { onRefresh: () => void }) {
+function Topbar({ onRefresh, username, onLogout }: { onRefresh: () => void; username: string; onLogout: () => void }) {
   return (
     <header className="topbar">
       <button className="icon-button">
@@ -130,11 +258,11 @@ function Topbar({ onRefresh }: { onRefresh: () => void }) {
           <RefreshCw size={16} />
           刷新
         </button>
-        <button>
-          <Server size={16} />
-          终端
+        <span className="avatar">{username || 'admin'}</span>
+        <button onClick={onLogout} title="退出登录">
+          <LogOut size={16} />
+          退出
         </button>
-        <span className="avatar">admin</span>
       </div>
     </header>
   );
@@ -401,7 +529,7 @@ function Placeholder({ title }: { title: string }) {
   );
 }
 
-function App() {
+function Console({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) {
   const [page, setPage] = useState<Page>('overview');
   const [instances, setInstances] = useState<Instance[]>([]);
   const [selected, setSelected] = useState('');
@@ -434,12 +562,47 @@ function App() {
     <div className="app-shell">
       <Sidebar page={page} onPage={setPage} />
       <div className="main-shell">
-        <Topbar onRefresh={loadInstances} />
+        <Topbar onRefresh={loadInstances} username={auth.username} onLogout={onLogout} />
         {body}
       </div>
     </div>
   );
 }
 
-createRoot(document.getElementById('root')!).render(<App />);
+function App() {
+  const [auth, setAuth] = useState<AuthState | null>(() => {
+    const cached = loadAuth();
+    if (cached) setAuthToken(cached.token);
+    return cached;
+  });
 
+  useEffect(() => {
+    onUnauthorized = () => {
+      clearAuth();
+      setAuthToken(null);
+      setAuth(null);
+    };
+    return () => {
+      onUnauthorized = () => {};
+    };
+  }, []);
+
+  function handleLogin(state: AuthState) {
+    saveAuth(state);
+    setAuthToken(state.token);
+    setAuth(state);
+  }
+
+  function handleLogout() {
+    clearAuth();
+    setAuthToken(null);
+    setAuth(null);
+  }
+
+  if (!auth) {
+    return <Login onSuccess={handleLogin} />;
+  }
+  return <Console auth={auth} onLogout={handleLogout} />;
+}
+
+createRoot(document.getElementById('root')!).render(<App />);

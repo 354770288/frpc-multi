@@ -8,10 +8,10 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .auth import create_token, require_auth, verify_credentials
 from .backup_service import BackupService
 from .compose_generator import write_generated_compose
 from .config_validator import validate_config_text
@@ -20,7 +20,6 @@ from .instance_store import InstanceStore, validate_instance_name
 from .settings import settings
 
 app = FastAPI(title="frpc 多实例管理面板", version="0.1.0")
-security = HTTPBasic()
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,14 +45,21 @@ class ConfigUpdate(BaseModel):
     recreateAfterSave: bool = False
 
 
-def require_auth(credentials: Annotated[HTTPBasicCredentials, Depends(security)]):
-    if credentials.username != settings.username or credentials.password != settings.password:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="登录失败",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/auth/login")
+def login(payload: LoginRequest):
+    if not verify_credentials(payload.username, payload.password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
+    return create_token(payload.username)
+
+
+@app.get("/api/auth/me")
+def whoami(user: Annotated[str, Depends(require_auth)]):
+    return {"username": user, "tokenTtlSeconds": settings.token_ttl_seconds}
 
 
 def store() -> InstanceStore:
