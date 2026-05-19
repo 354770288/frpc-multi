@@ -8,7 +8,7 @@ export function MetricCard({
   icon: React.ReactNode;
   title: string;
   value: string;
-  hint: string;
+  hint?: string;
   tone?: string;
 }) {
   return (
@@ -16,7 +16,7 @@ export function MetricCard({
       <div className={`metric-icon ${tone}`}>{icon}</div>
       <span>{title}</span>
       <strong>{value}</strong>
-      <p>{hint}</p>
+      {hint ? <p>{hint}</p> : null}
       <div className={`bar ${tone}`} />
     </div>
   );

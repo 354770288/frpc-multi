@@ -26,6 +26,23 @@ textarea {
   padding: 22px 14px;
   color: #eef6ff;
   background: linear-gradient(180deg, #132033 0%, #1f2c3a 100%);
+  transition: width 0.18s ease;
+}
+
+.sidebar.collapsed {
+  width: 68px;
+  padding: 22px 8px;
+}
+
+.sidebar.collapsed .brand {
+  justify-content: center;
+  padding: 0 0 22px;
+}
+
+.sidebar.collapsed nav button {
+  justify-content: center;
+  gap: 0;
+  padding: 12px 0;
 }
 
 .brand {
@@ -125,10 +142,75 @@ textarea {
   border-color: #2774ee !important;
 }
 
-.avatar {
-  padding: 8px 10px;
+.user-menu {
+  position: relative;
+}
+
+.user-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 6px;
+  border: 1px solid #e4ebf4;
   border-radius: 999px;
-  background: #edf2f8;
+  background: white;
+  cursor: pointer;
+  color: #172033;
+}
+
+.user-trigger:hover {
+  border-color: #cdd9ec;
+}
+
+.user-name {
+  font-size: 13px;
+  color: #172033;
+}
+
+.avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: #2774ee;
+  color: white;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.user-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 140px;
+  padding: 6px;
+  display: grid;
+  gap: 2px;
+  background: white;
+  border: 1px solid #e4ebf4;
+  border-radius: 8px;
+  box-shadow: 0 14px 32px rgba(15, 25, 48, 0.12);
+  z-index: 50;
+}
+
+.user-dropdown button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #172033;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.user-dropdown button:hover {
+  background: #f3f6fb;
 }
 
 .content {
@@ -200,6 +282,58 @@ small {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
   gap: 16px;
+}
+
+.dashboard-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.disk-row {
+  margin-bottom: 16px;
+}
+
+.disk-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.disk-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.disk-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.disk-head .muted {
+  margin-left: auto;
+  font-size: 12px;
+}
+
+.disk-bar {
+  height: 10px;
+  border-radius: 999px;
+  background: #eef2f8;
+  overflow: hidden;
+}
+
+.disk-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2774ee 0%, #5aa0ff 100%);
+}
+
+.disk-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.disk-meta strong {
+  font-size: 18px;
 }
 
 .panel {

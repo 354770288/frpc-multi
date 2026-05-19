@@ -30,6 +30,7 @@ export function Console({
   onAuthRefresh: (state: AuthState) => void;
 }) {
   const [page, setPage] = useState<Page>('overview');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [instances, setInstances] = useState<Instance[]>([]);
   const [stats, setStats] = useState<StatsMap>({});
   const [dockerAvailable, setDockerAvailable] = useState(false);
@@ -181,11 +182,35 @@ export function Console({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, instances, stats, dockerAvailable, dockerError, system, selected, pendingAction]);
 
+  const pageTitle =
+    page === 'overview'
+      ? '总览'
+      : page === 'create'
+        ? '创建实例'
+        : page === 'config'
+          ? '配置'
+          : page === 'detail'
+            ? '实例详情'
+            : '系统';
+
   return (
     <div className="app-shell">
-      <Sidebar page={page} onPage={setPage} system={system} />
+      <Sidebar
+        page={page}
+        onPage={setPage}
+        system={system}
+        collapsed={sidebarCollapsed}
+      />
       <div className="main-shell">
-        <Topbar onRefresh={refreshAll} username={auth.username} onLogout={onLogout} />
+        <Topbar
+          pageTitle={pageTitle}
+          username={auth.username}
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
+          onRefresh={refreshAll}
+          onLogout={onLogout}
+          onOpenSystem={() => setPage('system')}
+        />
         {body}
       </div>
       <ToastStack toasts={toasts} onClose={closeToast} />

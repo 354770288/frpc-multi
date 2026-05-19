@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Cpu,
   HardDrive,
+  MemoryStick,
   Plus,
   RotateCcw,
   Search,
@@ -74,7 +75,6 @@ export function Overview({
     : instances;
 
   const diskRatio = system && system.disk.total > 0 ? (system.disk.used / system.disk.total) * 100 : 0;
-  const instancesReadable = instances.length >= 0;
 
   return (
     <main className="content">
@@ -82,32 +82,55 @@ export function Overview({
         运行摘要 <span>共 {instances.length} 个 frpc 实例</span>
       </h2>
       <section className="metrics">
-        <MetricCard icon={<Server size={20} />} title="运行中" value={String(running)} hint="docker compose ps 状态" />
-        <MetricCard icon={<AlertTriangle size={20} />} title="异常" value={String(error)} hint="exited 且 exitCode 非 0" tone="orange" />
-        <MetricCard icon={<Square size={20} />} title="已停止" value={String(stopped)} hint="未运行的实例数" tone="gray" />
+        <MetricCard icon={<Server size={20} />} title="运行中" value={String(running)} />
+        <MetricCard icon={<AlertTriangle size={20} />} title="异常" value={String(error)} tone="orange" />
+        <MetricCard icon={<Square size={20} />} title="已停止" value={String(stopped)} tone="gray" />
         <MetricCard
           icon={<RotateCcw size={20} />}
           title="累计重启"
           value={String(restartTotal)}
-          hint="docker inspect 中 RestartCount 累加"
           tone="purple"
         />
         <MetricCard
-          icon={<HardDrive size={20} />}
+          icon={<MemoryStick size={20} />}
           title="内存占用"
           value={memSamples ? `${memTotal.toFixed(1)}%` : '0%'}
-          hint={memSamples ? `${memSamples} 个容器汇总` : '暂无运行容器'}
           tone="green"
         />
         <MetricCard
           icon={<Cpu size={20} />}
           title="CPU 占用"
           value={cpuSamples ? `${cpuTotal.toFixed(1)}%` : '0%'}
-          hint={cpuSamples ? `${cpuSamples} 个容器汇总` : '暂无运行容器'}
         />
       </section>
 
-      <section className="dashboard-grid">
+      <section className="disk-row">
+        <div className="panel disk-panel">
+          <div className="disk-head">
+            <HardDrive size={18} />
+            <h3>磁盘使用</h3>
+            <span className="muted">
+              {system
+                ? `已用 ${bytesToHuman(system.disk.used)} / 总 ${bytesToHuman(system.disk.total)}`
+                : '--'}
+            </span>
+          </div>
+          <div className="disk-bar">
+            <div
+              className="disk-bar-fill"
+              style={{ width: `${Math.min(100, Math.max(0, diskRatio)).toFixed(1)}%` }}
+            />
+          </div>
+          <div className="disk-meta">
+            <strong>{system ? `${diskRatio.toFixed(0)}%` : '--'}</strong>
+            {!dockerAvailable && dockerError && (
+              <span className="muted">Docker：{dockerError}</span>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="dashboard-grid single">
         <div className="panel large">
           <div className="panel-head">
             <h3>实例列表</h3>
@@ -212,50 +235,6 @@ export function Overview({
             </tbody>
           </table>
         </div>
-
-        <aside className="side-stack">
-          <div className="panel">
-            <h3>健康检查</h3>
-            <p className={instancesReadable ? 'check ok' : 'check'}>
-              <span className={instancesReadable ? 'status ok' : 'status'} />
-              实例目录 {instancesReadable ? '可读取' : '读取失败'}
-            </p>
-            <p className={instancesReadable ? 'check ok' : 'check'}>
-              <span className={instancesReadable ? 'status ok' : 'status'} />
-              配置文件 {instancesReadable ? '可读取' : '读取失败'}
-            </p>
-            <p className={dockerAvailable ? 'check ok' : 'check'}>
-              <span className={dockerAvailable ? 'status ok' : 'status'} />
-              Docker 状态 {dockerAvailable ? '已连接' : '未连接'}
-            </p>
-            {!dockerAvailable && dockerError && (
-              <p className="muted" style={{ marginTop: 4 }}>
-                {dockerError}
-              </p>
-            )}
-            <p className={error === 0 ? 'check ok' : 'check'}>
-              <span className={error === 0 ? 'status ok' : 'status'} />
-              异常实例 {error === 0 ? '0 个' : `${error} 个`}
-            </p>
-          </div>
-          <div className="panel">
-            <h3>磁盘使用</h3>
-            {system ? (
-              <>
-                <div className="donut">{diskRatio.toFixed(0)}%</div>
-                <p className="muted">
-                  已用 {bytesToHuman(system.disk.used)} / 总 {bytesToHuman(system.disk.total)}
-                </p>
-              </>
-            ) : (
-              <div className="donut">--</div>
-            )}
-          </div>
-          <div className="panel">
-            <h3>最近告警</h3>
-            {error > 0 ? <p className="check">检测到 {error} 个实例异常退出</p> : <p className="muted">暂无告警</p>}
-          </div>
-        </aside>
       </section>
     </main>
   );
