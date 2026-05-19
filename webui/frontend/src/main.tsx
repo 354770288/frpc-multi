@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   AlertTriangle,
-  Archive,
   Boxes,
   Cpu,
   FileCode2,
@@ -20,8 +19,7 @@ import {
   Server,
   Settings,
   ShieldCheck,
-  Square,
-  Trash2
+  Square
 } from 'lucide-react';
 import './styles/app.css';
 
@@ -82,7 +80,7 @@ type SystemInfo = {
   disk: { total: number; used: number; free: number };
 };
 
-type Page = 'overview' | 'detail' | 'config' | 'create' | 'backups' | 'system';
+type Page = 'overview' | 'detail' | 'config' | 'create' | 'system';
 
 type AuthState = {
   token: string;
@@ -91,26 +89,6 @@ type AuthState = {
 };
 
 const TOKEN_STORAGE_KEY = 'frpc-webui-auth';
-
-const emptyConfig = `serverAddr = "frps.example.com"
-serverPort = 7000
-
-[auth]
-method = "token"
-token = "CHANGE_ME_STRONG_TOKEN"
-
-[log]
-to = "console"
-level = "info"
-maxDays = 3
-
-[[proxies]]
-name = "ssh-22"
-type = "tcp"
-localIP = "host.docker.internal"
-localPort = 22
-remotePort = 6001
-`;
 
 class AuthError extends Error {
   constructor(message: string) {
@@ -250,7 +228,6 @@ function Sidebar({ page, onPage }: { page: Page; onPage: (page: Page) => void })
     ['overview', Home, '总览'],
     ['create', Plus, '创建实例'],
     ['config', FileCode2, '配置'],
-    ['backups', Archive, '备份'],
     ['system', Settings, '系统']
   ] as const;
 
@@ -576,7 +553,6 @@ function Detail({
           <button onClick={() => onAction(name, 'stop')}><Square size={16} />停止</button>
           <button onClick={() => onAction(name, 'restart')}><RefreshCw size={16} />重启</button>
           <button onClick={() => onAction(name, 'recreate')}><RotateCcw size={16} />重新创建容器</button>
-          <button onClick={() => api(`/api/instances/${name}/config/backup`, { method: 'POST' })}><Archive size={16} />备份配置</button>
         </div>
       </section>
 
@@ -608,20 +584,6 @@ type ValidationData = {
   };
 };
 
-type BackupItem = {
-  id: string;
-  instance: string;
-  path: string;
-  size: number;
-  mtime: number;
-};
-
-function formatBackupTime(mtime: number): string {
-  const date = new Date(mtime * 1000);
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
-
 function ConfigEditor({ name }: { name: string }) {
   const [configText, setConfigText] = useState('');
   const [originalText, setOriginalText] = useState('');
@@ -631,13 +593,6 @@ function ConfigEditor({ name }: { name: string }) {
   const [recreateAfterSave, setRecreateAfterSave] = useState(false);
   const [message, setMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
-  const [backups, setBackups] = useState<BackupItem[]>([]);
-
-  async function loadBackups() {
-    if (!name) return;
-    const data = await api<BackupItem[]>(`/api/backups?instance=${encodeURIComponent(name)}`).catch(() => []);
-    setBackups(data);
-  }
 
   useEffect(() => {
     if (!name) return;
@@ -654,7 +609,6 @@ function ConfigEditor({ name }: { name: string }) {
         setOriginalText('');
         setValidation(null);
       });
-    loadBackups();
   }, [name]);
 
   useEffect(() => {
@@ -687,11 +641,10 @@ function ConfigEditor({ name }: { name: string }) {
     try {
       await api<{ validation: ValidationData }>(`/api/instances/${name}/config`, {
         method: 'PUT',
-        body: JSON.stringify({ configText, backupBeforeSave: true, recreateAfterSave })
+        body: JSON.stringify({ configText, recreateAfterSave })
       });
       setOriginalText(configText);
-      setMessage(recreateAfterSave ? '已保存并重新创建容器' : '已保存（已自动备份原配置）');
-      await loadBackups();
+      setMessage(recreateAfterSave ? '已保存并重新创建容器' : '已保存');
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : '保存失败');
     } finally {
@@ -699,53 +652,16 @@ function ConfigEditor({ name }: { name: string }) {
     }
   }
 
-  function reset() {
-    setConfigText(originalText);
-    setMessage('');
-    setErrorMessage('');
-  }
-
-  async function backupNow() {
+  async function reset() {
+    if (!window.confirm('确认将编辑器内容覆盖为默认 frpc 配置？该操作仅修改编辑器，未保存前不会写入磁盘。')) return;
     setMessage('');
     setErrorMessage('');
     try {
-      await api(`/api/instances/${name}/config/backup`, { method: 'POST' });
-      setMessage('已创建一份配置备份');
-      await loadBackups();
-    } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : '备份失败');
-    }
-  }
-
-  async function restore(backup: BackupItem) {
-    if (!window.confirm(`确认用 ${backup.id} 还原当前配置？当前内容会先被自动备份。`)) return;
-    setMessage('');
-    setErrorMessage('');
-    try {
-      await api(`/api/instances/${name}/config/restore`, {
-        method: 'POST',
-        body: JSON.stringify({ backupId: backup.id, recreateAfterRestore: false })
-      });
-      const data = await api<{ configText: string; validation: ValidationData }>(`/api/instances/${name}/config`);
+      const data = await api<{ configText: string }>(`/api/config/default?name=${encodeURIComponent(name)}`);
       setConfigText(data.configText);
-      setOriginalText(data.configText);
-      setValidation(data.validation);
-      setMessage(`已从 ${backup.id} 还原`);
-      await loadBackups();
+      setMessage('已载入默认配置，请确认后点击保存');
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : '还原失败');
-    }
-  }
-
-  async function removeBackup(backup: BackupItem) {
-    if (!window.confirm(`确认删除备份 ${backup.id}？该操作不可恢复。`)) return;
-    setMessage('');
-    setErrorMessage('');
-    try {
-      await api(`/api/backups/${encodeURI(backup.id)}`, { method: 'DELETE' });
-      await loadBackups();
-    } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : '删除失败');
+      setErrorMessage(err instanceof Error ? err.message : '载入默认配置失败');
     }
   }
 
@@ -775,18 +691,15 @@ function ConfigEditor({ name }: { name: string }) {
                 />
                 保存后重新创建容器
               </label>
-              <button onClick={reset} disabled={!dirty || saving}>
-                <RotateCcw size={16} />重置
-              </button>
-              <button onClick={backupNow} disabled={saving}>
-                <Archive size={16} />立即备份
+              <button onClick={reset} disabled={saving}>
+                <RotateCcw size={16} />重置为默认
               </button>
               <button
                 className="primary"
                 onClick={save}
                 disabled={!dirty || saving || !!errors.length}
               >
-                <Save size={16} />{saving ? '保存中…' : '保存并备份'}
+                <Save size={16} />{saving ? '保存中…' : '保存'}
               </button>
             </div>
           </div>
@@ -825,31 +738,6 @@ function ConfigEditor({ name }: { name: string }) {
               </div>
             </div>
           )}
-          <div className="panel">
-            <h3>历史备份 <span className="muted">({backups.length})</span></h3>
-            {backups.length === 0 ? (
-              <p className="muted">暂无备份</p>
-            ) : (
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 8 }}>
-                {backups.map((backup) => (
-                  <li key={backup.id} style={{ borderBottom: '1px solid #edf2f7', paddingBottom: 8 }}>
-                    <div style={{ fontFamily: 'SFMono-Regular, Consolas, monospace', fontSize: 12 }}>
-                      {backup.id}
-                    </div>
-                    <div className="muted" style={{ fontSize: 12 }}>
-                      {formatBackupTime(backup.mtime)} · {(backup.size / 1024).toFixed(1)} KB
-                    </div>
-                    <div className="row-actions" style={{ marginTop: 6 }}>
-                      <button onClick={() => restore(backup)}>还原</button>
-                      <button onClick={() => removeBackup(backup)}>
-                        <Trash2 size={14} />删除
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
         </aside>
       </section>
     </main>
@@ -859,8 +747,14 @@ function ConfigEditor({ name }: { name: string }) {
 function CreateInstance({ onCreated }: { onCreated: (name: string) => void }) {
   const [name, setName] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [configText, setConfigText] = useState(emptyConfig);
+  const [configText, setConfigText] = useState('');
   const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    api<{ configText: string }>('/api/config/default')
+      .then((data) => setConfigText(data.configText))
+      .catch(() => setConfigText(''));
+  }, []);
 
   async function create() {
     await api('/api/instances', {
@@ -962,7 +856,6 @@ function Console({ auth, onLogout }: { auth: AuthState; onLogout: () => void }) 
     if (page === 'detail') return <Detail name={selected} stats={stats} onPage={setPage} onAction={action} />;
     if (page === 'config') return <ConfigEditor name={selected} />;
     if (page === 'create') return <CreateInstance onCreated={(name) => { setSelected(name); refreshAll(); }} />;
-    if (page === 'backups') return <Placeholder title="备份管理" />;
     return <Placeholder title="系统设置" />;
   }, [page, instances, stats, dockerAvailable, dockerError, system, selected]);
 

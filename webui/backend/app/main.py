@@ -12,8 +12,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .auth import create_token, require_auth, verify_credentials
-from .backup_service import BackupService
 from .compose_generator import write_generated_compose
+from .config_defaults import render_default_config
 from .config_validator import validate_config_text
 from .docker_service import DockerService
 from .instance_store import InstanceStore, validate_instance_name
@@ -41,13 +41,7 @@ class InstanceCreate(BaseModel):
 
 class ConfigUpdate(BaseModel):
     configText: str
-    backupBeforeSave: bool = True
     recreateAfterSave: bool = False
-
-
-class RestoreRequest(BaseModel):
-    backupId: str
-    recreateAfterRestore: bool = False
 
 
 class LoginRequest(BaseModel):
@@ -73,10 +67,6 @@ def store() -> InstanceStore:
 
 def docker() -> DockerService:
     return DockerService(settings.project_dir)
-
-
-def backups() -> BackupService:
-    return BackupService(settings.project_dir)
 
 
 def regenerate_compose(instance_store: InstanceStore) -> None:
@@ -191,8 +181,6 @@ def update_config(name: str, payload: ConfigUpdate, _: Annotated[str, Depends(re
     if not validation.valid:
         raise HTTPException(status_code=400, detail=validation.__dict__)
     instance_store = store()
-    if payload.backupBeforeSave:
-        backups().backup_config(name)
     try:
         record = instance_store.update_config(name, payload.configText)
     except (ValueError, FileNotFoundError) as exc:
@@ -210,41 +198,12 @@ async def validate_config(name: str, request: Request, _: Annotated[str, Depends
     return validate_config_text(body.decode("utf-8")).__dict__
 
 
-@app.post("/api/instances/{name}/config/backup")
-def backup_config(name: str, _: Annotated[str, Depends(require_auth)]):
-    path = backups().backup_config(name)
-    return {"path": str(path)}
-
-
-@app.post("/api/instances/{name}/config/restore")
-def restore_config(name: str, payload: RestoreRequest, _: Annotated[str, Depends(require_auth)]):
-    instance_store = store()
+@app.get("/api/config/default")
+def default_config(_: Annotated[str, Depends(require_auth)], name: str | None = None):
     try:
-        target = backups().restore_backup(name, payload.backupId)
-    except (ValueError, FileNotFoundError) as exc:
+        text = render_default_config(name)
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    instance_store.update_config(name, target.read_text(encoding="utf-8"))
-    regenerate_compose(instance_store)
-    if payload.recreateAfterRestore:
-        command_response(docker().recreate(name))
-    return {"configPath": str(target)}
-
-
-@app.delete("/api/backups/{backup_id:path}")
-def delete_backup(backup_id: str, _: Annotated[str, Depends(require_auth)]):
-    try:
-        backups().delete_backup(backup_id)
-    except (ValueError, FileNotFoundError) as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"deleted": backup_id}
-
-
-@app.get("/api/backups/{backup_id:path}/content")
-def read_backup(backup_id: str, _: Annotated[str, Depends(require_auth)]):
-    try:
-        text = backups().read_backup(backup_id)
-    except (ValueError, FileNotFoundError) as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"configText": text}
 
 
@@ -287,11 +246,6 @@ def recreate_instance(name: str, _: Annotated[str, Depends(require_auth)]):
 @app.get("/api/stats")
 def get_stats(_: Annotated[str, Depends(require_auth)]):
     return docker().collect_status()
-
-
-@app.get("/api/backups")
-def list_backups(_: Annotated[str, Depends(require_auth)], instance: str | None = None):
-    return backups().list_backups(instance)
 
 
 @app.post("/api/compose/regenerate")
