@@ -34,5 +34,9 @@ class Settings:
     jwt_secret: str = _resolve_jwt_secret()
     token_ttl_seconds: int = int(os.getenv("WEBUI_TOKEN_TTL_SECONDS", str(60 * 60 * 12)))
 
+    @property
+    def credentials_path(self) -> Path:
+        return self.project_dir / ".webui" / "credentials.json"
+
 
 settings = Settings()

@@ -4,14 +4,19 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import time
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .settings import settings
+
+PBKDF2_ITERATIONS = 200_000
+SALT_BYTES = 16
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -84,9 +89,88 @@ def require_auth(
     return payload.get("sub", "")
 
 
+def _hash_password(password: str, salt: bytes | None = None) -> dict:
+    if salt is None:
+        salt = secrets.token_bytes(SALT_BYTES)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
+    return {
+        "algo": "pbkdf2_sha256",
+        "iterations": PBKDF2_ITERATIONS,
+        "salt": _b64url_encode(salt),
+        "hash": _b64url_encode(digest),
+    }
+
+
+def _verify_hash(password: str, record: dict) -> bool:
+    try:
+        salt = _b64url_decode(record["salt"])
+        expected = _b64url_decode(record["hash"])
+        iterations = int(record.get("iterations", PBKDF2_ITERATIONS))
+    except (KeyError, ValueError):
+        return False
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return hmac.compare_digest(digest, expected)
+
+
+def _read_credentials() -> dict | None:
+    path = settings.credentials_path
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _write_credentials(username: str, password: str) -> None:
+    path = settings.credentials_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"username": username.strip(), "password": _hash_password(password)}
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
 def verify_credentials(username: str, password: str) -> bool:
+    stored = _read_credentials()
+    if stored:
+        stored_user = (stored.get("username") or "").strip()
+        user_ok = hmac.compare_digest(username.encode("utf-8"), stored_user.encode("utf-8"))
+        pass_record = stored.get("password") or {}
+        pass_ok = _verify_hash(password, pass_record) if isinstance(pass_record, dict) else False
+        return user_ok and pass_ok
     expected_user = settings.username
     expected_pass = settings.password
     user_ok = hmac.compare_digest(username.encode("utf-8"), expected_user.encode("utf-8"))
     pass_ok = hmac.compare_digest(password.encode("utf-8"), expected_pass.encode("utf-8"))
     return user_ok and pass_ok
+
+
+def current_username() -> str:
+    stored = _read_credentials()
+    if stored and isinstance(stored.get("username"), str) and stored["username"].strip():
+        return stored["username"].strip()
+    return settings.username
+
+
+def change_credentials(
+    current_username_input: str,
+    current_password: str,
+    new_username: str,
+    new_password: str,
+) -> str:
+    if not verify_credentials(current_username_input, current_password):
+        raise ValueError("当前用户名或密码不正确")
+    new_username = (new_username or "").strip()
+    if not new_username:
+        raise ValueError("新用户名不能为空")
+    if len(new_username) > 64:
+        raise ValueError("新用户名过长")
+    if len(new_password) < 8:
+        raise ValueError("新密码至少 8 位")
+    if len(new_password) > 256:
+        raise ValueError("新密码过长")
+    _write_credentials(new_username, new_password)
+    return new_username

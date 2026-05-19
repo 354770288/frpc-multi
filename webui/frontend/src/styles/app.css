@@ -460,3 +460,64 @@ th {
   }
 }
 
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.row-actions button.danger,
+.panel button.danger {
+  color: #b3261e;
+  border-color: #f4c5c1;
+  background: #fff5f4;
+}
+
+.row-actions button.danger:hover,
+.panel button.danger:hover {
+  background: #fde7e5;
+}
+
+.toast-stack {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  display: grid;
+  gap: 10px;
+  z-index: 1000;
+  max-width: 360px;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: white;
+  border: 1px solid #e6edf5;
+  box-shadow: 0 14px 32px rgba(15, 25, 48, 0.12);
+  font-size: 13px;
+  color: #172033;
+}
+
+.toast button {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: #66758b;
+  padding: 2px;
+}
+
+.toast-success {
+  border-left: 4px solid #23b45d;
+}
+
+.toast-error {
+  border-left: 4px solid #d03b30;
+}
+
+.toast-info {
+  border-left: 4px solid #2774ee;
+}
+

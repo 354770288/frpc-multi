@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Annotated
 
@@ -11,7 +13,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .auth import create_token, require_auth, verify_credentials
+from .auth import (
+    change_credentials,
+    create_token,
+    current_username,
+    require_auth,
+    verify_credentials,
+)
 from .compose_generator import write_generated_compose
 from .config_defaults import render_default_config
 from .config_validator import validate_config_text
@@ -49,16 +57,40 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    currentUsername: str
+    currentPassword: str
+    newUsername: str
+    newPassword: str
+
+
 @app.post("/api/auth/login")
 def login(payload: LoginRequest):
     if not verify_credentials(payload.username, payload.password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
-    return create_token(payload.username)
+    return create_token(current_username())
 
 
 @app.get("/api/auth/me")
 def whoami(user: Annotated[str, Depends(require_auth)]):
     return {"username": user, "tokenTtlSeconds": settings.token_ttl_seconds}
+
+
+@app.post("/api/auth/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    _: Annotated[str, Depends(require_auth)],
+):
+    try:
+        new_user = change_credentials(
+            payload.currentUsername,
+            payload.currentPassword,
+            payload.newUsername,
+            payload.newPassword,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return create_token(new_user)
 
 
 def store() -> InstanceStore:
@@ -79,14 +111,60 @@ def command_response(result):
     return {"stdout": result.stdout, "stderr": result.stderr}
 
 
+def _read_env_value(key: str) -> str:
+    env_path = settings.project_dir / ".env"
+    if not env_path.exists():
+        env_path = settings.project_dir / ".env.example"
+    if not env_path.exists():
+        return ""
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, _, value = line.partition("=")
+            if name.strip() == key:
+                value = value.strip()
+                if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                    value = value[1:-1]
+                return value
+    except OSError:
+        return ""
+    return ""
+
+
+def _docker_version() -> str:
+    try:
+        result = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Version}}"],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip()
+
+
 @app.get("/api/system")
-def get_system(_: Annotated[str, Depends(require_auth)]):
+def get_system(user: Annotated[str, Depends(require_auth)]):
     stat = shutil.disk_usage(settings.project_dir if settings.project_dir.exists() else "/")
+    frp_image = _read_env_value("FRP_IMAGE")
+    frp_version = ""
+    if frp_image and ":" in frp_image:
+        frp_version = frp_image.rsplit(":", 1)[-1]
     return {
         "projectDir": str(settings.project_dir),
         "webuiHost": settings.webui_host,
         "webuiPort": settings.webui_port,
         "version": "0.1.0",
+        "username": user,
+        "dockerVersion": _docker_version(),
+        "frpImage": frp_image,
+        "frpVersion": frp_version,
         "disk": {"total": stat.total, "used": stat.used, "free": stat.free},
     }
 
