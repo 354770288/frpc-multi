@@ -7,7 +7,7 @@
 - VPS 至少有 2GB RAM，并已开启 1-2GB swap。
 - 已安装 Docker Engine 和 Docker Compose plugin。
 - `/opt/frpc-multi/.env` 已存在，并固定了明确的 `FRP_IMAGE` 版本。
-- `configs/` 目录中已经没有 `CHANGE_ME` 占位符。
+- `instances/` 目录中已经没有 `CHANGE_ME` 占位符。
 - 每个启用实例的 proxy name 唯一。
 - 每个启用实例的 remote port 不冲突。
 - `bash scripts/check-health.sh` 可以正常执行。
@@ -62,8 +62,8 @@ bash scripts/check-health.sh
 ```bash
 cd /opt/frpc-multi
 docker stats --no-stream
-docker logs --tail 200 frpc-client-01
-bash scripts/restart-one.sh client-01
+docker logs --tail 200 frpc-<instance-name>
+bash scripts/restart-one.sh <instance-name>
 ```
 
 如果同一个实例反复出现内存异常：
@@ -78,13 +78,13 @@ bash scripts/restart-one.sh client-01
 
 ## 配置变更流程
 
-一次只改一个实例，方便定位问题：
+推荐通过 WebUI 编辑配置，并在保存时勾选"保存后重新创建容器"。如果需要在命令行手动操作，一次只改一个实例：
 
 ```bash
 cd /opt/frpc-multi
 bash scripts/backup-configs.sh
-nano configs/client-01/frpc.toml
-docker compose up -d --no-deps --force-recreate frpc-client-01
+nano instances/<instance-name>/frpc.toml
+docker compose -f compose.yaml -f compose.generated.yaml up -d --no-deps --force-recreate frpc-<instance-name>
 bash scripts/check-health.sh
 ```
 
@@ -129,8 +129,8 @@ bash scripts/backup-configs.sh
 
 ```bash
 cd /opt/frpc-multi
-docker compose stop frpc-client-01
+docker compose -f compose.yaml -f compose.generated.yaml stop frpc-<instance-name>
 tar -xzf backups/frpc-multi-configs-YYYYMMDD-HHMMSS.tar.gz
-docker compose up -d --no-deps --force-recreate frpc-client-01
+docker compose -f compose.yaml -f compose.generated.yaml up -d --no-deps --force-recreate frpc-<instance-name>
 ```
 

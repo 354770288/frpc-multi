@@ -11,15 +11,13 @@ mkdir -p "$BACKUP_DIR"
 stamp="$(date +%Y%m%d-%H%M%S)"
 archive="$BACKUP_DIR/frpc-multi-configs-$stamp.tar.gz"
 
-tar -czf "$archive" \
-  compose.yaml \
-  .env \
-  configs \
-  scripts \
-  systemd \
-  docs
+paths=(compose.yaml .env scripts docs)
+[ -f compose.generated.yaml ] && paths+=(compose.generated.yaml)
+[ -d instances ] && paths+=(instances)
+[ -d systemd ] && paths+=(systemd)
+
+tar -czf "$archive" "${paths[@]}"
 
 find "$BACKUP_DIR" -type f -name 'frpc-multi-configs-*.tar.gz' -mtime +"$KEEP_DAYS" -delete
 
 echo "Backup written: $archive"
-

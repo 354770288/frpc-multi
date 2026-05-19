@@ -22,7 +22,7 @@
 
 - 后端：运行在 VPS 本机的小型服务，工作目录固定为 `/opt/frpc-multi`，默认监听 `127.0.0.1:8081`。
 - 前端：带登录认证的 Web 面板，只监听 localhost、内网地址或 VPN 地址。
-- 配置源：`instances/*/frpc.toml` 作为真实配置源，`configs/` 仅作为一期兼容和迁移来源。
+- 配置源：`instances/*/frpc.toml` 作为真实配置源，由 WebUI 写入和管理。
 - 状态源：通过 Docker Compose / Docker API 读取容器状态。
 - 存储：可选 SQLite，用于保存审计日志、告警配置和界面元数据。
 - 执行方式：后端只允许执行受控的 Compose 操作，不提供任意 shell 命令入口。
@@ -59,7 +59,7 @@
 一期已经确定以下稳定边界：
 
 - 运行目录为 `/opt/frpc-multi`。
-- `compose.yaml` 管理 WebUI 和一期兼容服务。
+- `compose.yaml` 只管理 WebUI 和共享 network。
 - `compose.generated.yaml` 由 WebUI 生成动态实例 service。
 - `instances/*/frpc.toml` 是二期配置源。
 - `scripts/backup-configs.sh` 负责备份。

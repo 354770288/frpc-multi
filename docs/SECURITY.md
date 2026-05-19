@@ -7,7 +7,7 @@
 `frpc.toml` 中通常包含 `frps` 地址、认证 token、代理端口和本地服务地址。生产环境中应限制配置文件权限：
 
 ```bash
-chmod 600 /opt/frpc-multi/configs/*/frpc.toml
+chmod 600 /opt/frpc-multi/instances/*/frpc.toml
 ```
 
 注意事项：
@@ -37,8 +37,8 @@ chmod 600 /opt/frpc-multi/configs/*/frpc.toml
 切换到 `network_mode: host` 前，必须检查端口：
 
 ```bash
-grep -R "remotePort" configs
-grep -R "localPort" configs
+grep -R "remotePort" instances
+grep -R "localPort" instances
 ```
 
 检查重点：
@@ -55,7 +55,7 @@ grep -R "localPort" configs
 查看最近日志：
 
 ```bash
-docker logs --tail 200 frpc-client-01
+docker logs --tail 200 frpc-<instance-name>
 ```
 
 如需发给他人协助排查，先删除 token、真实域名、IP、客户标识等敏感信息。

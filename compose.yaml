@@ -1,30 +1,5 @@
 name: frpc-multi
 
-x-frpc-common: &frpc-common
-  image: ${FRP_IMAGE:-ghcr.io/fatedier/frpc:v0.68.1}
-  restart: unless-stopped
-  mem_limit: ${FRPC_MEMORY_LIMIT:-128m}
-  cpus: "${FRPC_CPU_LIMIT:-0.25}"
-  read_only: true
-  init: true
-  cap_drop:
-    - ALL
-  security_opt:
-    - no-new-privileges:true
-  tmpfs:
-    - /tmp:size=16m,mode=1777
-  extra_hosts:
-    - "host.docker.internal:host-gateway"
-  environment:
-    TZ: ${TZ:-Asia/Shanghai}
-  networks:
-    - frpc-outbound
-  logging:
-    driver: json-file
-    options:
-      max-size: "10m"
-      max-file: "3"
-
 services:
   frpc-webui:
     build:
@@ -44,76 +19,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - frpc-outbound
-
-  frpc-client-01:
-    <<: *frpc-common
-    container_name: frpc-client-01
-    command: ["-c", "/etc/frp/frpc.toml"]
-    volumes:
-      - ./configs/client-01/frpc.toml:/etc/frp/frpc.toml:ro
-
-  frpc-client-02:
-    <<: *frpc-common
-    container_name: frpc-client-02
-    command: ["-c", "/etc/frp/frpc.toml"]
-    volumes:
-      - ./configs/client-02/frpc.toml:/etc/frp/frpc.toml:ro
-
-  frpc-client-03:
-    <<: *frpc-common
-    container_name: frpc-client-03
-    command: ["-c", "/etc/frp/frpc.toml"]
-    volumes:
-      - ./configs/client-03/frpc.toml:/etc/frp/frpc.toml:ro
-
-  frpc-client-04:
-    <<: *frpc-common
-    container_name: frpc-client-04
-    command: ["-c", "/etc/frp/frpc.toml"]
-    volumes:
-      - ./configs/client-04/frpc.toml:/etc/frp/frpc.toml:ro
-
-  frpc-client-05:
-    <<: *frpc-common
-    container_name: frpc-client-05
-    command: ["-c", "/etc/frp/frpc.toml"]
-    volumes:
-      - ./configs/client-05/frpc.toml:/etc/frp/frpc.toml:ro
-
-  frpc-client-06:
-    <<: *frpc-common
-    container_name: frpc-client-06
-    command: ["-c", "/etc/frp/frpc.toml"]
-    volumes:
-      - ./configs/client-06/frpc.toml:/etc/frp/frpc.toml:ro
-
-  frpc-client-07:
-    <<: *frpc-common
-    container_name: frpc-client-07
-    command: ["-c", "/etc/frp/frpc.toml"]
-    volumes:
-      - ./configs/client-07/frpc.toml:/etc/frp/frpc.toml:ro
-
-  frpc-client-08:
-    <<: *frpc-common
-    container_name: frpc-client-08
-    command: ["-c", "/etc/frp/frpc.toml"]
-    volumes:
-      - ./configs/client-08/frpc.toml:/etc/frp/frpc.toml:ro
-
-  frpc-client-09:
-    <<: *frpc-common
-    container_name: frpc-client-09
-    command: ["-c", "/etc/frp/frpc.toml"]
-    volumes:
-      - ./configs/client-09/frpc.toml:/etc/frp/frpc.toml:ro
-
-  frpc-client-10:
-    <<: *frpc-common
-    container_name: frpc-client-10
-    command: ["-c", "/etc/frp/frpc.toml"]
-    volumes:
-      - ./configs/client-10/frpc.toml:/etc/frp/frpc.toml:ro
 
 networks:
   frpc-outbound:
