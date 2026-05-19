@@ -45,6 +45,11 @@ class ConfigUpdate(BaseModel):
     recreateAfterSave: bool = False
 
 
+class RestoreRequest(BaseModel):
+    backupId: str
+    recreateAfterRestore: bool = False
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -209,6 +214,38 @@ async def validate_config(name: str, request: Request, _: Annotated[str, Depends
 def backup_config(name: str, _: Annotated[str, Depends(require_auth)]):
     path = backups().backup_config(name)
     return {"path": str(path)}
+
+
+@app.post("/api/instances/{name}/config/restore")
+def restore_config(name: str, payload: RestoreRequest, _: Annotated[str, Depends(require_auth)]):
+    instance_store = store()
+    try:
+        target = backups().restore_backup(name, payload.backupId)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    instance_store.update_config(name, target.read_text(encoding="utf-8"))
+    regenerate_compose(instance_store)
+    if payload.recreateAfterRestore:
+        command_response(docker().recreate(name))
+    return {"configPath": str(target)}
+
+
+@app.delete("/api/backups/{backup_id:path}")
+def delete_backup(backup_id: str, _: Annotated[str, Depends(require_auth)]):
+    try:
+        backups().delete_backup(backup_id)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"deleted": backup_id}
+
+
+@app.get("/api/backups/{backup_id:path}/content")
+def read_backup(backup_id: str, _: Annotated[str, Depends(require_auth)]):
+    try:
+        text = backups().read_backup(backup_id)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"configText": text}
 
 
 @app.get("/api/instances/{name}/logs")

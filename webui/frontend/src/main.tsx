@@ -593,47 +593,262 @@ function Detail({
   );
 }
 
+type ValidationData = {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  summary: {
+    serverAddr?: string;
+    serverPort?: number;
+    authMethod?: string;
+    tokenMasked?: string;
+    proxyCount: number;
+    proxyTypes: Record<string, number>;
+    remotePorts: number[];
+  };
+};
+
+type BackupItem = {
+  id: string;
+  instance: string;
+  path: string;
+  size: number;
+  mtime: number;
+};
+
+function formatBackupTime(mtime: number): string {
+  const date = new Date(mtime * 1000);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 function ConfigEditor({ name }: { name: string }) {
   const [configText, setConfigText] = useState('');
+  const [originalText, setOriginalText] = useState('');
+  const [validation, setValidation] = useState<ValidationData | null>(null);
+  const [validating, setValidating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [recreateAfterSave, setRecreateAfterSave] = useState(false);
   const [message, setMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [backups, setBackups] = useState<BackupItem[]>([]);
+
+  async function loadBackups() {
+    if (!name) return;
+    const data = await api<BackupItem[]>(`/api/backups?instance=${encodeURIComponent(name)}`).catch(() => []);
+    setBackups(data);
+  }
 
   useEffect(() => {
     if (!name) return;
-    api<{ configText: string }>(`/api/instances/${name}/config`).then((data) => setConfigText(data.configText)).catch(() => setConfigText(''));
+    setMessage('');
+    setErrorMessage('');
+    api<{ configText: string; validation: ValidationData }>(`/api/instances/${name}/config`)
+      .then((data) => {
+        setConfigText(data.configText);
+        setOriginalText(data.configText);
+        setValidation(data.validation);
+      })
+      .catch(() => {
+        setConfigText('');
+        setOriginalText('');
+        setValidation(null);
+      });
+    loadBackups();
   }, [name]);
 
+  useEffect(() => {
+    if (!name) return;
+    if (configText === originalText && validation) return;
+    const handle = window.setTimeout(async () => {
+      setValidating(true);
+      try {
+        const result = await api<ValidationData>(`/api/instances/${name}/config/validate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: configText
+        });
+        setValidation(result);
+      } catch {
+        // 校验失败不致命
+      } finally {
+        setValidating(false);
+      }
+    }, 500);
+    return () => window.clearTimeout(handle);
+  }, [name, configText, originalText]);
+
+  const dirty = configText !== originalText;
+
   async function save() {
-    const result = await api<{ validation: unknown }>(`/api/instances/${name}/config`, {
-      method: 'PUT',
-      body: JSON.stringify({ configText, backupBeforeSave: true, recreateAfterSave: false })
-    });
-    setMessage(`保存成功：${JSON.stringify(result.validation)}`);
+    setSaving(true);
+    setMessage('');
+    setErrorMessage('');
+    try {
+      await api<{ validation: ValidationData }>(`/api/instances/${name}/config`, {
+        method: 'PUT',
+        body: JSON.stringify({ configText, backupBeforeSave: true, recreateAfterSave })
+      });
+      setOriginalText(configText);
+      setMessage(recreateAfterSave ? '已保存并重新创建容器' : '已保存（已自动备份原配置）');
+      await loadBackups();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function reset() {
+    setConfigText(originalText);
+    setMessage('');
+    setErrorMessage('');
+  }
+
+  async function backupNow() {
+    setMessage('');
+    setErrorMessage('');
+    try {
+      await api(`/api/instances/${name}/config/backup`, { method: 'POST' });
+      setMessage('已创建一份配置备份');
+      await loadBackups();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : '备份失败');
+    }
+  }
+
+  async function restore(backup: BackupItem) {
+    if (!window.confirm(`确认用 ${backup.id} 还原当前配置？当前内容会先被自动备份。`)) return;
+    setMessage('');
+    setErrorMessage('');
+    try {
+      await api(`/api/instances/${name}/config/restore`, {
+        method: 'POST',
+        body: JSON.stringify({ backupId: backup.id, recreateAfterRestore: false })
+      });
+      const data = await api<{ configText: string; validation: ValidationData }>(`/api/instances/${name}/config`);
+      setConfigText(data.configText);
+      setOriginalText(data.configText);
+      setValidation(data.validation);
+      setMessage(`已从 ${backup.id} 还原`);
+      await loadBackups();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : '还原失败');
+    }
+  }
+
+  async function removeBackup(backup: BackupItem) {
+    if (!window.confirm(`确认删除备份 ${backup.id}？该操作不可恢复。`)) return;
+    setMessage('');
+    setErrorMessage('');
+    try {
+      await api(`/api/backups/${encodeURI(backup.id)}`, { method: 'DELETE' });
+      await loadBackups();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : '删除失败');
+    }
   }
 
   if (!name) return <main className="content"><h2>请选择需要编辑的实例</h2></main>;
 
+  const errors = validation?.errors || [];
+  const warnings = validation?.warnings || [];
+  const summary = validation?.summary;
+
   return (
     <main className="content">
-      <h2>编辑配置：{name} / frpc.toml</h2>
+      <h2>
+        编辑配置：{name} / frpc.toml{' '}
+        <span>{validating ? '校验中…' : dirty ? '未保存' : '已同步'}</span>
+      </h2>
       <section className="editor-layout">
         <div className="panel editor-panel">
           <div className="panel-head">
             <h3>配置内容</h3>
-            <button className="primary" onClick={save}><Save size={16} />保存并备份</button>
+            <div className="row-actions">
+              <label className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={recreateAfterSave}
+                  onChange={(event) => setRecreateAfterSave(event.target.checked)}
+                  style={{ width: 'auto' }}
+                />
+                保存后重新创建容器
+              </label>
+              <button onClick={reset} disabled={!dirty || saving}>
+                <RotateCcw size={16} />重置
+              </button>
+              <button onClick={backupNow} disabled={saving}>
+                <Archive size={16} />立即备份
+              </button>
+              <button
+                className="primary"
+                onClick={save}
+                disabled={!dirty || saving || !!errors.length}
+              >
+                <Save size={16} />{saving ? '保存中…' : '保存并备份'}
+              </button>
+            </div>
           </div>
-          <textarea value={configText} onChange={(event) => setConfigText(event.target.value)} spellCheck={false} />
+          <textarea
+            value={configText}
+            onChange={(event) => setConfigText(event.target.value)}
+            spellCheck={false}
+          />
+          {message && <p className="check ok">{message}</p>}
+          {errorMessage && <p className="login-error">{errorMessage}</p>}
         </div>
         <aside className="side-stack">
-          <div className="panel success-panel">
-            <h3>保存前备份</h3>
-            <p>保存配置前会自动创建备份文件。</p>
+          <div className={errors.length ? 'panel' : 'panel success-panel'}>
+            <h3>校验结果</h3>
+            {!validation ? (
+              <p className="muted">等待校验…</p>
+            ) : errors.length === 0 ? (
+              <p className="check ok">配置合法，可保存</p>
+            ) : (
+              errors.map((item, index) => (
+                <p key={`err-${index}`} className="login-error" style={{ marginTop: 6 }}>{item}</p>
+              ))
+            )}
+            {warnings.map((item, index) => (
+              <p key={`warn-${index}`} className="check" style={{ color: '#a96400' }}>⚠ {item}</p>
+            ))}
           </div>
+          {summary && (
+            <div className="panel">
+              <h3>配置摘要</h3>
+              <div className="summary-table">
+                <span>服务端</span><strong>{summary.serverAddr || '--'}</strong>
+                <span>端口</span><strong>{summary.serverPort ?? '--'}</strong>
+                <span>认证方式</span><strong>{summary.authMethod || '--'}</strong>
+                <span>代理数量</span><strong>{summary.proxyCount}</strong>
+              </div>
+            </div>
+          )}
           <div className="panel">
-            <h3>校验提示</h3>
-            <p className="check ok">TOML 语法</p>
-            <p className="check ok">必填字段</p>
-            <p className="check">端口占用</p>
-            {message && <p className="muted">{message}</p>}
+            <h3>历史备份 <span className="muted">({backups.length})</span></h3>
+            {backups.length === 0 ? (
+              <p className="muted">暂无备份</p>
+            ) : (
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 8 }}>
+                {backups.map((backup) => (
+                  <li key={backup.id} style={{ borderBottom: '1px solid #edf2f7', paddingBottom: 8 }}>
+                    <div style={{ fontFamily: 'SFMono-Regular, Consolas, monospace', fontSize: 12 }}>
+                      {backup.id}
+                    </div>
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      {formatBackupTime(backup.mtime)} · {(backup.size / 1024).toFixed(1)} KB
+                    </div>
+                    <div className="row-actions" style={{ marginTop: 6 }}>
+                      <button onClick={() => restore(backup)}>还原</button>
+                      <button onClick={() => removeBackup(backup)}>
+                        <Trash2 size={14} />删除
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </aside>
       </section>
