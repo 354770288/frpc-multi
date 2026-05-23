@@ -213,7 +213,6 @@ export function Console({
           username={auth.username}
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
-          onRefresh={refreshAll}
           onLogout={onLogout}
           onOpenSystem={() => setPage('system')}
         />

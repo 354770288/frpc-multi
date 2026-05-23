@@ -23,17 +23,6 @@ import {
 } from '../lib/format';
 import type { Instance, Page, StatsMap, SystemInfo } from '../lib/types';
 
-const TONE_BADGE: Record<InstanceTone, string> = {
-  success:
-    'bg-[var(--color-success-soft)] text-[var(--color-success)] ring-1 ring-inset ring-[var(--color-success)]/20',
-  warning:
-    'bg-[var(--color-warning-soft)] text-[var(--color-warning)] ring-1 ring-inset ring-[var(--color-warning)]/20',
-  danger:
-    'bg-[var(--color-danger-soft)] text-[var(--color-danger)] ring-1 ring-inset ring-[var(--color-danger)]/20',
-  muted:
-    'bg-[var(--color-surface-muted)] text-[var(--color-fg-muted)] ring-1 ring-inset ring-[var(--color-border)]'
-};
-
 const TONE_DOT: Record<InstanceTone, string> = {
   success: 'bg-[var(--color-success)]',
   warning: 'bg-[var(--color-warning)]',
@@ -69,7 +58,6 @@ export function Overview({
   let running = 0;
   let stopped = 0;
   let error = 0;
-  let restartTotal = 0;
   let cpuTotal = 0;
   let memTotal = 0;
   let cpuSamples = 0;
@@ -81,7 +69,6 @@ export function Overview({
     else if ((state === 'exited' || state === 'dead') && stat?.exitCode && stat.exitCode !== 0)
       error += 1;
     else stopped += 1;
-    restartTotal += stat?.restartCount || 0;
     if (stat?.cpuPercent) {
       cpuTotal += parsePercent(stat.cpuPercent);
       cpuSamples += 1;
@@ -91,6 +78,7 @@ export function Overview({
       memSamples += 1;
     }
   }
+  const total = instances.length;
 
   const lower = keyword.toLowerCase();
   const filtered = lower
@@ -106,61 +94,48 @@ export function Overview({
 
   return (
     <main className="px-6 py-6 max-w-[1600px]">
-      <div className="mb-6">
+      <div className="mb-6 flex items-center gap-3">
         <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
           运行摘要
         </h2>
-        <p className="mt-1 text-[12px] text-[var(--color-fg-muted)]">
-          共 {instances.length} 个 frpc 实例
-          {!dockerAvailable && dockerError && (
-            <span className="ml-2 text-[var(--color-warning)]">· Docker：{dockerError}</span>
-          )}
-        </p>
+        {!dockerAvailable && dockerError && (
+          <span className="text-[12px] text-[var(--color-warning)]">
+            Docker：{dockerError}
+          </span>
+        )}
       </div>
 
-      <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
-        <MetricCard icon={<Server size={14} />} title="运行中" value={String(running)} />
-        <MetricCard icon={<AlertTriangle size={14} />} title="异常" value={String(error)} />
-        <MetricCard icon={<Square size={14} />} title="已停止" value={String(stopped)} />
-        <MetricCard icon={<RotateCcw size={14} />} title="累计重启" value={String(restartTotal)} />
+      <section className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3">
+        <MetricCard
+          icon={<Cpu size={14} />}
+          title="CPU"
+          value={cpuSamples ? `${cpuTotal.toFixed(1)}%` : '—'}
+        />
         <MetricCard
           icon={<MemoryStick size={14} />}
           title="内存"
           value={memSamples ? `${memTotal.toFixed(1)}%` : '—'}
         />
         <MetricCard
-          icon={<Cpu size={14} />}
-          title="CPU"
-          value={cpuSamples ? `${cpuTotal.toFixed(1)}%` : '—'}
+          icon={<HardDrive size={14} />}
+          title="磁盘"
+          value={system ? `${diskRatio.toFixed(0)}%` : '—'}
+          hint={
+            system
+              ? `${bytesToHuman(system.disk.used)} / ${bytesToHuman(system.disk.total)}`
+              : undefined
+          }
         />
       </section>
 
-      <section className="mb-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <div className="flex items-center gap-3 mb-3">
-          <HardDrive size={14} className="text-[var(--color-fg-muted)]" />
-          <span className="text-[13px] font-medium text-[var(--color-fg)]">磁盘使用</span>
-          <span className="ml-auto text-[12px] text-[var(--color-fg-muted)] tabular-nums">
-            {system
-              ? `${bytesToHuman(system.disk.used)} / ${bytesToHuman(system.disk.total)}`
-              : '—'}
-          </span>
-        </div>
-        <div
-          role="progressbar"
-          aria-label="磁盘使用率"
-          aria-valuenow={Math.round(diskRatio)}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          className="relative h-1.5 rounded-full bg-[var(--color-surface-muted)] overflow-hidden"
-        >
-          <div
-            className="absolute inset-y-0 left-0 bg-[var(--color-accent)] rounded-full transition-[width]"
-            style={{ width: `${Math.min(100, Math.max(0, diskRatio)).toFixed(1)}%` }}
-          />
-        </div>
-        <div className="mt-2 text-[12px] tabular-nums text-[var(--color-fg-muted)]">
-          {system ? `${diskRatio.toFixed(0)}%` : '—'}
-        </div>
+      <section className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+        <MetricCard icon={<Server size={14} />} title="运行中" value={`${running}/${total}`} />
+        <MetricCard
+          icon={<AlertTriangle size={14} />}
+          title="异常"
+          value={`${error}/${total}`}
+        />
+        <MetricCard icon={<Square size={14} />} title="已停止" value={`${stopped}/${total}`} />
       </section>
 
       <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
@@ -224,11 +199,11 @@ export function Overview({
                     </Td>
                     <Td>
                       <span
-                        className={`inline-flex items-center gap-1.5 h-[22px] px-2 rounded-full text-[11px] font-medium ${TONE_BADGE[badge.tone]}`}
-                      >
-                        <span className={`w-1.5 h-1.5 rounded-full ${TONE_DOT[badge.tone]}`} />
-                        {badge.label}
-                      </span>
+                        role="img"
+                        aria-label={badge.label}
+                        title={badge.label}
+                        className={`inline-block w-2.5 h-2.5 rounded-full align-middle ${TONE_DOT[badge.tone]}`}
+                      />
                     </Td>
                     <Td align="right" mono>
                       {stat?.cpuPercent || '—'}

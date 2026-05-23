@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, LogOut, Menu, RefreshCw, Settings } from 'lucide-react';
+import { ChevronDown, LogOut, Menu, Settings } from 'lucide-react';
 
 export function Topbar({
   pageTitle,
   username,
   sidebarCollapsed,
   onToggleSidebar,
-  onRefresh,
   onLogout,
   onOpenSystem
 }: {
@@ -14,7 +13,6 @@ export function Topbar({
   username: string;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
-  onRefresh: () => void;
   onLogout: () => void;
   onOpenSystem: () => void;
 }) {
@@ -88,15 +86,6 @@ export function Topbar({
       <div className="text-[13px] font-medium text-[var(--color-fg)]">{pageTitle}</div>
 
       <div className="ml-auto flex items-center gap-2">
-        <button
-          onClick={onRefresh}
-          title="刷新"
-          aria-label="刷新数据"
-          className="grid place-items-center w-8 h-8 rounded-md text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
-        >
-          <RefreshCw size={14} />
-        </button>
-
         <div className="relative">
           <button
             ref={triggerRef}

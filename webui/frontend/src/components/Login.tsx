@@ -46,15 +46,15 @@ export function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) 
   return (
     <div className="min-h-screen grid place-items-center px-4 py-8 bg-[var(--color-bg)]">
       <div className="w-full max-w-[380px]">
-        <div className="flex items-center gap-2.5 mb-6">
-          <div className="grid place-items-center w-9 h-9 rounded-md bg-[var(--color-fg)] text-[var(--color-bg)]">
-            <Boxes size={18} />
+        <div className="flex flex-col items-center gap-3 mb-8">
+          <div className="grid place-items-center w-14 h-14 rounded-xl bg-[var(--color-fg)] text-[var(--color-bg)]">
+            <Boxes size={28} />
           </div>
-          <div className="leading-tight">
-            <div className="text-[14px] font-semibold text-[var(--color-fg)]">
+          <div className="text-center">
+            <div className="text-[20px] font-semibold tracking-tight text-[var(--color-fg)]">
               frpc 多实例管理
             </div>
-            <div className="text-[11px] text-[var(--color-fg-muted)]">WebUI 控制台</div>
+            <div className="mt-1 text-[12px] text-[var(--color-fg-muted)]">WebUI 控制台</div>
           </div>
         </div>
 
@@ -68,7 +68,7 @@ export function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) 
               autoComplete="username"
               value={username}
               onChange={(event) => setUsername(event.target.value)}
-              placeholder="admin"
+              placeholder="请输入用户名"
             />
           </Field>
           <Field label="密码">
@@ -96,16 +96,6 @@ export function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) 
             {loading ? '登录中…' : '登录'}
           </Button>
         </form>
-
-        <p className="mt-4 text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
-          默认凭证由{' '}
-          <code className="font-mono text-[10px] text-[var(--color-fg)]">.env</code> 中的
-          WEBUI_USERNAME / WEBUI_PASSWORD 控制；首次修改后持久化到{' '}
-          <code className="font-mono text-[10px] text-[var(--color-fg)]">
-            .webui/credentials.json
-          </code>
-          。
-        </p>
       </div>
     </div>
   );
