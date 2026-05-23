@@ -57,7 +57,7 @@ export function CreateInstance({
     <main className="px-6 py-6 max-w-[1600px]">
       <button
         onClick={onCancel}
-        className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] transition-colors"
+        className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] rounded-sm"
       >
         <ArrowLeft size={13} />
         返回总览

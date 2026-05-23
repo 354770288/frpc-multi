@@ -145,7 +145,14 @@ export function Overview({
               : '—'}
           </span>
         </div>
-        <div className="relative h-1.5 rounded-full bg-[var(--color-surface-muted)] overflow-hidden">
+        <div
+          role="progressbar"
+          aria-label="磁盘使用率"
+          aria-valuenow={Math.round(diskRatio)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          className="relative h-1.5 rounded-full bg-[var(--color-surface-muted)] overflow-hidden"
+        >
           <div
             className="absolute inset-y-0 left-0 bg-[var(--color-accent)] rounded-full transition-[width]"
             style={{ width: `${Math.min(100, Math.max(0, diskRatio)).toFixed(1)}%` }}
@@ -161,9 +168,10 @@ export function Overview({
           <h3 className="text-[13px] font-semibold text-[var(--color-fg)]">实例列表</h3>
           <div className="ml-auto flex items-center gap-2">
             <div className="flex items-center gap-2 px-2.5 py-1.5 w-[240px] rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] focus-within:border-[var(--color-accent)] focus-within:ring-2 focus-within:ring-[var(--color-accent)]/15">
-              <Search size={13} className="text-[var(--color-fg-subtle)]" />
+              <Search size={13} className="text-[var(--color-fg-subtle)]" aria-hidden="true" />
               <input
                 placeholder="搜索实例名"
+                aria-label="搜索实例名"
                 value={keyword}
                 onChange={(event) => setKeyword(event.target.value)}
                 className="flex-1 min-w-0 bg-transparent outline-none text-[12px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-subtle)]"
@@ -171,7 +179,7 @@ export function Overview({
             </div>
             <button
               onClick={() => onPage('create')}
-              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white text-[12px] font-medium transition-colors"
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)]"
             >
               <Plus size={13} />
               创建实例
@@ -209,7 +217,7 @@ export function Overview({
                           onSelect(item.name);
                           onPage('detail');
                         }}
-                        className="text-[13px] font-medium text-[var(--color-fg)] hover:text-[var(--color-accent)] transition-colors"
+                        className="rounded-sm text-[13px] font-medium text-[var(--color-fg)] hover:text-[var(--color-accent)] hover:underline transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:underline focus-visible:text-[var(--color-accent)]"
                       >
                         {item.displayName || item.name}
                       </button>
@@ -352,13 +360,19 @@ function IconAction({
   tone: 'default' | 'primary';
 }) {
   const base =
-    'grid place-items-center w-7 h-7 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+    'grid place-items-center w-7 h-7 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]';
   const toneCls =
     tone === 'primary'
       ? 'text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]'
       : 'text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)]';
   return (
-    <button onClick={onClick} disabled={disabled} title={label} className={`${base} ${toneCls}`}>
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      className={`${base} ${toneCls}`}
+    >
       {children}
     </button>
   );
@@ -389,7 +403,10 @@ function RowMenu({
       setOpen(false);
     }
     function handleEsc(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key === 'Escape') {
+        setOpen(false);
+        btnRef.current?.focus();
+      }
     }
     function handleScroll() {
       setOpen(false);
@@ -405,6 +422,36 @@ function RowMenu({
       window.removeEventListener('resize', handleScroll);
     };
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !menuRef.current) return;
+    const first = menuRef.current.querySelector<HTMLButtonElement>('[role="menuitem"]');
+    first?.focus();
+  }, [open]);
+
+  function handleMenuKey(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (!menuRef.current) return;
+    const items = Array.from(
+      menuRef.current.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')
+    );
+    if (items.length === 0) return;
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      items[(current + 1 + items.length) % items.length].focus();
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      items[(current - 1 + items.length) % items.length].focus();
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      items[0].focus();
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      items[items.length - 1].focus();
+    } else if (event.key === 'Tab') {
+      setOpen(false);
+    }
+  }
 
   function toggle() {
     if (open) {
@@ -427,13 +474,19 @@ function RowMenu({
         ref={btnRef}
         onClick={toggle}
         title="更多操作"
-        className="grid place-items-center w-7 h-7 rounded-md text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)] transition-colors"
+        aria-label="更多操作"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="grid place-items-center w-7 h-7 rounded-md text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
       >
         <MoreHorizontal size={14} />
       </button>
       {open && pos && (
         <div
           ref={menuRef}
+          role="menu"
+          aria-label="更多操作菜单"
+          onKeyDown={handleMenuKey}
           style={{ position: 'fixed', top: pos.top, right: pos.right }}
           className="min-w-[140px] py-1 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md shadow-lg z-50"
         >
@@ -481,8 +534,9 @@ function MenuItem({
 }) {
   return (
     <button
+      role="menuitem"
       onClick={onClick}
-      className={`flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-left hover:bg-[var(--color-surface-muted)] ${
+      className={`flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-left hover:bg-[var(--color-surface-muted)] focus-visible:outline-none focus-visible:bg-[var(--color-surface-muted)] ${
         danger ? 'text-[var(--color-danger)]' : 'text-[var(--color-fg)]'
       }`}
     >

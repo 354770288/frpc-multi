@@ -128,7 +128,7 @@ export function ConfigEditor({
                   type="checkbox"
                   checked={recreateAfterSave}
                   onChange={(event) => setRecreateAfterSave(event.target.checked)}
-                  className="w-3.5 h-3.5 accent-[var(--color-accent)]"
+                  className="w-3.5 h-3.5 accent-[var(--color-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)] rounded-sm"
                 />
                 保存后重新创建容器
               </label>
@@ -157,35 +157,37 @@ export function ConfigEditor({
 
         <aside className="flex flex-col gap-4">
           <Panel title="校验结果">
-            {!validation ? (
-              <p className="text-[12px] text-[var(--color-fg-muted)]">等待校验…</p>
-            ) : errors.length === 0 && warnings.length === 0 ? (
-              <div className="flex items-start gap-2 text-[12px] text-[var(--color-success)]">
-                <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
-                <span>配置合法，可保存</span>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {errors.map((item, index) => (
-                  <div
-                    key={`err-${index}`}
-                    className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-danger-soft)] text-[12px] text-[var(--color-danger)]"
-                  >
-                    <XCircle size={13} className="mt-0.5 shrink-0" />
-                    <span>{item}</span>
-                  </div>
-                ))}
-                {warnings.map((item, index) => (
-                  <div
-                    key={`warn-${index}`}
-                    className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-warning-soft)] text-[12px] text-[var(--color-warning)]"
-                  >
-                    <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-                    <span>{item}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            <div role="status" aria-live="polite">
+              {!validation ? (
+                <p className="text-[12px] text-[var(--color-fg-muted)]">等待校验…</p>
+              ) : errors.length === 0 && warnings.length === 0 ? (
+                <div className="flex items-start gap-2 text-[12px] text-[var(--color-success)]">
+                  <CheckCircle2 size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span>配置合法，可保存</span>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {errors.map((item, index) => (
+                    <div
+                      key={`err-${index}`}
+                      className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-danger-soft)] text-[12px] text-[var(--color-danger)]"
+                    >
+                      <XCircle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                  {warnings.map((item, index) => (
+                    <div
+                      key={`warn-${index}`}
+                      className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-warning-soft)] text-[12px] text-[var(--color-warning)]"
+                    >
+                      <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </Panel>
 
           {summary && (

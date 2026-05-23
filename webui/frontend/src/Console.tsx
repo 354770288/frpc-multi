@@ -195,6 +195,12 @@ export function Console({
 
   return (
     <div className="flex min-h-screen">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[100] focus:px-3 focus:py-1.5 focus:rounded-md focus:bg-[var(--color-accent)] focus:text-white focus:text-[12px] focus:font-medium focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-white"
+      >
+        跳到主内容
+      </a>
       <Sidebar
         page={page}
         onPage={setPage}
@@ -211,7 +217,9 @@ export function Console({
           onLogout={onLogout}
           onOpenSystem={() => setPage('system')}
         />
-        <div className="flex-1 min-w-0">{body}</div>
+        <div id="main-content" tabIndex={-1} className="flex-1 min-w-0 outline-none">
+          {body}
+        </div>
       </div>
       <ToastStack toasts={toasts} onClose={closeToast} />
     </div>

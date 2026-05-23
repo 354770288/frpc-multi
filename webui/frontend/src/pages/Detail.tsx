@@ -51,7 +51,7 @@ export function Detail({
     <main className="px-6 py-6 max-w-[1600px]">
       <button
         onClick={() => onPage('overview')}
-        className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] transition-colors"
+        className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] rounded-sm"
       >
         <ArrowLeft size={13} />
         返回总览
@@ -86,11 +86,12 @@ export function Detail({
           title="最近日志"
           actions={
             <div className="flex items-center gap-2 px-2.5 py-1.5 w-[220px] rounded-md border border-[var(--color-border)] focus-within:border-[var(--color-accent)] focus-within:ring-2 focus-within:ring-[var(--color-accent)]/15">
-              <Search size={12} className="text-[var(--color-fg-subtle)]" />
+              <Search size={12} className="text-[var(--color-fg-subtle)]" aria-hidden="true" />
               <input
                 value={keyword}
                 onChange={(event) => setKeyword(event.target.value)}
                 placeholder="过滤日志"
+                aria-label="过滤日志"
                 className="flex-1 min-w-0 bg-transparent outline-none text-[12px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-subtle)]"
               />
             </div>

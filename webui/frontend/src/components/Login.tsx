@@ -82,8 +82,11 @@ export function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) 
           </Field>
 
           {error && (
-            <div className="flex items-start gap-2 p-2.5 rounded-md bg-[var(--color-danger-soft)] text-[12px] text-[var(--color-danger)]">
-              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            <div
+              role="alert"
+              className="flex items-start gap-2 p-2.5 rounded-md bg-[var(--color-danger-soft)] text-[12px] text-[var(--color-danger)]"
+            >
+              <AlertCircle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
               <span>{error}</span>
             </div>
           )}

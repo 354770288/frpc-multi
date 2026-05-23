@@ -38,7 +38,7 @@ export function Sidebar({
         )}
       </div>
 
-      <nav className="flex-1 px-2 py-4 flex flex-col gap-1">
+      <nav aria-label="主导航" className="flex-1 px-2 py-4 flex flex-col gap-1">
         {items.map(([key, Icon, label]) => {
           const active = page === key;
           return (
@@ -46,7 +46,9 @@ export function Sidebar({
               key={key}
               onClick={() => onPage(key)}
               title={collapsed ? label : undefined}
-              className={`flex items-center gap-3 rounded-md px-3 py-2 text-[13px] transition-colors ${
+              aria-label={collapsed ? label : undefined}
+              aria-current={active ? 'page' : undefined}
+              className={`flex items-center gap-3 rounded-md px-3 py-2 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
                 collapsed ? 'justify-center px-0' : ''
               } ${
                 active

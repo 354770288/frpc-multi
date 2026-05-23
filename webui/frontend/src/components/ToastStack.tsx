@@ -21,22 +21,29 @@ export function ToastStack({
   onClose: (id: number) => void;
 }) {
   return (
-    <div className="fixed top-4 right-4 z-[1000] flex flex-col gap-2 max-w-[380px]">
+    <div
+      aria-label="通知"
+      className="fixed top-4 right-4 z-[1000] flex flex-col gap-2 max-w-[380px]"
+    >
       {toasts.map((t) => {
         const Icon = t.kind === 'success' ? CheckCircle2 : t.kind === 'error' ? XCircle : Info;
+        const isError = t.kind === 'error';
         return (
           <div
             key={t.id}
+            role={isError ? 'alert' : 'status'}
+            aria-live={isError ? 'assertive' : 'polite'}
             className={`flex items-start gap-2.5 pl-3 pr-2 py-2.5 rounded-md bg-[var(--color-surface)] border border-[var(--color-border)] border-l-[3px] ${ACCENT[t.kind]} shadow-md`}
           >
-            <Icon size={14} className={`mt-0.5 shrink-0 ${ICON_COLOR[t.kind]}`} />
+            <Icon size={14} className={`mt-0.5 shrink-0 ${ICON_COLOR[t.kind]}`} aria-hidden="true" />
             <span className="flex-1 text-[12px] text-[var(--color-fg)] leading-relaxed">
               {t.text}
             </span>
             <button
               onClick={() => onClose(t.id)}
               title="关闭"
-              className="grid place-items-center w-5 h-5 rounded text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)] transition-colors"
+              aria-label="关闭通知"
+              className="grid place-items-center w-5 h-5 rounded text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
             >
               <X size={12} />
             </button>
