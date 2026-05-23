@@ -194,14 +194,14 @@ export function Console({
             : '系统';
 
   return (
-    <div className="app-shell">
+    <div className="flex min-h-screen">
       <Sidebar
         page={page}
         onPage={setPage}
         system={system}
         collapsed={sidebarCollapsed}
       />
-      <div className="main-shell">
+      <div className="flex-1 min-w-0 flex flex-col">
         <Topbar
           pageTitle={pageTitle}
           username={auth.username}
@@ -211,7 +211,7 @@ export function Console({
           onLogout={onLogout}
           onOpenSystem={() => setPage('system')}
         />
-        {body}
+        <div className="flex-1 min-w-0">{body}</div>
       </div>
       <ToastStack toasts={toasts} onClose={closeToast} />
     </div>

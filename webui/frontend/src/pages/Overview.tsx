@@ -376,30 +376,67 @@ function RowMenu({
   deleting: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    function handle(event: MouseEvent) {
-      if (!ref.current) return;
-      if (ref.current.contains(event.target as Node)) return;
+    function handleClick(event: MouseEvent) {
+      const target = event.target as Node;
+      if (btnRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
       setOpen(false);
     }
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
+    function handleEsc(event: KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false);
+    }
+    function handleScroll() {
+      setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleEsc);
+    window.addEventListener('scroll', handleScroll, true);
+    window.addEventListener('resize', handleScroll);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleEsc);
+      window.removeEventListener('scroll', handleScroll, true);
+      window.removeEventListener('resize', handleScroll);
+    };
   }, [open]);
 
+  function toggle() {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const rect = btnRef.current?.getBoundingClientRect();
+    if (rect) {
+      setPos({
+        top: rect.bottom + 4,
+        right: window.innerWidth - rect.right
+      });
+    }
+    setOpen(true);
+  }
+
   return (
-    <div className="relative" ref={ref}>
+    <>
       <button
-        onClick={() => setOpen((v) => !v)}
+        ref={btnRef}
+        onClick={toggle}
         title="更多操作"
         className="grid place-items-center w-7 h-7 rounded-md text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)] transition-colors"
       >
         <MoreHorizontal size={14} />
       </button>
-      {open && (
-        <div className="absolute right-0 top-[calc(100%+4px)] min-w-[140px] py-1 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md shadow-lg z-10">
+      {open && pos && (
+        <div
+          ref={menuRef}
+          style={{ position: 'fixed', top: pos.top, right: pos.right }}
+          className="min-w-[140px] py-1 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md shadow-lg z-50"
+        >
           <MenuItem
             onClick={() => {
               setOpen(false);
@@ -429,7 +466,7 @@ function RowMenu({
           </MenuItem>
         </div>
       )}
-    </div>
+    </>
   );
 }
 

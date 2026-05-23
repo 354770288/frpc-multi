@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
-import { RotateCcw, Save } from 'lucide-react';
+import { CheckCircle2, RotateCcw, Save, XCircle, AlertTriangle } from 'lucide-react';
 import { api } from '../lib/api';
+import { Badge } from '../components/ui/Badge';
+import { Button } from '../components/ui/Button';
+import { Panel } from '../components/ui/Panel';
+import { Textarea } from '../components/ui/Input';
 import type { ToastKind, ValidationData } from '../lib/types';
 
 export function ConfigEditor({
@@ -72,9 +76,12 @@ export function ConfigEditor({
   }
 
   async function reset() {
-    if (!window.confirm('确认将编辑器内容覆盖为默认 frpc 配置？该操作仅修改编辑器，未保存前不会写入磁盘。')) return;
+    if (!window.confirm('确认将编辑器内容覆盖为默认 frpc 配置？该操作仅修改编辑器，未保存前不会写入磁盘。'))
+      return;
     try {
-      const data = await api<{ configText: string }>(`/api/config/default?name=${encodeURIComponent(name)}`);
+      const data = await api<{ configText: string }>(
+        `/api/config/default?name=${encodeURIComponent(name)}`
+      );
       setConfigText(data.configText);
       toast('info', '已载入默认配置，请确认后点击保存');
     } catch (err) {
@@ -84,8 +91,8 @@ export function ConfigEditor({
 
   if (!name)
     return (
-      <main className="content">
-        <h2>请选择需要编辑的实例</h2>
+      <main className="px-6 py-6">
+        <h2 className="text-[18px] font-semibold text-[var(--color-fg)]">请选择需要编辑的实例</h2>
       </main>
     );
 
@@ -93,82 +100,127 @@ export function ConfigEditor({
   const warnings = validation?.warnings || [];
   const summary = validation?.summary;
 
+  let stateBadge: { tone: 'success' | 'warning' | 'danger' | 'muted'; label: string };
+  if (validating) stateBadge = { tone: 'muted', label: '校验中…' };
+  else if (errors.length) stateBadge = { tone: 'danger', label: `${errors.length} 个错误` };
+  else if (dirty) stateBadge = { tone: 'warning', label: '未保存' };
+  else stateBadge = { tone: 'success', label: '已同步' };
+
   return (
-    <main className="content">
-      <h2>
-        编辑配置：{name} / frpc.toml{' '}
-        <span>{validating ? '校验中…' : dirty ? '未保存' : '已同步'}</span>
-      </h2>
-      <section className="editor-layout">
-        <div className="panel editor-panel">
-          <div className="panel-head">
-            <h3>配置内容</h3>
-            <div className="row-actions">
-              <label className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+    <main className="px-6 py-6 max-w-[1600px]">
+      <div className="mb-6 flex items-center gap-3">
+        <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
+          编辑配置
+        </h2>
+        <span className="text-[12px] text-[var(--color-fg-muted)] font-mono">
+          {name} / frpc.toml
+        </span>
+        <Badge tone={stateBadge.tone}>{stateBadge.label}</Badge>
+      </div>
+
+      <section className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4">
+        <Panel
+          title="配置内容"
+          actions={
+            <>
+              <label className="inline-flex items-center gap-1.5 text-[12px] text-[var(--color-fg-muted)] cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={recreateAfterSave}
                   onChange={(event) => setRecreateAfterSave(event.target.checked)}
-                  style={{ width: 'auto' }}
+                  className="w-3.5 h-3.5 accent-[var(--color-accent)]"
                 />
                 保存后重新创建容器
               </label>
-              <button onClick={reset} disabled={saving}>
-                <RotateCcw size={16} />重置为默认
-              </button>
-              <button
-                className="primary"
+              <Button onClick={reset} disabled={saving}>
+                <RotateCcw size={13} />
+                重置为默认
+              </Button>
+              <Button
+                variant="primary"
                 onClick={save}
                 disabled={!dirty || saving || !!errors.length}
               >
-                <Save size={16} />
+                <Save size={13} />
                 {saving ? '保存中…' : '保存'}
-              </button>
-            </div>
-          </div>
-          <textarea
+              </Button>
+            </>
+          }
+        >
+          <Textarea
             value={configText}
             onChange={(event) => setConfigText(event.target.value)}
             spellCheck={false}
+            className="min-h-[520px]"
           />
-        </div>
-        <aside className="side-stack">
-          <div className={errors.length ? 'panel' : 'panel success-panel'}>
-            <h3>校验结果</h3>
+        </Panel>
+
+        <aside className="flex flex-col gap-4">
+          <Panel title="校验结果">
             {!validation ? (
-              <p className="muted">等待校验…</p>
-            ) : errors.length === 0 ? (
-              <p className="check ok">配置合法，可保存</p>
-            ) : (
-              errors.map((item, index) => (
-                <p key={`err-${index}`} className="login-error" style={{ marginTop: 6 }}>
-                  {item}
-                </p>
-              ))
-            )}
-            {warnings.map((item, index) => (
-              <p key={`warn-${index}`} className="check" style={{ color: '#a96400' }}>
-                ⚠ {item}
-              </p>
-            ))}
-          </div>
-          {summary && (
-            <div className="panel">
-              <h3>配置摘要</h3>
-              <div className="summary-table">
-                <span>服务端</span>
-                <strong>{summary.serverAddr || '--'}</strong>
-                <span>端口</span>
-                <strong>{summary.serverPort ?? '--'}</strong>
-                <span>认证方式</span>
-                <strong>{summary.authMethod || '--'}</strong>
-                <span>代理数量</span>
-                <strong>{summary.proxyCount}</strong>
+              <p className="text-[12px] text-[var(--color-fg-muted)]">等待校验…</p>
+            ) : errors.length === 0 && warnings.length === 0 ? (
+              <div className="flex items-start gap-2 text-[12px] text-[var(--color-success)]">
+                <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+                <span>配置合法，可保存</span>
               </div>
-            </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {errors.map((item, index) => (
+                  <div
+                    key={`err-${index}`}
+                    className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-danger-soft)] text-[12px] text-[var(--color-danger)]"
+                  >
+                    <XCircle size={13} className="mt-0.5 shrink-0" />
+                    <span>{item}</span>
+                  </div>
+                ))}
+                {warnings.map((item, index) => (
+                  <div
+                    key={`warn-${index}`}
+                    className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-warning-soft)] text-[12px] text-[var(--color-warning)]"
+                  >
+                    <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                    <span>{item}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+
+          {summary && (
+            <Panel title="配置摘要">
+              <dl className="grid grid-cols-1 gap-3 text-[12px]">
+                <SummaryItem label="服务端" value={summary.serverAddr} mono />
+                <SummaryItem label="端口" value={summary.serverPort} mono />
+                <SummaryItem label="认证方式" value={summary.authMethod} />
+                <SummaryItem label="代理数量" value={summary.proxyCount} />
+              </dl>
+            </Panel>
           )}
         </aside>
       </section>
     </main>
+  );
+}
+
+function SummaryItem({
+  label,
+  value,
+  mono = false
+}: {
+  label: string;
+  value?: string | number | null;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <dt className="text-[var(--color-fg-muted)]">{label}</dt>
+      <dd
+        className={`text-[var(--color-fg)] font-medium ${mono ? 'font-mono tabular-nums' : ''}`}
+      >
+        {value ?? '—'}
+      </dd>
+    </div>
   );
 }

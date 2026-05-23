@@ -2,6 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { Key, ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
 import { bytesToHuman } from '../lib/format';
+import { Button } from '../components/ui/Button';
+import { Field } from '../components/ui/Field';
+import { Input } from '../components/ui/Input';
+import { Panel } from '../components/ui/Panel';
 import type { AuthState, SystemInfo, ToastKind } from '../lib/types';
 
 export function SystemPage({
@@ -55,7 +59,11 @@ export function SystemPage({
           })
         }
       );
-      onPasswordChanged({ token: data.token, username: data.username, expiresAt: data.expiresAt });
+      onPasswordChanged({
+        token: data.token,
+        username: data.username,
+        expiresAt: data.expiresAt
+      });
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
@@ -67,86 +75,124 @@ export function SystemPage({
     }
   }
 
-  const diskRatio = system && system.disk.total > 0 ? (system.disk.used / system.disk.total) * 100 : 0;
+  const diskRatio =
+    system && system.disk.total > 0 ? (system.disk.used / system.disk.total) * 100 : 0;
 
   return (
-    <main className="content">
-      <h2>系统设置</h2>
-      <section className="editor-layout">
-        <div className="panel">
-          <h3>系统信息</h3>
-          <div className="summary-table">
-            <span>面板版本</span>
-            <strong>{system?.version || '--'}</strong>
-            <span>frpc 镜像</span>
-            <strong>{system?.frpImage || '--'}</strong>
-            <span>frpc 版本</span>
-            <strong>{system?.frpVersion || '--'}</strong>
-            <span>Docker 版本</span>
-            <strong>{system?.dockerVersion || '未连接'}</strong>
-            <span>项目目录</span>
-            <strong>{system?.projectDir || '--'}</strong>
-            <span>面板地址</span>
-            <strong>{system ? `${system.webuiHost}:${system.webuiPort}` : '--'}</strong>
-            <span>当前登录</span>
-            <strong>{system?.username || '--'}</strong>
-            <span>磁盘占用</span>
-            <strong>
-              {system
-                ? `${diskRatio.toFixed(1)}%（${bytesToHuman(system.disk.used)} / ${bytesToHuman(system.disk.total)}）`
-                : '--'}
-            </strong>
-          </div>
-        </div>
-        <aside className="side-stack">
-          <form className="panel create-panel" onSubmit={submit}>
-            <h3>
-              <Key size={16} style={{ verticalAlign: '-2px', marginRight: 6 }} />
-              修改管理员账号密码
-            </h3>
-            <label>当前用户名</label>
-            <input
-              value={currentUsername}
-              onChange={(event) => setCurrentUsername(event.target.value)}
-              autoComplete="username"
+    <main className="px-6 py-6 max-w-[1600px]">
+      <h2 className="mb-6 text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
+        系统设置
+      </h2>
+
+      <section className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-4">
+        <Panel title="系统信息">
+          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-[12px]">
+            <InfoItem label="面板版本" value={system?.version} mono />
+            <InfoItem label="frpc 镜像" value={system?.frpImage} mono />
+            <InfoItem label="frpc 版本" value={system?.frpVersion} mono />
+            <InfoItem label="Docker 版本" value={system?.dockerVersion || '未连接'} mono />
+            <InfoItem label="项目目录" value={system?.projectDir} mono />
+            <InfoItem
+              label="面板地址"
+              value={system ? `${system.webuiHost}:${system.webuiPort}` : undefined}
+              mono
             />
-            <label>当前密码</label>
-            <input
-              type="password"
-              value={currentPassword}
-              onChange={(event) => setCurrentPassword(event.target.value)}
-              autoComplete="current-password"
+            <InfoItem label="当前登录" value={system?.username} />
+            <InfoItem
+              label="磁盘占用"
+              value={
+                system
+                  ? `${diskRatio.toFixed(1)}%（${bytesToHuman(system.disk.used)} / ${bytesToHuman(system.disk.total)}）`
+                  : undefined
+              }
             />
-            <label>新用户名（默认沿用当前用户名）</label>
-            <input
-              value={newUsername}
-              onChange={(event) => setNewUsername(event.target.value)}
-              autoComplete="username"
-            />
-            <label>新密码（至少 8 位）</label>
-            <input
-              type="password"
-              value={newPassword}
-              onChange={(event) => setNewPassword(event.target.value)}
-              autoComplete="new-password"
-            />
-            <label>确认新密码</label>
-            <input
-              type="password"
-              value={confirmPassword}
-              onChange={(event) => setConfirmPassword(event.target.value)}
-              autoComplete="new-password"
-            />
-            <button className="primary" type="submit" disabled={submitting}>
-              <ShieldCheck size={16} />
-              {submitting ? '提交中…' : '保存修改'}
-            </button>
-            <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
-              新凭据保存到 .webui/credentials.json（PBKDF2-SHA256 哈希），优先级高于 .env 中的默认账号。
-            </p>
-          </form>
+          </dl>
+        </Panel>
+
+        <aside>
+          <Panel
+            title={
+              <span className="inline-flex items-center gap-1.5">
+                <Key size={13} />
+                修改管理员账号密码
+              </span>
+            }
+          >
+            <form onSubmit={submit} className="flex flex-col gap-3">
+              <Field label="当前用户名">
+                <Input
+                  value={currentUsername}
+                  onChange={(event) => setCurrentUsername(event.target.value)}
+                  autoComplete="username"
+                />
+              </Field>
+              <Field label="当前密码">
+                <Input
+                  type="password"
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  autoComplete="current-password"
+                />
+              </Field>
+              <Field label="新用户名" hint="留空将沿用当前用户名">
+                <Input
+                  value={newUsername}
+                  onChange={(event) => setNewUsername(event.target.value)}
+                  autoComplete="username"
+                />
+              </Field>
+              <Field label="新密码" hint="至少 8 位">
+                <Input
+                  type="password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  autoComplete="new-password"
+                />
+              </Field>
+              <Field label="确认新密码">
+                <Input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  autoComplete="new-password"
+                />
+              </Field>
+              <Button variant="primary" type="submit" disabled={submitting} className="mt-1">
+                <ShieldCheck size={13} />
+                {submitting ? '提交中…' : '保存修改'}
+              </Button>
+              <p className="text-[11px] text-[var(--color-fg-muted)] leading-relaxed">
+                新凭据保存到{' '}
+                <code className="font-mono text-[10px] text-[var(--color-fg)]">
+                  .webui/credentials.json
+                </code>{' '}
+                （PBKDF2-SHA256 哈希），优先级高于 .env 中的默认账号。
+              </p>
+            </form>
+          </Panel>
         </aside>
       </section>
     </main>
+  );
+}
+
+function InfoItem({
+  label,
+  value,
+  mono = false
+}: {
+  label: string;
+  value?: string | number | null;
+  mono?: boolean;
+}) {
+  return (
+    <div>
+      <dt className="text-[var(--color-fg-muted)] mb-1">{label}</dt>
+      <dd
+        className={`text-[var(--color-fg)] font-medium break-all ${mono ? 'font-mono text-[12px]' : ''}`}
+      >
+        {value ?? '—'}
+      </dd>
+    </div>
   );
 }

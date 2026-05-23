@@ -6,21 +6,6 @@ export function parsePercent(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export function instanceStateLabel(stat: InstanceStats | undefined, enabled: boolean): { label: string; cls: string } {
-  if (!stat || !stat.state) return { label: enabled ? '未运行' : '未启用', cls: 'status stopped' };
-  const state = stat.state;
-  if (state === 'running') return { label: '运行中', cls: 'status ok' };
-  if (state === 'restarting') return { label: '重启中', cls: 'status' };
-  if (state === 'paused') return { label: '已暂停', cls: 'status' };
-  if (state === 'exited' || state === 'dead') {
-    if (stat.exitCode !== null && stat.exitCode !== 0) {
-      return { label: `异常退出 (${stat.exitCode})`, cls: 'status' };
-    }
-    return { label: '已停止', cls: 'status stopped' };
-  }
-  return { label: stat.status || state, cls: 'status' };
-}
-
 export type InstanceTone = 'success' | 'warning' | 'danger' | 'muted';
 
 export function instanceStateBadge(
