@@ -1,9 +1,12 @@
-import { useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import {
   AlertTriangle,
   Cpu,
   HardDrive,
   MemoryStick,
+  MoreHorizontal,
+  Pause,
+  Play,
   Plus,
   RotateCcw,
   Search,
@@ -12,8 +15,31 @@ import {
   Trash2
 } from 'lucide-react';
 import { MetricCard } from '../components/MetricCard';
-import { bytesToHuman, instanceStateLabel, parsePercent } from '../lib/format';
+import {
+  bytesToHuman,
+  instanceStateBadge,
+  parsePercent,
+  type InstanceTone
+} from '../lib/format';
 import type { Instance, Page, StatsMap, SystemInfo } from '../lib/types';
+
+const TONE_BADGE: Record<InstanceTone, string> = {
+  success:
+    'bg-[var(--color-success-soft)] text-[var(--color-success)] ring-1 ring-inset ring-[var(--color-success)]/20',
+  warning:
+    'bg-[var(--color-warning-soft)] text-[var(--color-warning)] ring-1 ring-inset ring-[var(--color-warning)]/20',
+  danger:
+    'bg-[var(--color-danger-soft)] text-[var(--color-danger)] ring-1 ring-inset ring-[var(--color-danger)]/20',
+  muted:
+    'bg-[var(--color-surface-muted)] text-[var(--color-fg-muted)] ring-1 ring-inset ring-[var(--color-border)]'
+};
+
+const TONE_DOT: Record<InstanceTone, string> = {
+  success: 'bg-[var(--color-success)]',
+  warning: 'bg-[var(--color-warning)]',
+  danger: 'bg-[var(--color-danger)]',
+  muted: 'bg-[var(--color-fg-subtle)]'
+};
 
 export function Overview({
   instances,
@@ -52,7 +78,8 @@ export function Overview({
     const stat = stats[item.name];
     const state = stat?.state || '';
     if (state === 'running') running += 1;
-    else if ((state === 'exited' || state === 'dead') && stat?.exitCode && stat.exitCode !== 0) error += 1;
+    else if ((state === 'exited' || state === 'dead') && stat?.exitCode && stat.exitCode !== 0)
+      error += 1;
     else stopped += 1;
     restartTotal += stat?.restartCount || 0;
     if (stat?.cpuPercent) {
@@ -74,160 +101,193 @@ export function Overview({
       )
     : instances;
 
-  const diskRatio = system && system.disk.total > 0 ? (system.disk.used / system.disk.total) * 100 : 0;
+  const diskRatio =
+    system && system.disk.total > 0 ? (system.disk.used / system.disk.total) * 100 : 0;
 
   return (
-    <main className="content">
-      <h2>
-        运行摘要 <span>共 {instances.length} 个 frpc 实例</span>
-      </h2>
-      <section className="metrics">
-        <MetricCard icon={<Server size={20} />} title="运行中" value={String(running)} />
-        <MetricCard icon={<AlertTriangle size={20} />} title="异常" value={String(error)} tone="orange" />
-        <MetricCard icon={<Square size={20} />} title="已停止" value={String(stopped)} tone="gray" />
+    <main className="px-6 py-6 max-w-[1600px]">
+      <div className="mb-6">
+        <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
+          运行摘要
+        </h2>
+        <p className="mt-1 text-[12px] text-[var(--color-fg-muted)]">
+          共 {instances.length} 个 frpc 实例
+          {!dockerAvailable && dockerError && (
+            <span className="ml-2 text-[var(--color-warning)]">· Docker：{dockerError}</span>
+          )}
+        </p>
+      </div>
+
+      <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+        <MetricCard icon={<Server size={14} />} title="运行中" value={String(running)} />
+        <MetricCard icon={<AlertTriangle size={14} />} title="异常" value={String(error)} />
+        <MetricCard icon={<Square size={14} />} title="已停止" value={String(stopped)} />
+        <MetricCard icon={<RotateCcw size={14} />} title="累计重启" value={String(restartTotal)} />
         <MetricCard
-          icon={<RotateCcw size={20} />}
-          title="累计重启"
-          value={String(restartTotal)}
-          tone="purple"
+          icon={<MemoryStick size={14} />}
+          title="内存"
+          value={memSamples ? `${memTotal.toFixed(1)}%` : '—'}
         />
         <MetricCard
-          icon={<MemoryStick size={20} />}
-          title="内存占用"
-          value={memSamples ? `${memTotal.toFixed(1)}%` : '0%'}
-          tone="green"
-        />
-        <MetricCard
-          icon={<Cpu size={20} />}
-          title="CPU 占用"
-          value={cpuSamples ? `${cpuTotal.toFixed(1)}%` : '0%'}
+          icon={<Cpu size={14} />}
+          title="CPU"
+          value={cpuSamples ? `${cpuTotal.toFixed(1)}%` : '—'}
         />
       </section>
 
-      <section className="disk-row">
-        <div className="panel disk-panel">
-          <div className="disk-head">
-            <HardDrive size={18} />
-            <h3>磁盘使用</h3>
-            <span className="muted">
-              {system
-                ? `已用 ${bytesToHuman(system.disk.used)} / 总 ${bytesToHuman(system.disk.total)}`
-                : '--'}
-            </span>
-          </div>
-          <div className="disk-bar">
-            <div
-              className="disk-bar-fill"
-              style={{ width: `${Math.min(100, Math.max(0, diskRatio)).toFixed(1)}%` }}
-            />
-          </div>
-          <div className="disk-meta">
-            <strong>{system ? `${diskRatio.toFixed(0)}%` : '--'}</strong>
-            {!dockerAvailable && dockerError && (
-              <span className="muted">Docker：{dockerError}</span>
-            )}
-          </div>
+      <section className="mb-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+        <div className="flex items-center gap-3 mb-3">
+          <HardDrive size={14} className="text-[var(--color-fg-muted)]" />
+          <span className="text-[13px] font-medium text-[var(--color-fg)]">磁盘使用</span>
+          <span className="ml-auto text-[12px] text-[var(--color-fg-muted)] tabular-nums">
+            {system
+              ? `${bytesToHuman(system.disk.used)} / ${bytesToHuman(system.disk.total)}`
+              : '—'}
+          </span>
+        </div>
+        <div className="relative h-1.5 rounded-full bg-[var(--color-surface-muted)] overflow-hidden">
+          <div
+            className="absolute inset-y-0 left-0 bg-[var(--color-accent)] rounded-full transition-[width]"
+            style={{ width: `${Math.min(100, Math.max(0, diskRatio)).toFixed(1)}%` }}
+          />
+        </div>
+        <div className="mt-2 text-[12px] tabular-nums text-[var(--color-fg-muted)]">
+          {system ? `${diskRatio.toFixed(0)}%` : '—'}
         </div>
       </section>
 
-      <section className="dashboard-grid single">
-        <div className="panel large">
-          <div className="panel-head">
-            <h3>实例列表</h3>
-            <div className="row-actions" style={{ alignItems: 'center' }}>
-              <div className="search">
-                <Search size={16} />
-                <input
-                  placeholder="搜索实例名"
-                  value={keyword}
-                  onChange={(event) => setKeyword(event.target.value)}
-                />
-              </div>
-              <button className="primary" onClick={() => onPage('create')}>
-                <Plus size={16} />创建实例
-              </button>
+      <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-[var(--color-border)]">
+          <h3 className="text-[13px] font-semibold text-[var(--color-fg)]">实例列表</h3>
+          <div className="ml-auto flex items-center gap-2">
+            <div className="flex items-center gap-2 px-2.5 py-1.5 w-[240px] rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] focus-within:border-[var(--color-accent)] focus-within:ring-2 focus-within:ring-[var(--color-accent)]/15">
+              <Search size={13} className="text-[var(--color-fg-subtle)]" />
+              <input
+                placeholder="搜索实例名"
+                value={keyword}
+                onChange={(event) => setKeyword(event.target.value)}
+                className="flex-1 min-w-0 bg-transparent outline-none text-[12px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-subtle)]"
+              />
             </div>
+            <button
+              onClick={() => onPage('create')}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white text-[12px] font-medium transition-colors"
+            >
+              <Plus size={13} />
+              创建实例
+            </button>
           </div>
-          <table>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full">
             <thead>
-              <tr>
-                <th>实例名</th>
-                <th>状态</th>
-                <th>CPU</th>
-                <th>内存</th>
-                <th>重启次数</th>
-                <th>配置路径</th>
-                <th>操作</th>
+              <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface-muted)]">
+                <Th>实例名</Th>
+                <Th>状态</Th>
+                <Th align="right">CPU</Th>
+                <Th align="right">内存</Th>
+                <Th align="right">重启</Th>
+                <Th>配置路径</Th>
+                <Th align="right">操作</Th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((item) => {
                 const stat = stats[item.name];
-                const { label, cls } = instanceStateLabel(stat, item.enabled);
+                const badge = instanceStateBadge(stat, item.enabled);
                 const pending = pendingAction[item.name];
+                const isRunning = stat?.state === 'running';
                 return (
-                  <tr key={item.name}>
-                    <td>
+                  <tr
+                    key={item.name}
+                    className="border-b border-[var(--color-border)] last:border-b-0 hover:bg-[var(--color-surface-muted)] transition-colors"
+                  >
+                    <Td>
                       <button
-                        className="link"
                         onClick={() => {
                           onSelect(item.name);
                           onPage('detail');
                         }}
+                        className="text-[13px] font-medium text-[var(--color-fg)] hover:text-[var(--color-accent)] transition-colors"
                       >
                         {item.displayName || item.name}
                       </button>
-                    </td>
-                    <td>
-                      <span className={cls} />
-                      {label}
-                    </td>
-                    <td>{stat?.cpuPercent || '--'}</td>
-                    <td>{stat?.memUsage || '--'}</td>
-                    <td>{stat ? stat.restartCount : '--'}</td>
-                    <td>{item.configPath}</td>
-                    <td className="row-actions">
-                      <button disabled={!!pending} onClick={() => onAction(item.name, 'start')}>
-                        {pending === 'start' ? '启动中…' : '启动'}
-                      </button>
-                      <button disabled={!!pending} onClick={() => onAction(item.name, 'stop')}>
-                        {pending === 'stop' ? '停止中…' : '停止'}
-                      </button>
-                      <button disabled={!!pending} onClick={() => onAction(item.name, 'restart')}>
-                        {pending === 'restart' ? '重启中…' : '重启'}
-                      </button>
-                      <button
-                        onClick={() => {
-                          onSelect(item.name);
-                          onPage('detail');
-                        }}
+                    </Td>
+                    <Td>
+                      <span
+                        className={`inline-flex items-center gap-1.5 h-[22px] px-2 rounded-full text-[11px] font-medium ${TONE_BADGE[badge.tone]}`}
                       >
-                        日志
-                      </button>
-                      <button
-                        onClick={() => {
-                          onSelect(item.name);
-                          onPage('config');
-                        }}
-                      >
-                        编辑配置
-                      </button>
-                      <button
-                        className="danger"
-                        disabled={!!pending}
-                        onClick={() => onDelete(item.name)}
-                        title="停止并完全移除该实例（含目录与容器）"
-                      >
-                        <Trash2 size={14} />
-                        {pending === 'delete' ? '删除中…' : '删除'}
-                      </button>
-                    </td>
+                        <span className={`w-1.5 h-1.5 rounded-full ${TONE_DOT[badge.tone]}`} />
+                        {badge.label}
+                      </span>
+                    </Td>
+                    <Td align="right" mono>
+                      {stat?.cpuPercent || '—'}
+                    </Td>
+                    <Td align="right" mono>
+                      {stat?.memUsage || '—'}
+                    </Td>
+                    <Td align="right" mono>
+                      {stat ? stat.restartCount : '—'}
+                    </Td>
+                    <Td>
+                      <span className="font-mono text-[11px] text-[var(--color-fg-muted)]">
+                        {item.configPath}
+                      </span>
+                    </Td>
+                    <Td align="right">
+                      <div className="flex items-center justify-end gap-1">
+                        {isRunning ? (
+                          <IconAction
+                            onClick={() => onAction(item.name, 'stop')}
+                            disabled={!!pending}
+                            label="停止"
+                            tone="default"
+                          >
+                            <Pause size={13} />
+                          </IconAction>
+                        ) : (
+                          <IconAction
+                            onClick={() => onAction(item.name, 'start')}
+                            disabled={!!pending}
+                            label="启动"
+                            tone="primary"
+                          >
+                            <Play size={13} />
+                          </IconAction>
+                        )}
+                        <IconAction
+                          onClick={() => onAction(item.name, 'restart')}
+                          disabled={!!pending}
+                          label="重启"
+                          tone="default"
+                        >
+                          <RotateCcw size={13} />
+                        </IconAction>
+                        <RowMenu
+                          onLog={() => {
+                            onSelect(item.name);
+                            onPage('detail');
+                          }}
+                          onConfig={() => {
+                            onSelect(item.name);
+                            onPage('config');
+                          }}
+                          onDelete={() => onDelete(item.name)}
+                          deleting={pending === 'delete'}
+                        />
+                      </div>
+                    </Td>
                   </tr>
                 );
               })}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="muted">
+                  <td
+                    colSpan={7}
+                    className="px-4 py-10 text-center text-[12px] text-[var(--color-fg-muted)]"
+                  >
                     没有匹配的实例
                   </td>
                 </tr>
@@ -237,5 +297,159 @@ export function Overview({
         </div>
       </section>
     </main>
+  );
+}
+
+function Th({
+  children,
+  align = 'left'
+}: {
+  children: React.ReactNode;
+  align?: 'left' | 'right';
+}) {
+  return (
+    <th
+      className={`px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-muted)] ${
+        align === 'right' ? 'text-right' : 'text-left'
+      }`}
+    >
+      {children}
+    </th>
+  );
+}
+
+function Td({
+  children,
+  align = 'left',
+  mono = false
+}: {
+  children: React.ReactNode;
+  align?: 'left' | 'right';
+  mono?: boolean;
+}) {
+  return (
+    <td
+      className={`px-4 py-2.5 text-[13px] text-[var(--color-fg)] ${
+        align === 'right' ? 'text-right' : 'text-left'
+      } ${mono ? 'font-mono tabular-nums text-[12px] text-[var(--color-fg-muted)]' : ''}`}
+    >
+      {children}
+    </td>
+  );
+}
+
+function IconAction({
+  children,
+  onClick,
+  disabled,
+  label,
+  tone
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  label: string;
+  tone: 'default' | 'primary';
+}) {
+  const base =
+    'grid place-items-center w-7 h-7 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+  const toneCls =
+    tone === 'primary'
+      ? 'text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]'
+      : 'text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)]';
+  return (
+    <button onClick={onClick} disabled={disabled} title={label} className={`${base} ${toneCls}`}>
+      {children}
+    </button>
+  );
+}
+
+function RowMenu({
+  onLog,
+  onConfig,
+  onDelete,
+  deleting
+}: {
+  onLog: () => void;
+  onConfig: () => void;
+  onDelete: () => void;
+  deleting: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handle(event: MouseEvent) {
+      if (!ref.current) return;
+      if (ref.current.contains(event.target as Node)) return;
+      setOpen(false);
+    }
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title="更多操作"
+        className="grid place-items-center w-7 h-7 rounded-md text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)] transition-colors"
+      >
+        <MoreHorizontal size={14} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-[calc(100%+4px)] min-w-[140px] py-1 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md shadow-lg z-10">
+          <MenuItem
+            onClick={() => {
+              setOpen(false);
+              onLog();
+            }}
+          >
+            查看日志
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              setOpen(false);
+              onConfig();
+            }}
+          >
+            编辑配置
+          </MenuItem>
+          <div className="my-1 border-t border-[var(--color-border)]" />
+          <MenuItem
+            onClick={() => {
+              setOpen(false);
+              onDelete();
+            }}
+            danger
+          >
+            <Trash2 size={12} />
+            {deleting ? '删除中…' : '删除实例'}
+          </MenuItem>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MenuItem({
+  children,
+  onClick,
+  danger
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-left hover:bg-[var(--color-surface-muted)] ${
+        danger ? 'text-[var(--color-danger)]' : 'text-[var(--color-fg)]'
+      }`}
+    >
+      {children}
+    </button>
   );
 }

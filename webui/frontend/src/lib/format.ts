@@ -21,6 +21,28 @@ export function instanceStateLabel(stat: InstanceStats | undefined, enabled: boo
   return { label: stat.status || state, cls: 'status' };
 }
 
+export type InstanceTone = 'success' | 'warning' | 'danger' | 'muted';
+
+export function instanceStateBadge(
+  stat: InstanceStats | undefined,
+  enabled: boolean
+): { label: string; tone: InstanceTone } {
+  if (!stat || !stat.state) {
+    return { label: enabled ? '未运行' : '未启用', tone: 'muted' };
+  }
+  const state = stat.state;
+  if (state === 'running') return { label: '运行中', tone: 'success' };
+  if (state === 'restarting') return { label: '重启中', tone: 'warning' };
+  if (state === 'paused') return { label: '已暂停', tone: 'warning' };
+  if (state === 'exited' || state === 'dead') {
+    if (stat.exitCode !== null && stat.exitCode !== 0) {
+      return { label: `异常退出 (${stat.exitCode})`, tone: 'danger' };
+    }
+    return { label: '已停止', tone: 'muted' };
+  }
+  return { label: stat.status || state, tone: 'muted' };
+}
+
 export function bytesToHuman(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];

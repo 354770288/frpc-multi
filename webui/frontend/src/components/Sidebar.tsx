@@ -20,32 +20,68 @@ export function Sidebar({
   ] as const;
 
   return (
-    <aside className={`sidebar${collapsed ? ' collapsed' : ''}`}>
-      <div className="brand">
-        <Boxes size={26} />
-        {!collapsed && <strong>frpc 多实例管理</strong>}
+    <aside
+      className={`${
+        collapsed ? 'w-[68px]' : 'w-[232px]'
+      } shrink-0 min-h-screen flex flex-col bg-[var(--color-sidebar-bg)] text-[var(--color-sidebar-fg)] transition-[width] duration-200`}
+    >
+      <div
+        className={`flex items-center gap-3 px-5 h-16 border-b border-white/5 ${
+          collapsed ? 'justify-center px-0' : ''
+        }`}
+      >
+        <Boxes size={22} className="text-white shrink-0" />
+        {!collapsed && (
+          <span className="text-[14px] font-semibold tracking-tight text-white">
+            frpc 多实例管理
+          </span>
+        )}
       </div>
-      <nav>
-        {items.map(([key, Icon, label]) => (
-          <button
-            className={page === key ? 'active' : ''}
-            key={key}
-            onClick={() => onPage(key)}
-            title={collapsed ? label : undefined}
-          >
-            <Icon size={20} />
-            {!collapsed && <span>{label}</span>}
-          </button>
-        ))}
+
+      <nav className="flex-1 px-2 py-4 flex flex-col gap-1">
+        {items.map(([key, Icon, label]) => {
+          const active = page === key;
+          return (
+            <button
+              key={key}
+              onClick={() => onPage(key)}
+              title={collapsed ? label : undefined}
+              className={`flex items-center gap-3 rounded-md px-3 py-2 text-[13px] transition-colors ${
+                collapsed ? 'justify-center px-0' : ''
+              } ${
+                active
+                  ? 'bg-[var(--color-sidebar-active)] text-[var(--color-sidebar-fg-active)]'
+                  : 'text-[var(--color-sidebar-fg)] hover:bg-white/5 hover:text-white'
+              }`}
+            >
+              <Icon size={16} className="shrink-0" />
+              {!collapsed && <span>{label}</span>}
+            </button>
+          );
+        })}
       </nav>
+
       {!collapsed && (
-        <div className="system-card">
-          <strong>系统信息</strong>
-          <p>面板版本 {system?.version || '--'}</p>
-          <p>frpc 版本 {system?.frpVersion || '--'}</p>
-          <p>Docker 版本 {system?.dockerVersion || '--'}</p>
-          <p>面板端口 {system?.webuiPort ?? '--'}</p>
-          <p>项目目录 {system?.projectDir || '--'}</p>
+        <div className="m-3 mt-auto rounded-md border border-white/5 bg-white/[0.02] p-3 text-[11px] leading-[1.7] text-slate-400">
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            系统信息
+          </div>
+          <div className="flex justify-between gap-2">
+            <span>面板</span>
+            <span className="text-slate-300 font-mono">{system?.version || '--'}</span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span>frpc</span>
+            <span className="text-slate-300 font-mono">{system?.frpVersion || '--'}</span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span>Docker</span>
+            <span className="text-slate-300 font-mono">{system?.dockerVersion || '--'}</span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span>端口</span>
+            <span className="text-slate-300 font-mono">{system?.webuiPort ?? '--'}</span>
+          </div>
         </div>
       )}
     </aside>
