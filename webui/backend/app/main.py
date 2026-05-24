@@ -52,7 +52,7 @@ class InstanceCreate(BaseModel):
 
 class ConfigUpdate(BaseModel):
     configText: str
-    recreateAfterSave: bool = False
+    restartAfterSave: bool = False
 
 
 class InstancePatch(BaseModel):
@@ -311,8 +311,8 @@ def update_config(name: str, payload: ConfigUpdate, _: Annotated[str, Depends(re
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     regenerate_compose(instance_store)
-    if payload.recreateAfterSave:
-        command_response(docker().recreate(name))
+    if payload.restartAfterSave:
+        command_response(docker().restart(name))
     return {"configPath": str(record.config_path), "validation": validation.__dict__}
 
 

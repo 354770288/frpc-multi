@@ -20,7 +20,7 @@ import {
 } from '../lib/proxyToml';
 import type { ToastKind, ValidationData } from '../lib/types';
 
-type EditorMode = 'raw' | 'structured';
+type EditorMode = 'structured' | 'raw';
 
 export function ConfigEditor({
   name,
@@ -34,8 +34,8 @@ export function ConfigEditor({
   const [validation, setValidation] = useState<ValidationData | null>(null);
   const [validating, setValidating] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [recreateAfterSave, setRecreateAfterSave] = useState(false);
-  const [mode, setMode] = useState<EditorMode>('raw');
+  const [restartAfterSave, setRestartAfterSave] = useState(true);
+  const [mode, setMode] = useState<EditorMode>('structured');
 
   useEffect(() => {
     if (!name) return;
@@ -80,10 +80,10 @@ export function ConfigEditor({
     try {
       await api<{ validation: ValidationData }>(`/api/instances/${name}/config`, {
         method: 'PUT',
-        body: JSON.stringify({ configText, recreateAfterSave })
+        body: JSON.stringify({ configText, restartAfterSave })
       });
       setOriginalText(configText);
-      toast('success', recreateAfterSave ? '已保存并重新创建容器' : '已保存');
+      toast('success', restartAfterSave ? '已保存并重启容器' : '已保存');
     } catch (err) {
       toast('error', err instanceof Error ? err.message : '保存失败');
     } finally {
@@ -125,11 +125,11 @@ export function ConfigEditor({
       <label className="inline-flex items-center gap-1.5 text-[12px] text-[var(--color-fg-muted)] cursor-pointer select-none">
         <input
           type="checkbox"
-          checked={recreateAfterSave}
-          onChange={(event) => setRecreateAfterSave(event.target.checked)}
+          checked={restartAfterSave}
+          onChange={(event) => setRestartAfterSave(event.target.checked)}
           className="w-3.5 h-3.5 accent-[var(--color-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)] rounded-sm"
         />
-        保存后重新创建容器
+        保存后重启容器
       </label>
       <Button onClick={reset} disabled={saving}>
         <RotateCcw size={13} />
@@ -155,11 +155,11 @@ export function ConfigEditor({
       </div>
 
       <div className="mb-4 flex items-center gap-1 border-b border-[var(--color-border)]">
-        <TabButton active={mode === 'raw'} onClick={() => setMode('raw')}>
-          原始 TOML
-        </TabButton>
         <TabButton active={mode === 'structured'} onClick={() => setMode('structured')}>
           代理（结构化）
+        </TabButton>
+        <TabButton active={mode === 'raw'} onClick={() => setMode('raw')}>
+          原始 TOML
         </TabButton>
         <span className="ml-auto text-[11px] text-[var(--color-fg-muted)] pb-2">
           {mode === 'structured'

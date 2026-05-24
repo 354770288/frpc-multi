@@ -46,7 +46,7 @@ export function CreateInstance({
   const [displayName, setDisplayName] = useState('');
   const [description, setDescription] = useState('');
   const [enabled, setEnabled] = useState(true);
-  const [startAfterCreate, setStartAfterCreate] = useState(false);
+  const [startAfterCreate, setStartAfterCreate] = useState(true);
   const [configText, setConfigText] = useState(initialConfigText);
   const [mode, setMode] = useState<EditorMode>('structured');
   const [submitting, setSubmitting] = useState(false);

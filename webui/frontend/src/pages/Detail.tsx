@@ -108,7 +108,7 @@ export function Detail({
     if (!follow) return;
     const box = logBoxRef.current;
     if (!box) return;
-    box.scrollTop = box.scrollHeight;
+    box.scrollTop = 0;
   }, [logs, follow]);
 
   if (!name)
@@ -261,7 +261,7 @@ export function Detail({
             className="m-0 h-[420px] overflow-auto px-4 py-3 bg-[#0b1220] text-[#cbd5e1] font-mono text-[12px] leading-[1.65] whitespace-pre-wrap"
           >
             {logs.length
-              ? logs.join('\n')
+              ? logs.slice().reverse().join('\n')
               : appliedKeyword
                 ? `没有匹配「${appliedKeyword}」的日志`
                 : '暂无日志或 Docker 未连接'}
