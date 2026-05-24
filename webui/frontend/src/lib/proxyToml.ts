@@ -102,15 +102,15 @@ export function parseProxies(proxiesBody: string): ProxyDraft[] {
 
 /**
  * Serialize proxy drafts back into TOML. Only known fields are emitted; empty
- * fields are skipped. Drops invalid proxies (no name) silently — the caller
- * should validate first.
+ * optional fields are skipped. In-progress drafts with an empty name are kept
+ * (emitted as `name = ""`) so the structured editor can round-trip a newly
+ * added proxy through text without losing it; validation gates the save.
  */
 export function serializeProxies(drafts: ProxyDraft[]): string {
   if (drafts.length === 0) return '';
   const blocks: string[] = [];
   for (const draft of drafts) {
     const name = draft.name.trim();
-    if (!name) continue;
     const lines: string[] = ['[[proxies]]'];
     lines.push(`name = ${tomlString(name)}`);
     if (draft.type) lines.push(`type = ${tomlString(draft.type.trim())}`);
