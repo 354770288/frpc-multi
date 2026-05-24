@@ -233,6 +233,7 @@ export function Console({
       return (
         <CreateInstance
           toast={toast}
+          instances={instances}
           onCreated={(name) => {
             setSelected(name);
             setPage('overview');

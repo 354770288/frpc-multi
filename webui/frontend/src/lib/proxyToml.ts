@@ -265,3 +265,123 @@ function findCommentStart(value: string): number {
   }
   return -1;
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Full frpc.toml round-trip for the create form.
+// Recognized fields: serverAddr, serverPort, [auth].method, [auth].token,
+// and [[proxies]]. Everything else (including [log]) is dropped on
+// re-serialize — the form provides a default [log] block instead.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type FrpcConfigDraft = {
+  serverAddr: string;
+  serverPort: string;
+  authToken: string;
+  proxies: ProxyDraft[];
+};
+
+export function emptyFrpcConfig(): FrpcConfigDraft {
+  return {
+    serverAddr: '',
+    serverPort: '',
+    authToken: '',
+    proxies: []
+  };
+}
+
+export function parseFrpcConfig(text: string): FrpcConfigDraft {
+  const { preface, proxiesBody } = splitTomlAtProxies(text);
+  const proxies = parseProxies(proxiesBody);
+
+  let serverAddr = '';
+  let serverPort = '';
+  let authToken = '';
+  let section: string | null = null;
+
+  for (const raw of preface.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    if (line.startsWith('[') && line.endsWith(']') && !line.startsWith('[[')) {
+      section = line.slice(1, -1).trim();
+      continue;
+    }
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim();
+    const value = line.slice(eq + 1).trim();
+    if (section === null) {
+      if (key === 'serverAddr') {
+        serverAddr = parseTomlString(value);
+      } else if (key === 'serverPort') {
+        const parsed = parseTomlInt(value);
+        serverPort = parsed === null ? '' : String(parsed);
+      }
+    } else if (section === 'auth') {
+      if (key === 'token') authToken = parseTomlString(value);
+    }
+  }
+
+  return { serverAddr, serverPort, authToken, proxies };
+}
+
+export function serializeFrpcConfig(draft: FrpcConfigDraft): string {
+  const lines: string[] = [];
+  const serverAddr = draft.serverAddr.trim();
+  if (serverAddr) {
+    lines.push(`serverAddr = ${tomlString(serverAddr)}`);
+  } else {
+    lines.push('# serverAddr 必填，请填写 frps 服务器地址');
+    lines.push('serverAddr = ""');
+  }
+
+  const portInput = draft.serverPort.trim();
+  const portNumber = portInput ? Number(portInput) : 7000;
+  const safePort = Number.isInteger(portNumber) && portNumber > 0 && portNumber < 65536 ? portNumber : 7000;
+  lines.push(`serverPort = ${safePort}`);
+
+  lines.push('');
+  const token = draft.authToken.trim();
+  if (token) {
+    lines.push('[auth]');
+    lines.push('method = "token"');
+    lines.push(`token = ${tomlString(token)}`);
+  } else {
+    lines.push('# 未配置认证密钥；若 frps 端要求 token，请取消下面三行的注释并填写 token');
+    lines.push('# [auth]');
+    lines.push('# method = "token"');
+    lines.push('# token = ""');
+  }
+
+  lines.push('');
+  lines.push('[log]');
+  lines.push('to = "console"');
+  lines.push('level = "info"');
+  lines.push('maxDays = 3');
+
+  const proxiesText = serializeProxies(draft.proxies);
+  if (proxiesText) {
+    lines.push('');
+    lines.push(proxiesText);
+  }
+
+  return lines.join('\n') + '\n';
+}
+
+export function validateFrpcDraft(draft: FrpcConfigDraft): string[] {
+  const errors: string[] = [];
+  if (!draft.serverAddr.trim()) errors.push('请填写 frps 服务器地址');
+  if (draft.serverPort.trim()) {
+    const port = Number(draft.serverPort.trim());
+    if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
+      errors.push('frps 端口须是 1-65535 的整数');
+    }
+  }
+  draft.proxies.forEach((proxy, index) => {
+    const issues = validateProxy(proxy, draft.proxies);
+    if (issues.length) {
+      const name = proxy.name.trim() || `#${index + 1}`;
+      errors.push(`代理 ${name}: ${issues.join('，')}`);
+    }
+  });
+  return errors;
+}
