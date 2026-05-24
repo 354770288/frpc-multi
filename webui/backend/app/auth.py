@@ -89,6 +89,36 @@ def require_auth(
     return payload.get("sub", "")
 
 
+def require_auth_query(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    token: str | None = None,
+) -> str:
+    """Auth for endpoints reached by EventSource, which can't set headers.
+
+    Prefers the Authorization header, falls back to a ``token`` query parameter.
+    """
+    raw_token: str | None = None
+    if credentials is not None and credentials.scheme.lower() == "bearer":
+        raw_token = credentials.credentials
+    elif token:
+        raw_token = token
+    if not raw_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="未登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        payload = decode_token(raw_token)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    return payload.get("sub", "")
+
+
 def _hash_password(password: str, salt: bytes | None = None) -> dict:
     if salt is None:
         salt = secrets.token_bytes(SALT_BYTES)

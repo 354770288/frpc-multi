@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -18,6 +20,7 @@ from .auth import (
     create_token,
     current_username,
     require_auth,
+    require_auth_query,
     verify_credentials,
 )
 from .compose_generator import write_generated_compose
@@ -343,6 +346,82 @@ def get_logs(
     if keyword:
         lines = [line for line in lines if keyword.lower() in line.lower()]
     return {"lines": lines}
+
+
+def _sse_pack(event: str, data: str) -> bytes:
+    chunks = [f"event: {event}\n"]
+    for line in data.splitlines() or [""]:
+        chunks.append(f"data: {line}\n")
+    chunks.append("\n")
+    return "".join(chunks).encode("utf-8")
+
+
+async def _stream_docker_logs(
+    request: Request, argv: list[str], cwd: Path, keyword: str
+) -> AsyncIterator[bytes]:
+    keyword_lower = keyword.lower() if keyword else ""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except FileNotFoundError:
+        yield _sse_pack("error", "docker 命令不可用")
+        return
+    yield _sse_pack("ready", "")
+    assert process.stdout is not None
+    try:
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                raw = await asyncio.wait_for(process.stdout.readline(), timeout=15.0)
+            except asyncio.TimeoutError:
+                yield b": keepalive\n\n"
+                continue
+            if not raw:
+                if process.returncode is not None:
+                    break
+                continue
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if keyword_lower and keyword_lower not in line.lower():
+                continue
+            yield _sse_pack("log", line)
+    finally:
+        if process.returncode is None:
+            try:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+            except ProcessLookupError:
+                pass
+        yield _sse_pack("end", "")
+
+
+@app.get("/api/instances/{name}/logs/stream")
+async def stream_logs(
+    name: str,
+    request: Request,
+    _: Annotated[str, Depends(require_auth_query)],
+    tail: int = Query(default=100, ge=0, le=1000),
+    keyword: str = "",
+):
+    validate_instance_name(name)
+    argv = docker().logs_follow_args(name, tail)
+    return StreamingResponse(
+        _stream_docker_logs(request, argv, settings.project_dir, keyword),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/instances/{name}/start")

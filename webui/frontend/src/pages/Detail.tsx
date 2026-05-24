@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Play, RefreshCw, RotateCcw, Search, Square } from 'lucide-react';
 import { api } from '../lib/api';
+import { getAuthToken } from '../lib/auth';
 import { instanceStateBadge } from '../lib/format';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -9,6 +10,7 @@ import type { InstanceDetail, Page, StatsMap } from '../lib/types';
 
 const TAIL_OPTIONS = [100, 300, 1000] as const;
 type TailOption = (typeof TAIL_OPTIONS)[number];
+const FOLLOW_BUFFER_LIMIT = 5000;
 
 export function Detail({
   name,
@@ -29,6 +31,9 @@ export function Detail({
   const [appliedKeyword, setAppliedKeyword] = useState('');
   const [tail, setTail] = useState<TailOption>(300);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [follow, setFollow] = useState(false);
+  const [followState, setFollowState] = useState<'idle' | 'connecting' | 'live' | 'error'>('idle');
+  const logBoxRef = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
     if (!name) return;
@@ -36,7 +41,7 @@ export function Detail({
   }, [name]);
 
   useEffect(() => {
-    if (!name) return;
+    if (!name || follow) return;
     let cancelled = false;
     setLogsLoading(true);
     const params = new URLSearchParams({ tail: String(tail) });
@@ -54,7 +59,57 @@ export function Detail({
     return () => {
       cancelled = true;
     };
-  }, [name, tail, appliedKeyword]);
+  }, [name, tail, appliedKeyword, follow]);
+
+  useEffect(() => {
+    if (!name || !follow) return;
+    const token = getAuthToken();
+    if (!token) {
+      setFollowState('error');
+      return;
+    }
+    const params = new URLSearchParams({ tail: String(tail), token });
+    if (appliedKeyword) params.set('keyword', appliedKeyword);
+    const url = `/api/instances/${name}/logs/stream?${params.toString()}`;
+    setLogs([]);
+    setFollowState('connecting');
+    const source = new EventSource(url);
+    source.addEventListener('ready', () => setFollowState('live'));
+    source.addEventListener('log', (event) => {
+      const line = (event as MessageEvent<string>).data ?? '';
+      setLogs((prev) => {
+        const next = prev.length >= FOLLOW_BUFFER_LIMIT
+          ? prev.slice(prev.length - FOLLOW_BUFFER_LIMIT + 1)
+          : prev.slice();
+        next.push(line);
+        return next;
+      });
+    });
+    source.addEventListener('error', (event) => {
+      const message = (event as MessageEvent<string>).data;
+      if (message) {
+        setLogs((prev) => [...prev, `[stream] ${message}`]);
+      }
+    });
+    source.addEventListener('end', () => {
+      setFollowState('idle');
+      source.close();
+    });
+    source.onerror = () => {
+      setFollowState('error');
+    };
+    return () => {
+      source.close();
+      setFollowState('idle');
+    };
+  }, [name, follow, tail, appliedKeyword]);
+
+  useEffect(() => {
+    if (!follow) return;
+    const box = logBoxRef.current;
+    if (!box) return;
+    box.scrollTop = box.scrollHeight;
+  }, [logs, follow]);
 
   if (!name)
     return (
@@ -119,13 +174,42 @@ export function Detail({
           title={
             <span className="inline-flex items-center gap-2">
               最近日志
-              {logsLoading && (
+              {follow && (
+                <span
+                  className={`inline-flex items-center gap-1 text-[11px] font-normal ${
+                    followState === 'live'
+                      ? 'text-[var(--color-success)]'
+                      : followState === 'error'
+                        ? 'text-[var(--color-danger)]'
+                        : 'text-[var(--color-fg-muted)]'
+                  }`}
+                >
+                  <span
+                    className={`inline-block w-1.5 h-1.5 rounded-full ${
+                      followState === 'live'
+                        ? 'bg-[var(--color-success)] animate-pulse'
+                        : followState === 'error'
+                          ? 'bg-[var(--color-danger)]'
+                          : 'bg-[var(--color-fg-subtle)]'
+                    }`}
+                  />
+                  {followState === 'live'
+                    ? '实时跟随中'
+                    : followState === 'connecting'
+                      ? '正在连接…'
+                      : followState === 'error'
+                        ? '连接失败'
+                        : '已停止'}
+                </span>
+              )}
+              {!follow && logsLoading && (
                 <span className="text-[11px] font-normal text-[var(--color-fg-muted)]">加载中…</span>
               )}
             </span>
           }
           actions={
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <FollowToggle checked={follow} onChange={setFollow} />
               <select
                 value={tail}
                 onChange={(event) => setTail(Number(event.target.value) as TailOption)}
@@ -172,7 +256,10 @@ export function Detail({
           }
           bodyClassName="p-0"
         >
-          <pre className="m-0 h-[420px] overflow-auto px-4 py-3 bg-[#0b1220] text-[#cbd5e1] font-mono text-[12px] leading-[1.65] whitespace-pre-wrap">
+          <pre
+            ref={logBoxRef}
+            className="m-0 h-[420px] overflow-auto px-4 py-3 bg-[#0b1220] text-[#cbd5e1] font-mono text-[12px] leading-[1.65] whitespace-pre-wrap"
+          >
             {logs.length
               ? logs.join('\n')
               : appliedKeyword
@@ -215,7 +302,7 @@ export function Detail({
       </section>
 
       <Panel title="配置摘要">
-        <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-3 text-[12px]">
+        <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-3 text-[12px] mb-4">
           <SummaryItem label="服务端地址" value={detail?.summary.serverAddr} mono />
           <SummaryItem label="服务端端口" value={detail?.summary.serverPort} mono />
           <SummaryItem label="认证方式" value={detail?.summary.authMethod} />
@@ -224,8 +311,95 @@ export function Detail({
             value={detail?.summary.proxyCount?.toString()}
           />
         </dl>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-3 text-[12px]">
+          <ChipGroup label="代理类型" entries={detail ? proxyTypeEntries(detail.summary.proxyTypes) : []} />
+          <ChipGroup label="占用远端端口" entries={detail ? portEntries(detail.summary.remotePorts) : []} mono />
+        </div>
       </Panel>
     </main>
+  );
+}
+
+function proxyTypeEntries(types: Record<string, number> | undefined): { key: string; label: string }[] {
+  if (!types) return [];
+  return Object.entries(types)
+    .sort((a, b) => b[1] - a[1])
+    .map(([type, count]) => ({ key: type, label: `${type} · ${count}` }));
+}
+
+function portEntries(ports: number[] | undefined): { key: string; label: string }[] {
+  if (!ports || ports.length === 0) return [];
+  const counts = new Map<number, number>();
+  for (const port of ports) {
+    counts.set(port, (counts.get(port) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([port, count]) => ({
+      key: String(port),
+      label: count > 1 ? `${port} ×${count}` : String(port)
+    }));
+}
+
+function ChipGroup({
+  label,
+  entries,
+  mono = false
+}: {
+  label: string;
+  entries: { key: string; label: string }[];
+  mono?: boolean;
+}) {
+  return (
+    <div>
+      <div className="text-[var(--color-fg-muted)] mb-1.5">{label}</div>
+      {entries.length === 0 ? (
+        <span className="text-[var(--color-fg-subtle)]">—</span>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {entries.map((entry) => (
+            <span
+              key={entry.key}
+              className={`inline-flex items-center h-6 px-2 rounded-md bg-[var(--color-surface-muted)] border border-[var(--color-border)] text-[11px] text-[var(--color-fg)] ${
+                mono ? 'font-mono tabular-nums' : ''
+              }`}
+            >
+              {entry.label}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FollowToggle({
+  checked,
+  onChange
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      title={checked ? '关闭实时跟随' : '打开实时跟随'}
+      onClick={() => onChange(!checked)}
+      className={`inline-flex items-center gap-2 h-8 px-2.5 rounded-md border text-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)] ${
+        checked
+          ? 'bg-[var(--color-accent-soft)] border-[var(--color-accent)] text-[var(--color-accent)]'
+          : 'bg-[var(--color-surface)] border-[var(--color-border)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]'
+      }`}
+    >
+      <span
+        className={`inline-block w-1.5 h-1.5 rounded-full ${
+          checked ? 'bg-[var(--color-success)] animate-pulse' : 'bg-[var(--color-fg-subtle)]'
+        }`}
+      />
+      实时跟随
+    </button>
   );
 }
 

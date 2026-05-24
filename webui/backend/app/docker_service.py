@@ -50,6 +50,26 @@ class DockerService:
         safe_tail = str(max(1, min(int(tail), 1000)))
         return self.compose("logs", "--no-color", "--tail", safe_tail, service)
 
+    def logs_follow_args(self, instance_name: str, tail: int = 100) -> list[str]:
+        """Return the full ``docker compose`` argv for ``logs -f --tail N`` of one service."""
+        service = self.service_name(instance_name)
+        safe_tail = str(max(0, min(int(tail), 1000)))
+        return [
+            "docker",
+            "compose",
+            "-f",
+            "compose.yaml",
+            "-f",
+            "compose.generated.yaml",
+            "logs",
+            "--no-color",
+            "--no-log-prefix",
+            "--follow",
+            "--tail",
+            safe_tail,
+            service,
+        ]
+
     def start(self, instance_name: str) -> subprocess.CompletedProcess[str]:
         return self.compose("up", "-d", self.service_name(instance_name))
 
