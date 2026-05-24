@@ -6,13 +6,36 @@ import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
 import { Input } from '../components/ui/Input';
 import { Panel } from '../components/ui/Panel';
-import type { AuthState, SystemInfo, ToastKind } from '../lib/types';
+import type { AuthMe, AuthState, SystemInfo, ToastKind } from '../lib/types';
+
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '已过期';
+  if (seconds >= 86400) {
+    const days = seconds / 86400;
+    return `${days >= 10 ? days.toFixed(0) : days.toFixed(1)} 天`;
+  }
+  if (seconds >= 3600) {
+    const hours = seconds / 3600;
+    return `${hours >= 10 ? hours.toFixed(0) : hours.toFixed(1)} 小时`;
+  }
+  if (seconds >= 60) return `${Math.round(seconds / 60)} 分钟`;
+  return `${Math.round(seconds)} 秒`;
+}
+
+function formatTimestamp(epochSeconds: number): string {
+  const date = new Date(epochSeconds * 1000);
+  if (Number.isNaN(date.getTime())) return '—';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 
 export function SystemPage({
+  auth,
   system,
   toast,
   onPasswordChanged
 }: {
+  auth: AuthState;
   system: SystemInfo | null;
   toast: (kind: ToastKind, text: string) => void;
   onPasswordChanged: (state: AuthState) => void;
@@ -23,6 +46,8 @@ export function SystemPage({
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [tokenTtlSeconds, setTokenTtlSeconds] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
   useEffect(() => {
     if (system?.username) {
@@ -30,6 +55,17 @@ export function SystemPage({
       setNewUsername((prev) => prev || system.username || '');
     }
   }, [system?.username]);
+
+  useEffect(() => {
+    api<AuthMe>('/api/auth/me')
+      .then((data) => setTokenTtlSeconds(data.tokenTtlSeconds))
+      .catch(() => setTokenTtlSeconds(null));
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -78,6 +114,14 @@ export function SystemPage({
   const diskRatio =
     system && system.disk.total > 0 ? (system.disk.used / system.disk.total) * 100 : 0;
 
+  const tokenTtlText =
+    tokenTtlSeconds && tokenTtlSeconds > 0 ? formatDuration(tokenTtlSeconds) : undefined;
+  const remainingSeconds = auth.expiresAt - now;
+  const sessionExpiresText =
+    auth.expiresAt > 0
+      ? `${formatTimestamp(auth.expiresAt)}（剩余 ${formatDuration(remainingSeconds)}）`
+      : undefined;
+
   return (
     <main className="px-6 py-6 max-w-[1600px]">
       <h2 className="mb-6 text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
@@ -98,6 +142,8 @@ export function SystemPage({
               mono
             />
             <InfoItem label="当前登录" value={system?.username} />
+            <InfoItem label="登录有效期" value={tokenTtlText} />
+            <InfoItem label="本次会话到期" value={sessionExpiresText} />
             <InfoItem
               label="磁盘占用"
               value={

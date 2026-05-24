@@ -12,13 +12,23 @@ import { actionLabel } from './lib/format';
 import type {
   AuthState,
   Instance,
+  InstanceStats,
   Page,
   StatsMap,
-  StatsResponse,
+  SummaryResponse,
   SystemInfo,
   Toast,
   ToastKind
 } from './lib/types';
+
+type SummaryCounts = {
+  total: number;
+  running: number;
+  stopped: number;
+  error: number;
+};
+
+const EMPTY_COUNTS: SummaryCounts = { total: 0, running: 0, stopped: 0, error: 0 };
 
 export function Console({
   auth,
@@ -33,6 +43,7 @@ export function Console({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [instances, setInstances] = useState<Instance[]>([]);
   const [stats, setStats] = useState<StatsMap>({});
+  const [counts, setCounts] = useState<SummaryCounts>(EMPTY_COUNTS);
   const [dockerAvailable, setDockerAvailable] = useState(false);
   const [dockerError, setDockerError] = useState('');
   const [system, setSystem] = useState<SystemInfo | null>(null);
@@ -40,6 +51,8 @@ export function Console({
   const [pendingAction, setPendingAction] = useState<Record<string, string>>({});
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastIdRef = useRef(0);
+  const selectedRef = useRef('');
+  selectedRef.current = selected;
 
   const closeToast = useCallback((id: number) => {
     setToasts((list) => list.filter((t) => t.id !== id));
@@ -56,22 +69,35 @@ export function Console({
     );
   }, []);
 
-  async function loadInstances() {
-    const data = await api<Instance[]>('/api/instances').catch(() => []);
-    setInstances(data);
-    if (!selected && data[0]) setSelected(data[0].name);
-  }
-
-  async function loadStats() {
+  async function loadSummary() {
     try {
-      const data = await api<StatsResponse>('/api/stats');
-      setStats(data.containers || {});
-      setDockerAvailable(!!data.available);
-      setDockerError(data.error || '');
+      const data = await api<SummaryResponse>('/api/summary');
+      const list: Instance[] = [];
+      const statMap: StatsMap = {};
+      for (const item of data.instances) {
+        const { runtime, ...rest } = item;
+        list.push(rest);
+        if (runtime && Object.keys(runtime).length) {
+          statMap[item.name] = runtime as InstanceStats;
+        }
+      }
+      setInstances(list);
+      setStats(statMap);
+      setCounts({
+        total: data.total,
+        running: data.running,
+        stopped: data.stopped,
+        error: data.error
+      });
+      setDockerAvailable(!!data.dockerAvailable);
+      setDockerError(data.dockerError || '');
+      if (!selectedRef.current && list[0]) setSelected(list[0].name);
     } catch {
+      setInstances([]);
       setStats({});
+      setCounts(EMPTY_COUNTS);
       setDockerAvailable(false);
-      setDockerError('无法访问 /api/stats');
+      setDockerError('无法访问 /api/summary');
     }
   }
 
@@ -81,12 +107,12 @@ export function Console({
   }
 
   async function refreshAll() {
-    await Promise.all([loadInstances(), loadStats(), loadSystem()]);
+    await Promise.all([loadSummary(), loadSystem()]);
   }
 
   useEffect(() => {
     refreshAll();
-    const timer = window.setInterval(loadStats, 5000);
+    const timer = window.setInterval(loadSummary, 5000);
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -97,11 +123,46 @@ export function Console({
       try {
         await api(`/api/instances/${name}/${verb}`, { method: 'POST' });
         toast('success', `${name} ${actionLabel(verb)}成功`);
-        await Promise.all([loadInstances(), loadStats()]);
+        await loadSummary();
       } catch (err) {
         toast(
           'error',
           `${name} ${actionLabel(verb)}失败：${err instanceof Error ? err.message : '未知错误'}`
+        );
+      } finally {
+        setPendingAction((prev) => {
+          const next = { ...prev };
+          delete next[name];
+          return next;
+        });
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [toast]
+  );
+
+  const patchInstance = useCallback(
+    async (
+      name: string,
+      patch: { displayName?: string; description?: string; enabled?: boolean; applyImmediately?: boolean }
+    ) => {
+      const key = patch.enabled !== undefined ? 'toggle' : 'patch';
+      setPendingAction((prev) => ({ ...prev, [name]: key }));
+      try {
+        await api(`/api/instances/${name}`, {
+          method: 'PATCH',
+          body: JSON.stringify(patch)
+        });
+        if (patch.enabled !== undefined) {
+          toast('success', `${name} 已${patch.enabled ? '启用' : '停用'}`);
+        } else {
+          toast('success', `${name} 已更新`);
+        }
+        await loadSummary();
+      } catch (err) {
+        toast(
+          'error',
+          `${name} 更新失败：${err instanceof Error ? err.message : '未知错误'}`
         );
       } finally {
         setPendingAction((prev) => {
@@ -145,6 +206,7 @@ export function Console({
         <Overview
           instances={instances}
           stats={stats}
+          counts={counts}
           dockerAvailable={dockerAvailable}
           dockerError={dockerError}
           system={system}
@@ -152,6 +214,7 @@ export function Console({
           onSelect={setSelected}
           onPage={setPage}
           onAction={action}
+          onPatch={patchInstance}
           onDelete={deleteInstance}
         />
       );
@@ -178,9 +241,9 @@ export function Console({
           onCancel={() => setPage('overview')}
         />
       );
-    return <SystemPage system={system} toast={toast} onPasswordChanged={onAuthRefresh} />;
+    return <SystemPage auth={auth} system={system} toast={toast} onPasswordChanged={onAuthRefresh} />;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, instances, stats, dockerAvailable, dockerError, system, selected, pendingAction]);
+  }, [page, instances, stats, counts, dockerAvailable, dockerError, system, selected, pendingAction]);
 
   const pageTitle =
     page === 'overview'

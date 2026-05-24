@@ -93,6 +93,27 @@ class InstanceStore:
         record.meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return self.get_instance(name)
 
+    def update_meta(
+        self,
+        name: str,
+        *,
+        display_name: str | None = None,
+        description: str | None = None,
+        enabled: bool | None = None,
+    ) -> InstanceRecord:
+        record = self.get_instance(name)
+        meta = json.loads(record.meta_path.read_text(encoding="utf-8"))
+        if display_name is not None:
+            stripped = display_name.strip()
+            meta["displayName"] = stripped or meta["name"]
+        if description is not None:
+            meta["description"] = description
+        if enabled is not None:
+            meta["enabled"] = bool(enabled)
+        meta["updatedAt"] = now_iso()
+        record.meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return self.get_instance(name)
+
     def delete_instance(self, name: str) -> None:
         instance_dir = self.instance_dir(name)
         if not instance_dir.exists():

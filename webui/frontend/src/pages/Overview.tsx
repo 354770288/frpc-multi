@@ -30,9 +30,17 @@ const TONE_DOT: Record<InstanceTone, string> = {
   muted: 'bg-[var(--color-fg-subtle)]'
 };
 
+type InstancePatch = {
+  displayName?: string;
+  description?: string;
+  enabled?: boolean;
+  applyImmediately?: boolean;
+};
+
 export function Overview({
   instances,
   stats,
+  counts,
   dockerAvailable,
   dockerError,
   system,
@@ -40,10 +48,12 @@ export function Overview({
   onSelect,
   onPage,
   onAction,
+  onPatch,
   onDelete
 }: {
   instances: Instance[];
   stats: StatsMap;
+  counts: { total: number; running: number; stopped: number; error: number };
   dockerAvailable: boolean;
   dockerError: string;
   system: SystemInfo | null;
@@ -51,24 +61,17 @@ export function Overview({
   onSelect: (name: string) => void;
   onPage: (page: Page) => void;
   onAction: (name: string, action: string) => void;
+  onPatch: (name: string, patch: InstancePatch) => void;
   onDelete: (name: string) => void;
 }) {
   const [keyword, setKeyword] = useState('');
 
-  let running = 0;
-  let stopped = 0;
-  let error = 0;
   let cpuTotal = 0;
   let memTotal = 0;
   let cpuSamples = 0;
   let memSamples = 0;
   for (const item of instances) {
     const stat = stats[item.name];
-    const state = stat?.state || '';
-    if (state === 'running') running += 1;
-    else if ((state === 'exited' || state === 'dead') && stat?.exitCode && stat.exitCode !== 0)
-      error += 1;
-    else stopped += 1;
     if (stat?.cpuPercent) {
       cpuTotal += parsePercent(stat.cpuPercent);
       cpuSamples += 1;
@@ -78,14 +81,15 @@ export function Overview({
       memSamples += 1;
     }
   }
-  const total = instances.length;
+  const { total, running, stopped, error } = counts;
 
   const lower = keyword.toLowerCase();
   const filtered = lower
     ? instances.filter(
         (item) =>
           item.name.toLowerCase().includes(lower) ||
-          (item.displayName || '').toLowerCase().includes(lower)
+          (item.displayName || '').toLowerCase().includes(lower) ||
+          (item.description || '').toLowerCase().includes(lower)
       )
     : instances;
 
@@ -168,6 +172,7 @@ export function Overview({
               <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface-muted)]">
                 <Th>实例名</Th>
                 <Th>状态</Th>
+                <Th>启用</Th>
                 <Th align="right">CPU</Th>
                 <Th align="right">内存</Th>
                 <Th align="right">重启</Th>
@@ -187,15 +192,25 @@ export function Overview({
                     className="border-b border-[var(--color-border)] last:border-b-0 hover:bg-[var(--color-surface-muted)] transition-colors"
                   >
                     <Td>
-                      <button
-                        onClick={() => {
-                          onSelect(item.name);
-                          onPage('detail');
-                        }}
-                        className="rounded-sm text-[13px] font-medium text-[var(--color-fg)] hover:text-[var(--color-accent)] hover:underline transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:underline focus-visible:text-[var(--color-accent)]"
-                      >
-                        {item.displayName || item.name}
-                      </button>
+                      <div className="flex flex-col gap-0.5">
+                        <button
+                          onClick={() => {
+                            onSelect(item.name);
+                            onPage('detail');
+                          }}
+                          className="self-start rounded-sm text-[13px] font-medium text-[var(--color-fg)] hover:text-[var(--color-accent)] hover:underline transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:underline focus-visible:text-[var(--color-accent)]"
+                        >
+                          {item.displayName || item.name}
+                        </button>
+                        {item.description && (
+                          <span
+                            className="text-[11px] text-[var(--color-fg-muted)] line-clamp-1"
+                            title={item.description}
+                          >
+                            {item.description}
+                          </span>
+                        )}
+                      </div>
                     </Td>
                     <Td>
                       <span
@@ -203,6 +218,16 @@ export function Overview({
                         aria-label={badge.label}
                         title={badge.label}
                         className={`inline-block w-2.5 h-2.5 rounded-full align-middle ${TONE_DOT[badge.tone]}`}
+                      />
+                    </Td>
+                    <Td>
+                      <Switch
+                        checked={item.enabled}
+                        disabled={pending === 'toggle'}
+                        label={item.enabled ? '点击停用' : '点击启用'}
+                        onChange={(next) =>
+                          onPatch(item.name, { enabled: next, applyImmediately: true })
+                        }
                       />
                     </Td>
                     <Td align="right" mono>
@@ -233,8 +258,8 @@ export function Overview({
                         ) : (
                           <IconAction
                             onClick={() => onAction(item.name, 'start')}
-                            disabled={!!pending}
-                            label="启动"
+                            disabled={!!pending || !item.enabled}
+                            label={item.enabled ? '启动' : '已停用，无法启动'}
                             tone="primary"
                           >
                             <Play size={13} />
@@ -242,8 +267,8 @@ export function Overview({
                         )}
                         <IconAction
                           onClick={() => onAction(item.name, 'restart')}
-                          disabled={!!pending}
-                          label="重启"
+                          disabled={!!pending || !item.enabled}
+                          label={item.enabled ? '重启' : '已停用，无法重启'}
                           tone="default"
                         >
                           <RotateCcw size={13} />
@@ -268,7 +293,7 @@ export function Overview({
               {filtered.length === 0 && (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={8}
                     className="px-4 py-10 text-center text-[12px] text-[var(--color-fg-muted)]"
                   >
                     没有匹配的实例
@@ -349,6 +374,38 @@ function IconAction({
       className={`${base} ${toneCls}`}
     >
       {children}
+    </button>
+  );
+}
+
+function Switch({
+  checked,
+  onChange,
+  disabled,
+  label
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  label: string;
+}) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex w-9 h-5 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)] ${
+        checked ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-border)]'
+      }`}
+    >
+      <span
+        className={`absolute top-0.5 inline-block w-4 h-4 rounded-full bg-white shadow transition-transform ${
+          checked ? 'translate-x-[18px]' : 'translate-x-0.5'
+        }`}
+      />
     </button>
   );
 }

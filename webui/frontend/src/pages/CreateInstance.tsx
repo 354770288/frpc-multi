@@ -18,7 +18,10 @@ export function CreateInstance({
 }) {
   const [name, setName] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [description, setDescription] = useState('');
   const [configText, setConfigText] = useState('');
+  const [enabled, setEnabled] = useState(true);
+  const [startAfterCreate, setStartAfterCreate] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -39,9 +42,10 @@ export function CreateInstance({
         body: JSON.stringify({
           name,
           displayName,
+          description,
           configText,
-          enabled: true,
-          startAfterCreate: false
+          enabled,
+          startAfterCreate: enabled && startAfterCreate
         })
       });
       toast('success', '实例创建成功');
@@ -87,6 +91,13 @@ export function CreateInstance({
                 placeholder="家里 NAS"
               />
             </Field>
+            <Field label="备注描述" hint="可选，方便区分用途，比如「家里 NAS」「办公室相机」">
+              <Input
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder="家中 NAS，SSH + 文件下载"
+              />
+            </Field>
             <Field label="frpc.toml" hint="实例的初始配置内容，创建后仍可在配置页编辑">
               <Textarea
                 value={configText}
@@ -95,6 +106,21 @@ export function CreateInstance({
                 className="min-h-[420px]"
               />
             </Field>
+            <div className="flex flex-col gap-2 pt-1">
+              <Toggle
+                checked={enabled}
+                onChange={setEnabled}
+                label="启用该实例"
+                hint="关闭时仅保留配置，不写入 compose.generated.yaml，也不会被启动"
+              />
+              <Toggle
+                checked={enabled && startAfterCreate}
+                disabled={!enabled}
+                onChange={setStartAfterCreate}
+                label="创建后立即启动"
+                hint={enabled ? '勾选则在写入后自动 docker compose up' : '需要先启用该实例'}
+              />
+            </div>
             <div className="flex justify-end pt-2">
               <Button variant="primary" onClick={create} disabled={submitting}>
                 <Plus size={13} />
@@ -112,6 +138,7 @@ export function CreateInstance({
               </ChecklistItem>
               <ChecklistItem>写入 meta.json</ChecklistItem>
               <ChecklistItem>重新生成 compose.generated.yaml</ChecklistItem>
+              {enabled && startAfterCreate && <ChecklistItem>docker compose up -d 启动该实例</ChecklistItem>}
             </ul>
           </Panel>
         </aside>
@@ -129,5 +156,47 @@ function ChecklistItem({ children }: { children: React.ReactNode }) {
       />
       <span>{children}</span>
     </li>
+  );
+}
+
+function Toggle({
+  checked,
+  onChange,
+  label,
+  hint,
+  disabled
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  label: string;
+  hint?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <label
+      className={`flex items-start gap-3 ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+    >
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => !disabled && onChange(!checked)}
+        className={`mt-0.5 relative inline-flex w-9 h-5 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)] ${
+          checked ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-border)]'
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 inline-block w-4 h-4 rounded-full bg-white shadow transition-transform ${
+            checked ? 'translate-x-[18px]' : 'translate-x-0.5'
+          }`}
+        />
+      </button>
+      <span className="flex flex-col gap-0.5">
+        <span className="text-[12px] font-medium text-[var(--color-fg)]">{label}</span>
+        {hint && <span className="text-[11px] text-[var(--color-fg-muted)]">{hint}</span>}
+      </span>
+    </label>
   );
 }

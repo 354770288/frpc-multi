@@ -36,6 +36,34 @@ class InstanceStoreTests(unittest.TestCase):
             self.assertEqual(instance.name, "client-001")
             self.assertEqual(json.loads((instance_dir / "meta.json").read_text())["displayName"], "测试实例")
 
+    def test_update_meta_persists_partial_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = InstanceStore(Path(tmp))
+            store.create_instance(
+                name="client-001",
+                display_name="original",
+                config_text='serverAddr = "x"\nserverPort = 7000\n',
+                enabled=True,
+                description="old",
+            )
+
+            updated = store.update_meta("client-001", enabled=False)
+            self.assertFalse(updated.enabled)
+            self.assertEqual(updated.display_name, "original")
+            self.assertEqual(updated.description, "old")
+
+            updated = store.update_meta(
+                "client-001",
+                display_name="new name",
+                description="家里 NAS",
+            )
+            self.assertEqual(updated.display_name, "new name")
+            self.assertEqual(updated.description, "家里 NAS")
+            self.assertFalse(updated.enabled)
+
+            updated = store.update_meta("client-001", display_name="   ")
+            self.assertEqual(updated.display_name, "client-001")
+
 
 class ConfigValidatorTests(unittest.TestCase):
     def test_validate_config_text_reports_missing_required_fields(self):

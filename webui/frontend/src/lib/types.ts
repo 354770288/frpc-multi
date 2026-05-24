@@ -61,6 +61,21 @@ export type SystemInfo = {
   disk: { total: number; used: number; free: number };
 };
 
+export type SummaryResponse = {
+  total: number;
+  running: number;
+  stopped: number;
+  error: number;
+  dockerAvailable: boolean;
+  dockerError: string;
+  instances: (Instance & { runtime: InstanceStats | Record<string, never> })[];
+};
+
+export type AuthMe = {
+  username: string;
+  tokenTtlSeconds: number;
+};
+
 export type Page = 'overview' | 'detail' | 'config' | 'create' | 'system';
 
 export type AuthState = {

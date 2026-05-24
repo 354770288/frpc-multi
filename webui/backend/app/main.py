@@ -52,6 +52,13 @@ class ConfigUpdate(BaseModel):
     recreateAfterSave: bool = False
 
 
+class InstancePatch(BaseModel):
+    displayName: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+    applyImmediately: bool = True
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -243,6 +250,43 @@ def delete_instance(name: str, _: Annotated[str, Depends(require_auth)]):
     return {"deleted": validate_instance_name(name)}
 
 
+@app.patch("/api/instances/{name}")
+def patch_instance(
+    name: str,
+    payload: InstancePatch,
+    _: Annotated[str, Depends(require_auth)],
+):
+    instance_store = store()
+    try:
+        previous = instance_store.get_instance(name)
+        record = instance_store.update_meta(
+            name,
+            display_name=payload.displayName,
+            description=payload.description,
+            enabled=payload.enabled,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    enabled_changed = payload.enabled is not None and previous.enabled != record.enabled
+    if enabled_changed:
+        regenerate_compose(instance_store)
+        if payload.applyImmediately:
+            service = docker()
+            if record.enabled:
+                command_response(service.start(record.name))
+            else:
+                command_response(service.stop(record.name))
+
+    return {
+        "name": record.name,
+        "displayName": record.display_name,
+        "description": record.description,
+        "enabled": record.enabled,
+        "updatedAt": record.updated_at,
+    }
+
+
 @app.get("/api/instances/{name}/config")
 def get_config(name: str, _: Annotated[str, Depends(require_auth)]):
     try:
@@ -357,6 +401,7 @@ def summary(_: Annotated[str, Depends(require_auth)]):
         "stopped": stopped,
         "error": error,
         "dockerAvailable": status.get("available", False),
+        "dockerError": status.get("error", ""),
         "instances": enriched,
     }
 
