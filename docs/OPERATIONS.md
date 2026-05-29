@@ -74,6 +74,8 @@ docker compose -f compose.console.yaml logs --tail 100 frpc-console
 
 `compose.console.yaml` 固定运行 `FRPC_MULTI_ROLE=console`。即使 `.env` 中写了 `FRPC_MULTI_ROLE=all`，该容器也只提供前端和 Console API，不会启动本机 Agent API，也不会监听 `8082`。需要 all-in-one 单机模式时使用默认 `compose.yaml`；需要 Agent 能力时在执行服务器启动 `compose.agent.yaml`。
 
+Console 节点数据存储在 `/data/console.db`。默认 `compose.yaml` 和 `compose.console.yaml` 使用同一个 Docker volume：`frpc-multi-console_console-data`。如果从 `docker compose -f compose.console.yaml up -d` 切换到 `docker compose up -d` 后节点为空，通常是旧版本默认 compose 没有挂载 `/data`，新容器读到了空数据库。
+
 Agent 执行服务器使用：
 
 ```bash
@@ -89,6 +91,59 @@ Agent 的 `.env` 必须设置 `AGENT_TOKEN`，Console 节点页面中保存的 t
 cd /opt/frpc-multi
 nano .env
 docker compose -f compose.agent.yaml up -d
+```
+
+## 节点突然为空时的恢复步骤
+
+先不要执行任何带 `-v` 的删除命令，例如 `docker compose down -v` 或 `docker volume rm`。
+
+在主控服务器执行：
+
+```bash
+cd /opt/frpc-multi
+docker volume ls | grep frpc-multi
+docker compose ps
+docker compose -f compose.console.yaml ps
+```
+
+如果看到 `frpc-multi-console_console-data`，先备份旧 Console 数据库：
+
+```bash
+mkdir -p backups
+docker run --rm \
+  -v frpc-multi-console_console-data:/data:ro \
+  -v "$PWD/backups:/backup" \
+  alpine sh -c 'cp /data/console.db /backup/console-db-$(date +%Y%m%d-%H%M%S).db'
+```
+
+然后拉取最新代码并重启你要使用的模式：
+
+```bash
+git pull origin main
+```
+
+继续使用 Console-only：
+
+```bash
+docker compose down
+docker compose -f compose.console.yaml up -d --build
+```
+
+切换到单机 all-in-one：
+
+```bash
+docker compose -f compose.console.yaml down
+docker compose up -d --build frpc-webui
+```
+
+确认容器读到同一个数据库：
+
+```bash
+# Console-only
+docker exec frpc-console sh -c 'ls -lh /data/console.db'
+
+# all-in-one
+docker exec frpc-webui sh -c 'ls -lh /data/console.db'
 ```
 
 ## Console / Agent 联调验收

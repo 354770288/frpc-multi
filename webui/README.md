@@ -53,6 +53,8 @@ docker compose -f compose.yaml -f compose.generated.yaml up -d
 
 `compose.console.yaml` 固定运行 `FRPC_MULTI_ROLE=console`。如果 `.env` 里写了 `FRPC_MULTI_ROLE=all`，但启动命令仍是 `docker compose -f compose.console.yaml up -d`，最终仍然是 Console-only，不会提供本机 Agent API 或 `8082` 端口。单机 all-in-one 模式请使用默认 `compose.yaml`，分离部署请同时在执行节点启动 `compose.agent.yaml`。
 
+Console 节点数据库固定为 `/data/console.db`。默认 `compose.yaml` 和 `compose.console.yaml` 共享 Docker volume `frpc-multi-console_console-data`，避免从 Console-only 切到 all-in-one 后看到一个空数据库。切换模式时不要使用 `down -v`，否则会删除 volume。
+
 启动 Console：
 
 ```bash

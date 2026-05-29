@@ -162,6 +162,19 @@ class ComposeGeneratorTests(unittest.TestCase):
             self.assertIn("    driver: bridge", compose_text)
 
 
+class ComposeFileTests(unittest.TestCase):
+    def test_default_and_console_compose_share_console_data_volume(self):
+        root = Path(__file__).resolve().parents[3]
+        default_compose = (root / "compose.yaml").read_text(encoding="utf-8")
+        console_compose = (root / "compose.console.yaml").read_text(encoding="utf-8")
+
+        for compose_text in [default_compose, console_compose]:
+            self.assertIn("DATABASE_PATH: ${DATABASE_PATH:-/data/console.db}", compose_text)
+            self.assertIn("- console-data:/data", compose_text)
+            self.assertIn("console-data:", compose_text)
+            self.assertIn("name: ${CONSOLE_DATA_VOLUME:-frpc-multi-console_console-data}", compose_text)
+
+
 class LocalAgentServiceTests(unittest.TestCase):
     def test_create_instance_writes_local_files_and_generated_compose(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -25,6 +25,7 @@ services:
 
 volumes:
   console-data:
+    name: ${CONSOLE_DATA_VOLUME:-frpc-multi-console_console-data}
 
 networks:
   frpc-control:

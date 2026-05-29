@@ -70,6 +70,8 @@ Agent：compose.agent.yaml，FRPC_MULTI_ROLE=agent，只提供 /agent/*，挂载
 
 注意：`compose.console.yaml` 会在 compose 文件内固定 `FRPC_MULTI_ROLE=console`，不会因为 `.env` 写了 `FRPC_MULTI_ROLE=all` 就启动本机 Agent 能力，也不会监听 `8082`。如果要单机 all-in-one，请使用 `compose.yaml`；如果要分离部署，请在执行节点单独启动 `compose.agent.yaml`。
 
+Console 节点数据存储在 `/data/console.db`。默认 `compose.yaml` 和 `compose.console.yaml` 会挂载同一个 Docker volume：`frpc-multi-console_console-data`。从 Console-only 切换到 all-in-one 前，不要执行 `docker compose down -v`；如果页面里节点突然为空，通常是启动到了另一个未挂载旧 `/data` 的容器，先按 `docs/OPERATIONS.md` 的恢复步骤检查 volume。
+
 默认 `compose.yaml` 适合一台 VPS 同时运行管理界面和本机 frpc 实例。多服务器管理时，使用专用 compose 文件：
 
 主控 Console 服务器：
