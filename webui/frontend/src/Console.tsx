@@ -256,7 +256,7 @@ export function Console({
           onDelete={deleteInstance}
         />
       );
-    if (page === 'nodes') return <NodesPage toast={toast} />;
+    if (page === 'nodes') return <NodesPage toast={toast} onChanged={refreshAll} />;
     if (page === 'audit') return <AuditLogsPage nodes={nodes} toast={toast} />;
     if (page === 'detail')
       return (

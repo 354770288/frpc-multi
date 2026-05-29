@@ -72,6 +72,8 @@ docker compose -f compose.console.yaml ps
 docker compose -f compose.console.yaml logs --tail 100 frpc-console
 ```
 
+`compose.console.yaml` 固定运行 `FRPC_MULTI_ROLE=console`。即使 `.env` 中写了 `FRPC_MULTI_ROLE=all`，该容器也只提供前端和 Console API，不会启动本机 Agent API，也不会监听 `8082`。需要 all-in-one 单机模式时使用默认 `compose.yaml`；需要 Agent 能力时在执行服务器启动 `compose.agent.yaml`。
+
 Agent 执行服务器使用：
 
 ```bash

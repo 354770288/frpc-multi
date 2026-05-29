@@ -15,9 +15,11 @@ const EMPTY_FORM: NodeCreatePayload = {
 };
 
 export function NodesPage({
-  toast
+  toast,
+  onChanged
 }: {
   toast: (kind: ToastKind, text: string) => void;
+  onChanged?: () => void;
 }) {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [form, setForm] = useState<NodeCreatePayload>(EMPTY_FORM);
@@ -64,6 +66,7 @@ export function NodesPage({
       setForm(EMPTY_FORM);
       toast('success', '节点已新增');
       await loadNodes();
+      onChanged?.();
     } catch (err) {
       toast('error', err instanceof Error ? err.message : '节点新增失败');
     } finally {
@@ -77,9 +80,11 @@ export function NodesPage({
       await nodesApi.ping(node.id);
       toast('success', `${node.name} 连接正常`);
       await loadNodes();
+      onChanged?.();
     } catch (err) {
       toast('error', `${node.name} 连接失败：${err instanceof Error ? err.message : '未知错误'}`);
       await loadNodes();
+      onChanged?.();
     } finally {
       setPending((prev) => {
         const next = { ...prev };
@@ -96,6 +101,7 @@ export function NodesPage({
       await nodesApi.delete(node.id);
       toast('success', `${node.name} 已删除`);
       await loadNodes();
+      onChanged?.();
     } catch (err) {
       toast('error', `${node.name} 删除失败：${err instanceof Error ? err.message : '未知错误'}`);
     } finally {

@@ -51,6 +51,8 @@ docker compose -f compose.yaml -f compose.generated.yaml up -d
 
 多服务器管理时，前端只访问 Console API，Console 再转发到各 Agent。Console 不直接操作 `instances/`、`compose.generated.yaml` 或 Docker socket。
 
+`compose.console.yaml` 固定运行 `FRPC_MULTI_ROLE=console`。如果 `.env` 里写了 `FRPC_MULTI_ROLE=all`，但启动命令仍是 `docker compose -f compose.console.yaml up -d`，最终仍然是 Console-only，不会提供本机 Agent API 或 `8082` 端口。单机 all-in-one 模式请使用默认 `compose.yaml`，分离部署请同时在执行节点启动 `compose.agent.yaml`。
+
 启动 Console：
 
 ```bash

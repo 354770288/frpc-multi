@@ -37,9 +37,15 @@ export function ConfigEditor({
   const [restartAfterSave, setRestartAfterSave] = useState(true);
   const [mode, setMode] = useState<EditorMode>('structured');
   const name = instance?.name || '';
+  const instanceKey = instance ? `${instance.nodeId}:${instance.name}` : '';
 
   useEffect(() => {
-    if (!instance) return;
+    if (!instance) {
+      setConfigText('');
+      setOriginalText('');
+      setValidation(null);
+      return;
+    }
     const request =
       instance.nodeId > 0
         ? nodesApi.instances.getConfig(instance.nodeId, instance.name)
@@ -55,11 +61,15 @@ export function ConfigEditor({
         setOriginalText('');
         setValidation(null);
       });
-  }, [instance]);
+    // Only reload when the selected instance identity changes. Summary polling
+    // refreshes the instance object every few seconds and must not overwrite
+    // unsaved edits in this page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instanceKey]);
 
   useEffect(() => {
     if (!instance) return;
-    if (configText === originalText && validation) return;
+    if (configText === originalText) return;
     const handle = window.setTimeout(async () => {
       setValidating(true);
       try {
@@ -79,7 +89,8 @@ export function ConfigEditor({
       }
     }, 500);
     return () => window.clearTimeout(handle);
-  }, [instance, configText, originalText, validation]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instanceKey, configText, originalText]);
 
   const dirty = configText !== originalText;
 

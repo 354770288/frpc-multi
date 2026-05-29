@@ -157,6 +157,9 @@ class ComposeGeneratorTests(unittest.TestCase):
             self.assertIn("frpc-office-frpc:", compose_text)
             self.assertIn("./instances/client-001/frpc.toml:/etc/frp/frpc.toml:ro", compose_text)
             self.assertIn("ghcr.io/fatedier/frpc:v0.68.1", compose_text)
+            self.assertIn("networks:", compose_text)
+            self.assertIn("  frpc-outbound:", compose_text)
+            self.assertIn("    driver: bridge", compose_text)
 
 
 class LocalAgentServiceTests(unittest.TestCase):
@@ -319,6 +322,27 @@ class NodeStoreTests(unittest.TestCase):
             self.assertEqual(updated.base_url, "https://agent.example.com")
             self.assertEqual(updated.token, "new-token")
             self.assertEqual(updated.status, "online")
+
+            self.assertTrue(store.delete_node(created.id))
+            self.assertEqual(store.list_nodes(), [])
+
+    def test_node_delete_succeeds_after_audit_logs_reference_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "console.db"
+            store = NodeStore(db_path)
+            created = store.create_node(
+                name="local-agent",
+                base_url="http://127.0.0.1:8082/",
+                token="secret-token",
+            )
+            from app.control.audit_store import AuditStore
+
+            AuditStore(db_path).create_log(
+                username="admin",
+                action="create_instance",
+                node_id=created.id,
+                instance_name="client-001",
+            )
 
             self.assertTrue(store.delete_node(created.id))
             self.assertEqual(store.list_nodes(), [])

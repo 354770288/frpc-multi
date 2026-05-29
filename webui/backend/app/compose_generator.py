@@ -52,6 +52,14 @@ def generate_compose(project_dir: Path, instances: list[InstanceRecord]) -> str:
                 ]
             )
 
+    lines.extend(
+        [
+            "",
+            "networks:",
+            "  frpc-outbound:",
+            "    driver: bridge",
+        ]
+    )
     return "\n".join(lines)
 
 

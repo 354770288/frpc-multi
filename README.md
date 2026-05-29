@@ -68,6 +68,8 @@ Console：compose.console.yaml，FRPC_MULTI_ROLE=console，只提供前端和 /a
 Agent：compose.agent.yaml，FRPC_MULTI_ROLE=agent，只提供 /agent/*，挂载 Docker socket 管理本机实例。
 ```
 
+注意：`compose.console.yaml` 会在 compose 文件内固定 `FRPC_MULTI_ROLE=console`，不会因为 `.env` 写了 `FRPC_MULTI_ROLE=all` 就启动本机 Agent 能力，也不会监听 `8082`。如果要单机 all-in-one，请使用 `compose.yaml`；如果要分离部署，请在执行节点单独启动 `compose.agent.yaml`。
+
 默认 `compose.yaml` 适合一台 VPS 同时运行管理界面和本机 frpc 实例。多服务器管理时，使用专用 compose 文件：
 
 主控 Console 服务器：
