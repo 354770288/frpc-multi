@@ -13,13 +13,16 @@ class DockerService:
         self.project_dir = Path(project_dir)
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            args,
-            cwd=self.project_dir,
-            check=False,
-            text=True,
-            capture_output=True,
-        )
+        try:
+            return subprocess.run(
+                args,
+                cwd=self.project_dir,
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+        except FileNotFoundError as exc:
+            return subprocess.CompletedProcess(args, 127, "", f"命令不可用: {exc.filename}")
 
     def compose(self, *args: str) -> subprocess.CompletedProcess[str]:
         base = ["docker", "compose", "-f", "compose.yaml", "-f", "compose.generated.yaml"]

@@ -1,4 +1,4 @@
-import { Boxes, FileCode2, Home, Plus, Settings } from 'lucide-react';
+import { Boxes, ClipboardList, FileCode2, Home, Network, Plus, Settings } from 'lucide-react';
 import type { Page, SystemInfo } from '../lib/types';
 
 export function Sidebar({
@@ -14,6 +14,8 @@ export function Sidebar({
 }) {
   const items = [
     ['overview', Home, '总览'],
+    ['nodes', Network, '节点'],
+    ['audit', ClipboardList, '审计'],
     ['create', Plus, '创建实例'],
     ['config', FileCode2, '配置'],
     ['system', Settings, '系统']

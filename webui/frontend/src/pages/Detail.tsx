@@ -1,29 +1,29 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Play, RefreshCw, RotateCcw, Search, Square } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, nodesApi } from '../lib/api';
 import { getAuthToken } from '../lib/auth';
 import { instanceStateBadge } from '../lib/format';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Panel } from '../components/ui/Panel';
-import type { InstanceDetail, Page, StatsMap } from '../lib/types';
+import type { InstanceDetail, InstanceRef, Page, StatsMap } from '../lib/types';
 
 const TAIL_OPTIONS = [100, 300, 1000] as const;
 type TailOption = (typeof TAIL_OPTIONS)[number];
 const FOLLOW_BUFFER_LIMIT = 5000;
 
 export function Detail({
-  name,
+  instance,
   stats,
   pendingAction,
   onPage,
   onAction
 }: {
-  name: string;
+  instance: InstanceRef | null;
   stats: StatsMap;
   pendingAction: Record<string, string>;
   onPage: (page: Page) => void;
-  onAction: (name: string, action: string) => void;
+  onAction: (instance: InstanceRef, action: string) => void;
 }) {
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
@@ -34,19 +34,29 @@ export function Detail({
   const [follow, setFollow] = useState(false);
   const [followState, setFollowState] = useState<'idle' | 'connecting' | 'live' | 'error'>('idle');
   const logBoxRef = useRef<HTMLPreElement | null>(null);
+  const name = instance?.name || '';
+  const key = instance ? `${instance.nodeId}:${instance.name}` : '';
 
   useEffect(() => {
-    if (!name) return;
-    api<InstanceDetail>(`/api/instances/${name}`).then(setDetail).catch(console.error);
-  }, [name]);
+    if (!instance) return;
+    const loader =
+      instance.nodeId > 0
+        ? nodesApi.instances.get(instance.nodeId, instance.name)
+        : api<InstanceDetail>(`/api/instances/${instance.name}`);
+    loader.then(setDetail).catch(console.error);
+  }, [instance]);
 
   useEffect(() => {
-    if (!name || follow) return;
+    if (!instance || follow) return;
     let cancelled = false;
     setLogsLoading(true);
     const params = new URLSearchParams({ tail: String(tail) });
     if (appliedKeyword) params.set('keyword', appliedKeyword);
-    api<{ lines: string[] }>(`/api/instances/${name}/logs?${params.toString()}`)
+    const request =
+      instance.nodeId > 0
+        ? nodesApi.instances.logs(instance.nodeId, instance.name, params)
+        : api<{ lines: string[] }>(`/api/instances/${instance.name}/logs?${params.toString()}`);
+    request
       .then((data) => {
         if (!cancelled) setLogs(data.lines);
       })
@@ -59,10 +69,10 @@ export function Detail({
     return () => {
       cancelled = true;
     };
-  }, [name, tail, appliedKeyword, follow]);
+  }, [instance, tail, appliedKeyword, follow]);
 
   useEffect(() => {
-    if (!name || !follow) return;
+    if (!instance || !follow || instance.nodeId > 0) return;
     const token = getAuthToken();
     if (!token) {
       setFollowState('error');
@@ -70,7 +80,7 @@ export function Detail({
     }
     const params = new URLSearchParams({ tail: String(tail), token });
     if (appliedKeyword) params.set('keyword', appliedKeyword);
-    const url = `/api/instances/${name}/logs/stream?${params.toString()}`;
+    const url = `/api/instances/${instance.name}/logs/stream?${params.toString()}`;
     setLogs([]);
     setFollowState('connecting');
     const source = new EventSource(url);
@@ -102,7 +112,7 @@ export function Detail({
       source.close();
       setFollowState('idle');
     };
-  }, [name, follow, tail, appliedKeyword]);
+  }, [instance, follow, tail, appliedKeyword]);
 
   useEffect(() => {
     if (!follow) return;
@@ -111,16 +121,16 @@ export function Detail({
     box.scrollTop = 0;
   }, [logs, follow]);
 
-  if (!name)
+  if (!instance)
     return (
       <main className="px-6 py-6">
         <h2 className="text-[18px] font-semibold text-[var(--color-fg)]">请选择实例</h2>
       </main>
     );
 
-  const stat = stats[name];
+  const stat = stats[key];
   const badge = instanceStateBadge(stat, detail?.enabled ?? false);
-  const pending = pendingAction[name];
+  const pending = pendingAction[key];
 
   function applyKeyword() {
     setAppliedKeyword(keywordInput.trim());
@@ -174,6 +184,9 @@ export function Detail({
           title={
             <span className="inline-flex items-center gap-2">
               最近日志
+              {instance.nodeId > 0 && (
+                <span className="text-[11px] font-normal text-[var(--color-fg-muted)]">节点实例暂不支持实时跟随</span>
+              )}
               {follow && (
                 <span
                   className={`inline-flex items-center gap-1 text-[11px] font-normal ${
@@ -209,7 +222,7 @@ export function Detail({
           }
           actions={
             <div className="flex items-center gap-2 flex-wrap">
-              <FollowToggle checked={follow} onChange={setFollow} />
+              <FollowToggle checked={follow} onChange={setFollow} disabled={instance.nodeId > 0} />
               <select
                 value={tail}
                 onChange={(event) => setTail(Number(event.target.value) as TailOption)}
@@ -273,26 +286,26 @@ export function Detail({
             <Button
               variant="primary"
               disabled={!!pending || !(detail?.enabled ?? true)}
-              onClick={() => onAction(name, 'start')}
+              onClick={() => onAction(instance, 'start')}
               title={detail && !detail.enabled ? '实例已停用，请先在总览启用' : undefined}
             >
               <Play size={13} />
               {pending === 'start' ? '启动中…' : '启动'}
             </Button>
-            <Button disabled={!!pending} onClick={() => onAction(name, 'stop')}>
+            <Button disabled={!!pending} onClick={() => onAction(instance, 'stop')}>
               <Square size={13} />
               {pending === 'stop' ? '停止中…' : '停止'}
             </Button>
             <Button
               disabled={!!pending || !(detail?.enabled ?? true)}
-              onClick={() => onAction(name, 'restart')}
+              onClick={() => onAction(instance, 'restart')}
             >
               <RefreshCw size={13} />
               {pending === 'restart' ? '重启中…' : '重启'}
             </Button>
             <Button
               disabled={!!pending || !(detail?.enabled ?? true)}
-              onClick={() => onAction(name, 'recreate')}
+              onClick={() => onAction(instance, 'recreate')}
             >
               <RotateCcw size={13} />
               {pending === 'recreate' ? '重建中…' : '重新创建容器'}
@@ -375,10 +388,12 @@ function ChipGroup({
 
 function FollowToggle({
   checked,
-  onChange
+  onChange,
+  disabled = false
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -386,7 +401,8 @@ function FollowToggle({
       role="switch"
       aria-checked={checked}
       title={checked ? '关闭实时跟随' : '打开实时跟随'}
-      onClick={() => onChange(!checked)}
+      disabled={disabled}
+      onClick={() => !disabled && onChange(!checked)}
       className={`inline-flex items-center gap-2 h-8 px-2.5 rounded-md border text-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)] ${
         checked
           ? 'bg-[var(--color-accent-soft)] border-[var(--color-accent)] text-[var(--color-accent)]'

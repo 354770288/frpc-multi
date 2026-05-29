@@ -21,7 +21,7 @@ import {
   parsePercent,
   type InstanceTone
 } from '../lib/format';
-import type { Instance, Page, StatsMap, SystemInfo } from '../lib/types';
+import type { InstanceRef, Page, StatsMap, SystemInfo } from '../lib/types';
 
 const TONE_DOT: Record<InstanceTone, string> = {
   success: 'bg-[var(--color-success)]',
@@ -51,18 +51,18 @@ export function Overview({
   onPatch,
   onDelete
 }: {
-  instances: Instance[];
+  instances: InstanceRef[];
   stats: StatsMap;
   counts: { total: number; running: number; stopped: number; error: number };
   dockerAvailable: boolean;
   dockerError: string;
   system: SystemInfo | null;
   pendingAction: Record<string, string>;
-  onSelect: (name: string) => void;
+  onSelect: (instance: InstanceRef) => void;
   onPage: (page: Page) => void;
-  onAction: (name: string, action: string) => void;
-  onPatch: (name: string, patch: InstancePatch) => void;
-  onDelete: (name: string) => void;
+  onAction: (instance: InstanceRef, action: string) => void;
+  onPatch: (instance: InstanceRef, patch: InstancePatch) => void;
+  onDelete: (instance: InstanceRef) => void;
 }) {
   const [keyword, setKeyword] = useState('');
 
@@ -71,7 +71,7 @@ export function Overview({
   let cpuSamples = 0;
   let memSamples = 0;
   for (const item of instances) {
-    const stat = stats[item.name];
+    const stat = stats[instanceKey(item)];
     if (stat?.cpuPercent) {
       cpuTotal += parsePercent(stat.cpuPercent);
       cpuSamples += 1;
@@ -89,7 +89,8 @@ export function Overview({
         (item) =>
           item.name.toLowerCase().includes(lower) ||
           (item.displayName || '').toLowerCase().includes(lower) ||
-          (item.description || '').toLowerCase().includes(lower)
+          (item.description || '').toLowerCase().includes(lower) ||
+          item.nodeName.toLowerCase().includes(lower)
       )
     : instances;
 
@@ -171,6 +172,7 @@ export function Overview({
             <thead>
               <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface-muted)]">
                 <Th>实例名</Th>
+                <Th>节点</Th>
                 <Th>状态</Th>
                 <Th>启用</Th>
                 <Th align="right">CPU</Th>
@@ -182,9 +184,10 @@ export function Overview({
             </thead>
             <tbody>
               {filtered.map((item) => {
-                const stat = stats[item.name];
+                const key = instanceKey(item);
+                const stat = stats[key];
                 const badge = instanceStateBadge(stat, item.enabled);
-                const pending = pendingAction[item.name];
+                const pending = pendingAction[key];
                 const isRunning = stat?.state === 'running';
                 return (
                   <tr
@@ -195,7 +198,7 @@ export function Overview({
                       <div className="flex flex-col gap-0.5">
                         <button
                           onClick={() => {
-                            onSelect(item.name);
+                            onSelect(item);
                             onPage('detail');
                           }}
                           className="self-start rounded-sm text-[13px] font-medium text-[var(--color-fg)] hover:text-[var(--color-accent)] hover:underline transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:underline focus-visible:text-[var(--color-accent)]"
@@ -213,6 +216,9 @@ export function Overview({
                       </div>
                     </Td>
                     <Td>
+                      <span className="text-[12px] text-[var(--color-fg-muted)]">{item.nodeName}</span>
+                    </Td>
+                    <Td>
                       <span
                         role="img"
                         aria-label={badge.label}
@@ -226,7 +232,7 @@ export function Overview({
                         disabled={pending === 'toggle'}
                         label={item.enabled ? '点击停用' : '点击启用'}
                         onChange={(next) =>
-                          onPatch(item.name, { enabled: next, applyImmediately: true })
+                          onPatch(item, { enabled: next, applyImmediately: true })
                         }
                       />
                     </Td>
@@ -248,7 +254,7 @@ export function Overview({
                       <div className="flex items-center justify-end gap-1">
                         {isRunning ? (
                           <IconAction
-                            onClick={() => onAction(item.name, 'stop')}
+                            onClick={() => onAction(item, 'stop')}
                             disabled={!!pending}
                             label="停止"
                             tone="default"
@@ -257,7 +263,7 @@ export function Overview({
                           </IconAction>
                         ) : (
                           <IconAction
-                            onClick={() => onAction(item.name, 'start')}
+                            onClick={() => onAction(item, 'start')}
                             disabled={!!pending || !item.enabled}
                             label={item.enabled ? '启动' : '已停用，无法启动'}
                             tone="primary"
@@ -266,7 +272,7 @@ export function Overview({
                           </IconAction>
                         )}
                         <IconAction
-                          onClick={() => onAction(item.name, 'restart')}
+                          onClick={() => onAction(item, 'restart')}
                           disabled={!!pending || !item.enabled}
                           label={item.enabled ? '重启' : '已停用，无法重启'}
                           tone="default"
@@ -275,14 +281,14 @@ export function Overview({
                         </IconAction>
                         <RowMenu
                           onLog={() => {
-                            onSelect(item.name);
+                            onSelect(item);
                             onPage('detail');
                           }}
                           onConfig={() => {
-                            onSelect(item.name);
+                            onSelect(item);
                             onPage('config');
                           }}
-                          onDelete={() => onDelete(item.name)}
+                          onDelete={() => onDelete(item)}
                           deleting={pending === 'delete'}
                         />
                       </div>
@@ -293,7 +299,7 @@ export function Overview({
               {filtered.length === 0 && (
                 <tr>
                   <td
-                    colSpan={8}
+                    colSpan={9}
                     className="px-4 py-10 text-center text-[12px] text-[var(--color-fg-muted)]"
                   >
                     没有匹配的实例
@@ -306,6 +312,10 @@ export function Overview({
       </section>
     </main>
   );
+}
+
+function instanceKey(item: InstanceRef): string {
+  return `${item.nodeId}:${item.name}`;
 }
 
 function Th({

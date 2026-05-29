@@ -6,7 +6,7 @@ import {
   Plus,
   XCircle
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, nodesApi } from '../lib/api';
 import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
 import { Input, Textarea } from '../components/ui/Input';
@@ -21,7 +21,7 @@ import {
   type FrpcConfigDraft,
   type ProxyDraft
 } from '../lib/proxyToml';
-import type { Instance, ToastKind } from '../lib/types';
+import type { InstanceRef, Node, ToastKind } from '../lib/types';
 
 const INSTANCE_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$/;
 
@@ -30,12 +30,14 @@ type EditorMode = 'structured' | 'raw';
 export function CreateInstance({
   toast,
   instances,
+  nodes,
   onCreated,
   onCancel
 }: {
   toast: (kind: ToastKind, text: string) => void;
-  instances: Instance[];
-  onCreated: (name: string) => void;
+  instances: InstanceRef[];
+  nodes: Node[];
+  onCreated: (name: string, nodeId: number) => void;
   onCancel: () => void;
 }) {
   const defaultName = useMemo(() => nextClientName(instances), [instances]);
@@ -50,12 +52,17 @@ export function CreateInstance({
   const [configText, setConfigText] = useState(initialConfigText);
   const [mode, setMode] = useState<EditorMode>('structured');
   const [submitting, setSubmitting] = useState(false);
+  const [nodeId, setNodeId] = useState<number>(nodes[0]?.id || 0);
 
   // Re-sync the suggested name once the instance list arrives (the user
   // hasn't typed yet — let the default catch up to the real instances).
   useEffect(() => {
     if (!nameDirty) setName(nextClientName(instances));
   }, [instances, nameDirty]);
+
+  useEffect(() => {
+    if (!nodeId && nodes[0]) setNodeId(nodes[0].id);
+  }, [nodes, nodeId]);
 
   const structured = useMemo(() => parseFrpcConfig(configText), [configText]);
   const structuredErrors = useMemo(() => validateFrpcDraft(structured), [structured]);
@@ -72,16 +79,21 @@ export function CreateInstance({
   const nameError = name.trim() === ''
     ? '请填写实例名'
     : INSTANCE_NAME_RE.test(name.trim())
-      ? instances.some((item) => item.name === name.trim())
+      ? instances.some((item) => item.nodeId === nodeId && item.name === name.trim())
         ? '该实例名已存在'
         : null
       : '只能包含小写字母、数字和短横线，长度 3-40，且不能以短横线开头或结尾';
+  const nodeError = nodes.length > 0 && !nodeId ? '请选择节点' : null;
 
-  const canSubmit = !submitting && !nameError && structuredErrors.length === 0;
+  const canSubmit = !submitting && !nodeError && !nameError && structuredErrors.length === 0;
 
   async function create() {
     if (nameError) {
       toast('error', nameError);
+      return;
+    }
+    if (nodeError) {
+      toast('error', nodeError);
       return;
     }
     if (structuredErrors.length) {
@@ -90,19 +102,24 @@ export function CreateInstance({
     }
     setSubmitting(true);
     try {
-      await api('/api/instances', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: name.trim(),
-          displayName,
-          description,
-          configText,
-          enabled,
-          startAfterCreate: enabled && startAfterCreate
-        })
-      });
+      const payload = {
+        name: name.trim(),
+        displayName,
+        description,
+        configText,
+        enabled,
+        startAfterCreate: enabled && startAfterCreate
+      };
+      if (nodeId > 0) {
+        await nodesApi.instances.create(nodeId, payload);
+      } else {
+        await api('/api/instances', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+      }
       toast('success', '实例创建成功');
-      onCreated(name.trim());
+      onCreated(name.trim(), nodeId);
     } catch (err) {
       toast('error', err instanceof Error ? err.message : '创建失败');
     } finally {
@@ -153,6 +170,21 @@ export function CreateInstance({
             <>
               <Panel title="实例">
                 <div className="flex flex-col gap-4">
+                  <Field label="节点" hint="实例会创建到选中的 Agent 节点">
+                    <select
+                      value={nodeId}
+                      onChange={(event) => setNodeId(Number(event.target.value))}
+                      className="w-full h-9 px-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] focus:ring-2 focus:ring-[var(--color-accent)]/15"
+                    >
+                      <option value={0}>{nodes.length ? '请选择节点' : '本机'}</option>
+                      {nodes.map((node) => (
+                        <option key={node.id} value={node.id}>
+                          {node.name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  {nodeError && <ErrorLine>{nodeError}</ErrorLine>}
                   <Field
                     label="实例名"
                     hint="只能包含小写字母、数字和短横线；默认会自动递增 client-NNN"
@@ -280,7 +312,7 @@ export function CreateInstance({
         <aside className="flex flex-col gap-4">
           <Panel title="校验结果">
             <div role="status" aria-live="polite">
-              {structuredErrors.length === 0 && !nameError ? (
+              {structuredErrors.length === 0 && !nameError && !nodeError ? (
                 <div className="flex items-start gap-2 text-[12px] text-[var(--color-success)]">
                   <CheckCircle2 size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
                   <span>可创建</span>
@@ -291,6 +323,12 @@ export function CreateInstance({
                     <li className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-danger-soft)] text-[12px] text-[var(--color-danger)]">
                       <XCircle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
                       <span>{nameError}</span>
+                    </li>
+                  )}
+                  {nodeError && (
+                    <li className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-danger-soft)] text-[12px] text-[var(--color-danger)]">
+                      <XCircle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
+                      <span>{nodeError}</span>
                     </li>
                   )}
                   {structuredErrors.map((message, idx) => (
@@ -323,7 +361,7 @@ export function CreateInstance({
   );
 }
 
-function nextClientName(instances: Instance[]): string {
+function nextClientName(instances: InstanceRef[]): string {
   const numbers: number[] = [];
   for (const item of instances) {
     const match = /^client-(\d{1,6})$/.exec(item.name);

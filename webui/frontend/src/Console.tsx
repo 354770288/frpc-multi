@@ -6,13 +6,16 @@ import { Overview } from './pages/Overview';
 import { Detail } from './pages/Detail';
 import { ConfigEditor } from './pages/ConfigEditor';
 import { CreateInstance } from './pages/CreateInstance';
+import { NodesPage } from './pages/NodesPage';
+import { AuditLogsPage } from './pages/AuditLogsPage';
 import { SystemPage } from './pages/SystemPage';
-import { api } from './lib/api';
+import { api, nodesApi } from './lib/api';
 import { actionLabel } from './lib/format';
 import type {
   AuthState,
-  Instance,
+  InstanceRef,
   InstanceStats,
+  Node,
   Page,
   StatsMap,
   SummaryResponse,
@@ -41,7 +44,8 @@ export function Console({
 }) {
   const [page, setPage] = useState<Page>('overview');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [instances, setInstances] = useState<Instance[]>([]);
+  const [nodes, setNodes] = useState<Node[]>([]);
+  const [instances, setInstances] = useState<InstanceRef[]>([]);
   const [stats, setStats] = useState<StatsMap>({});
   const [counts, setCounts] = useState<SummaryCounts>(EMPTY_COUNTS);
   const [dockerAvailable, setDockerAvailable] = useState(false);
@@ -69,16 +73,38 @@ export function Console({
     );
   }, []);
 
+  function instanceKey(nodeId: number, name: string) {
+    return `${nodeId}:${name}`;
+  }
+
+  function selectedInstance() {
+    return instances.find((item) => instanceKey(item.nodeId, item.name) === selected) || null;
+  }
+
   async function loadSummary() {
     try {
-      const data = await api<SummaryResponse>('/api/summary');
-      const list: Instance[] = [];
+      const [nodeList, data] = await Promise.all([
+        nodesApi.list(),
+        api<SummaryResponse>('/api/summary')
+      ]);
+      const summaryByNodeId = new Map((data.nodes || []).map((node) => [node.id, node]));
+      setNodes(
+        nodeList.map((node) => {
+          const summary = summaryByNodeId.get(node.id);
+          return summary
+            ? { ...node, status: summary.status, lastSeenAt: summary.lastSeenAt }
+            : node;
+        })
+      );
+
+      const list: InstanceRef[] = [];
       const statMap: StatsMap = {};
       for (const item of data.instances) {
-        const { runtime, ...rest } = item;
-        list.push(rest);
+        const { runtime, nodeId, nodeName, ...rest } = item;
+        const resolvedNodeId = typeof nodeId === 'number' ? nodeId : 0;
+        list.push({ ...rest, nodeId: resolvedNodeId, nodeName: nodeName || '本机' });
         if (runtime && Object.keys(runtime).length) {
-          statMap[item.name] = runtime as InstanceStats;
+          statMap[instanceKey(resolvedNodeId, item.name)] = runtime as InstanceStats;
         }
       }
       setInstances(list);
@@ -91,7 +117,10 @@ export function Console({
       });
       setDockerAvailable(!!data.dockerAvailable);
       setDockerError(data.dockerError || '');
-      if (!selectedRef.current && list[0]) setSelected(list[0].name);
+      const currentStillExists = list.some(
+        (item) => instanceKey(item.nodeId, item.name) === selectedRef.current
+      );
+      if (!currentStillExists) setSelected(list[0] ? instanceKey(list[0].nodeId, list[0].name) : '');
     } catch {
       setInstances([]);
       setStats({});
@@ -118,21 +147,23 @@ export function Console({
   }, []);
 
   const action = useCallback(
-    async (name: string, verb: string) => {
-      setPendingAction((prev) => ({ ...prev, [name]: verb }));
+    async (item: InstanceRef, verb: string) => {
+      const key = instanceKey(item.nodeId, item.name);
+      setPendingAction((prev) => ({ ...prev, [key]: verb }));
       try {
-        await api(`/api/instances/${name}/${verb}`, { method: 'POST' });
-        toast('success', `${name} ${actionLabel(verb)}成功`);
+        if (item.nodeId > 0) await nodesApi.instances.action(item.nodeId, item.name, verb);
+        else await api(`/api/instances/${item.name}/${verb}`, { method: 'POST' });
+        toast('success', `${item.name} ${actionLabel(verb)}成功`);
         await loadSummary();
       } catch (err) {
         toast(
           'error',
-          `${name} ${actionLabel(verb)}失败：${err instanceof Error ? err.message : '未知错误'}`
+          `${item.name} ${actionLabel(verb)}失败：${err instanceof Error ? err.message : '未知错误'}`
         );
       } finally {
         setPendingAction((prev) => {
           const next = { ...prev };
-          delete next[name];
+          delete next[key];
           return next;
         });
       }
@@ -143,31 +174,35 @@ export function Console({
 
   const patchInstance = useCallback(
     async (
-      name: string,
+      item: InstanceRef,
       patch: { displayName?: string; description?: string; enabled?: boolean; applyImmediately?: boolean }
     ) => {
       const key = patch.enabled !== undefined ? 'toggle' : 'patch';
-      setPendingAction((prev) => ({ ...prev, [name]: key }));
+      const pendingKey = instanceKey(item.nodeId, item.name);
+      setPendingAction((prev) => ({ ...prev, [pendingKey]: key }));
       try {
-        await api(`/api/instances/${name}`, {
-          method: 'PATCH',
-          body: JSON.stringify(patch)
-        });
+        if (item.nodeId > 0) await nodesApi.instances.patch(item.nodeId, item.name, patch);
+        else {
+          await api(`/api/instances/${item.name}`, {
+            method: 'PATCH',
+            body: JSON.stringify(patch)
+          });
+        }
         if (patch.enabled !== undefined) {
-          toast('success', `${name} 已${patch.enabled ? '启用' : '停用'}`);
+          toast('success', `${item.name} 已${patch.enabled ? '启用' : '停用'}`);
         } else {
-          toast('success', `${name} 已更新`);
+          toast('success', `${item.name} 已更新`);
         }
         await loadSummary();
       } catch (err) {
         toast(
           'error',
-          `${name} 更新失败：${err instanceof Error ? err.message : '未知错误'}`
+          `${item.name} 更新失败：${err instanceof Error ? err.message : '未知错误'}`
         );
       } finally {
         setPendingAction((prev) => {
           const next = { ...prev };
-          delete next[name];
+          delete next[pendingKey];
           return next;
         });
       }
@@ -177,21 +212,23 @@ export function Console({
   );
 
   const deleteInstance = useCallback(
-    async (name: string) => {
-      if (!window.confirm(`确认删除实例 ${name}？该操作会停止容器、删除 instances/${name} 整个目录，且不可撤销。`))
+    async (item: InstanceRef) => {
+      const key = instanceKey(item.nodeId, item.name);
+      if (!window.confirm(`确认删除实例 ${item.name}？该操作会停止容器、删除实例目录，且不可撤销。`))
         return;
-      setPendingAction((prev) => ({ ...prev, [name]: 'delete' }));
+      setPendingAction((prev) => ({ ...prev, [key]: 'delete' }));
       try {
-        await api(`/api/instances/${name}`, { method: 'DELETE' });
-        toast('success', `${name} 已删除`);
-        if (selected === name) setSelected('');
+        if (item.nodeId > 0) await nodesApi.instances.delete(item.nodeId, item.name);
+        else await api(`/api/instances/${item.name}`, { method: 'DELETE' });
+        toast('success', `${item.name} 已删除`);
+        if (selected === key) setSelected('');
         await refreshAll();
       } catch (err) {
-        toast('error', `${name} 删除失败：${err instanceof Error ? err.message : '未知错误'}`);
+        toast('error', `${item.name} 删除失败：${err instanceof Error ? err.message : '未知错误'}`);
       } finally {
         setPendingAction((prev) => {
           const next = { ...prev };
-          delete next[name];
+          delete next[key];
           return next;
         });
       }
@@ -201,6 +238,7 @@ export function Console({
   );
 
   const body = useMemo(() => {
+    const current = selectedInstance();
     if (page === 'overview')
       return (
         <Overview
@@ -211,31 +249,34 @@ export function Console({
           dockerError={dockerError}
           system={system}
           pendingAction={pendingAction}
-          onSelect={setSelected}
+          onSelect={(item) => setSelected(instanceKey(item.nodeId, item.name))}
           onPage={setPage}
           onAction={action}
           onPatch={patchInstance}
           onDelete={deleteInstance}
         />
       );
+    if (page === 'nodes') return <NodesPage toast={toast} />;
+    if (page === 'audit') return <AuditLogsPage nodes={nodes} toast={toast} />;
     if (page === 'detail')
       return (
         <Detail
-          name={selected}
+          instance={current}
           stats={stats}
           pendingAction={pendingAction}
           onPage={setPage}
           onAction={action}
         />
       );
-    if (page === 'config') return <ConfigEditor name={selected} toast={toast} />;
+    if (page === 'config') return <ConfigEditor instance={current} toast={toast} />;
     if (page === 'create')
       return (
         <CreateInstance
           toast={toast}
           instances={instances}
-          onCreated={(name) => {
-            setSelected(name);
+          nodes={nodes}
+          onCreated={(name, nodeId) => {
+            setSelected(instanceKey(nodeId, name));
             setPage('overview');
             refreshAll();
           }}
@@ -244,18 +285,22 @@ export function Console({
       );
     return <SystemPage auth={auth} system={system} toast={toast} onPasswordChanged={onAuthRefresh} />;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, instances, stats, counts, dockerAvailable, dockerError, system, selected, pendingAction]);
+  }, [page, instances, nodes, stats, counts, dockerAvailable, dockerError, system, selected, pendingAction]);
 
   const pageTitle =
     page === 'overview'
       ? '总览'
-      : page === 'create'
-        ? '创建实例'
-        : page === 'config'
-          ? '配置'
-          : page === 'detail'
-            ? '实例详情'
-            : '系统';
+      : page === 'nodes'
+        ? '节点'
+        : page === 'audit'
+          ? '审计日志'
+          : page === 'create'
+            ? '创建实例'
+            : page === 'config'
+              ? '配置'
+              : page === 'detail'
+                ? '实例详情'
+                : '系统';
 
   return (
     <div className="flex min-h-screen">

@@ -1,4 +1,5 @@
 import { getAuthToken, notifyUnauthorized, AuthError } from './auth';
+import type { AuditLog, Instance, InstanceDetail, Node, ValidationData } from './types';
 
 export function extractMessage(text: string, fallback: string): string {
   if (!text) return fallback;
@@ -47,3 +48,55 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (ctype.includes('application/json')) return (await response.json()) as T;
   return (await response.text()) as unknown as T;
 }
+
+export type NodeCreatePayload = {
+  name: string;
+  baseUrl: string;
+  token: string;
+};
+
+export type NodePatchPayload = Partial<NodeCreatePayload> & {
+  status?: Node['status'];
+};
+
+export const nodesApi = {
+  list: () => api<Node[]>('/api/nodes'),
+  create: (payload: NodeCreatePayload) =>
+    api<Node>('/api/nodes', { method: 'POST', body: JSON.stringify(payload) }),
+  get: (id: number) => api<Node>(`/api/nodes/${id}`),
+  patch: (id: number, payload: NodePatchPayload) =>
+    api<Node>(`/api/nodes/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  delete: (id: number) => api<{ deleted: boolean }>(`/api/nodes/${id}`, { method: 'DELETE' }),
+  ping: (id: number) => api<{ ok: boolean; node: Node; agent: unknown }>(`/api/nodes/${id}/ping`, { method: 'POST' }),
+  instances: {
+    list: (nodeId: number) => api<Instance[]>(`/api/nodes/${nodeId}/instances`),
+    create: (nodeId: number, payload: Record<string, unknown>) =>
+      api<{ name: string }>(`/api/nodes/${nodeId}/instances`, { method: 'POST', body: JSON.stringify(payload) }),
+    get: (nodeId: number, name: string) => api<InstanceDetail>(`/api/nodes/${nodeId}/instances/${name}`),
+    patch: (nodeId: number, name: string, payload: Record<string, unknown>) =>
+      api<Instance>(`/api/nodes/${nodeId}/instances/${name}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+    delete: (nodeId: number, name: string) =>
+      api<{ deleted: string }>(`/api/nodes/${nodeId}/instances/${name}`, { method: 'DELETE' }),
+    action: (nodeId: number, name: string, verb: string) =>
+      api(`/api/nodes/${nodeId}/instances/${name}/${verb}`, { method: 'POST' }),
+    getConfig: (nodeId: number, name: string) =>
+      api<{ configText: string; validation: ValidationData }>(`/api/nodes/${nodeId}/instances/${name}/config`),
+    updateConfig: (nodeId: number, name: string, payload: Record<string, unknown>) =>
+      api<{ validation: ValidationData }>(`/api/nodes/${nodeId}/instances/${name}/config`, {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      }),
+    validateConfig: (nodeId: number, name: string, configText: string) =>
+      api<ValidationData>(`/api/nodes/${nodeId}/instances/${name}/config/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: configText
+      }),
+    logs: (nodeId: number, name: string, params: URLSearchParams) =>
+      api<{ lines: string[] }>(`/api/nodes/${nodeId}/instances/${name}/logs?${params.toString()}`)
+  }
+};
+
+export const auditLogsApi = {
+  list: (limit = 100) => api<AuditLog[]>(`/api/audit-logs?limit=${limit}`)
+};

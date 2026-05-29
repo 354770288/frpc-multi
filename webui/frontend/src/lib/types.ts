@@ -68,7 +68,12 @@ export type SummaryResponse = {
   error: number;
   dockerAvailable: boolean;
   dockerError: string;
-  instances: (Instance & { runtime: InstanceStats | Record<string, never> })[];
+  instances: (Instance & {
+    runtime: InstanceStats | Record<string, never>;
+    nodeId?: number;
+    nodeName?: string;
+  })[];
+  nodes?: NodeSummary[];
 };
 
 export type AuthMe = {
@@ -76,7 +81,7 @@ export type AuthMe = {
   tokenTtlSeconds: number;
 };
 
-export type Page = 'overview' | 'detail' | 'config' | 'create' | 'system';
+export type Page = 'overview' | 'nodes' | 'audit' | 'detail' | 'config' | 'create' | 'system';
 
 export type AuthState = {
   token: string;
@@ -92,4 +97,45 @@ export type ValidationData = {
   errors: string[];
   warnings: string[];
   summary: InstanceSummary;
+};
+
+export type NodeStatus = 'unknown' | 'online' | 'offline' | 'error';
+
+export type Node = {
+  id: number;
+  name: string;
+  baseUrl: string;
+  status: NodeStatus;
+  lastSeenAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type InstanceRef = Instance & {
+  nodeId: number;
+  nodeName: string;
+};
+
+export type NodeSummary = {
+  id: number;
+  name: string;
+  baseUrl: string;
+  status: NodeStatus;
+  lastSeenAt: string | null;
+  error?: string;
+  total: number;
+  running: number;
+  stopped: number;
+  errorCount: number;
+};
+
+export type AuditLog = {
+  id: number;
+  username: string;
+  action: string;
+  nodeId: number | null;
+  instanceName: string | null;
+  success: boolean;
+  message: string;
+  createdAt: string;
 };

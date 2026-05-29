@@ -70,3 +70,26 @@ docker logs --tail 200 frpc-<instance-name>
 - 定期更新系统安全补丁。
 - 管理平台上线前只允许本机或内网访问。
 
+## Console / Agent 角色边界
+
+生产分离部署时应显式设置运行角色：
+
+```text
+FRPC_MULTI_ROLE=console
+FRPC_MULTI_ROLE=agent
+```
+
+建议：
+
+- Console 节点使用 `FRPC_MULTI_ROLE=console`，只挂载 `/api/*` 和前端，不挂载 Docker socket。
+- Agent 节点使用 `FRPC_MULTI_ROLE=agent`，只挂载 `/agent/*`，并且只在内网、VPN、Tailscale、WireGuard 或 HTTPS 反向代理后暴露。
+- 兼容单机部署可以继续使用默认 `FRPC_MULTI_ROLE=all`，但这不是生产分离部署的推荐值。
+- Agent 生产部署必须设置 `AGENT_AUTH_ENABLED=true` 和高强度 `AGENT_TOKEN`。
+- Console 访问 Agent 时使用 `Authorization: Bearer <AGENT_TOKEN>`，不要把 Agent token 暴露给浏览器或前端构建产物。
+
+专用部署文件：
+
+- `compose.console.yaml`：只运行 Console，不挂载 `/var/run/docker.sock`，适合作为主控入口。
+- `compose.agent.yaml`：只运行 Agent，必须挂载 `/var/run/docker.sock`，只应部署在需要管理本机 frpc 实例的服务器上。
+
+Agent 默认绑定 `127.0.0.1:8082`。如果需要跨机器访问，应优先通过私有网络或受控隧道暴露，不建议直接改成 `0.0.0.0` 后裸露到公网。

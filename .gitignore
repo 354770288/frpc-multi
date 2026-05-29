@@ -3,8 +3,10 @@ backups/*.tgz
 logs/*
 !.gitkeep
 .env
+.webui/
 .DS_Store
 webui/frontend/node_modules/
+webui/backend/.venv/
 webui/backend/static/
 __pycache__/
 *.pyc

@@ -6,7 +6,7 @@ import {
   Save,
   XCircle
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, nodesApi } from '../lib/api';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Panel } from '../components/ui/Panel';
@@ -18,15 +18,15 @@ import {
   splitTomlAtProxies,
   type ProxyDraft
 } from '../lib/proxyToml';
-import type { ToastKind, ValidationData } from '../lib/types';
+import type { InstanceRef, ToastKind, ValidationData } from '../lib/types';
 
 type EditorMode = 'structured' | 'raw';
 
 export function ConfigEditor({
-  name,
+  instance,
   toast
 }: {
-  name: string;
+  instance: InstanceRef | null;
   toast: (kind: ToastKind, text: string) => void;
 }) {
   const [configText, setConfigText] = useState('');
@@ -36,10 +36,15 @@ export function ConfigEditor({
   const [saving, setSaving] = useState(false);
   const [restartAfterSave, setRestartAfterSave] = useState(true);
   const [mode, setMode] = useState<EditorMode>('structured');
+  const name = instance?.name || '';
 
   useEffect(() => {
-    if (!name) return;
-    api<{ configText: string; validation: ValidationData }>(`/api/instances/${name}/config`)
+    if (!instance) return;
+    const request =
+      instance.nodeId > 0
+        ? nodesApi.instances.getConfig(instance.nodeId, instance.name)
+        : api<{ configText: string; validation: ValidationData }>(`/api/instances/${instance.name}/config`);
+    request
       .then((data) => {
         setConfigText(data.configText);
         setOriginalText(data.configText);
@@ -50,19 +55,22 @@ export function ConfigEditor({
         setOriginalText('');
         setValidation(null);
       });
-  }, [name]);
+  }, [instance]);
 
   useEffect(() => {
-    if (!name) return;
+    if (!instance) return;
     if (configText === originalText && validation) return;
     const handle = window.setTimeout(async () => {
       setValidating(true);
       try {
-        const result = await api<ValidationData>(`/api/instances/${name}/config/validate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: configText
-        });
+        const result =
+          instance.nodeId > 0
+            ? await nodesApi.instances.validateConfig(instance.nodeId, instance.name, configText)
+            : await api<ValidationData>(`/api/instances/${instance.name}/config/validate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain' },
+                body: configText
+              });
         setValidation(result);
       } catch {
         // ignore — keep last validation
@@ -71,17 +79,25 @@ export function ConfigEditor({
       }
     }, 500);
     return () => window.clearTimeout(handle);
-  }, [name, configText, originalText]);
+  }, [instance, configText, originalText, validation]);
 
   const dirty = configText !== originalText;
 
   async function save() {
+    if (!instance) return;
     setSaving(true);
     try {
-      await api<{ validation: ValidationData }>(`/api/instances/${name}/config`, {
-        method: 'PUT',
-        body: JSON.stringify({ configText, restartAfterSave })
-      });
+      if (instance.nodeId > 0) {
+        await nodesApi.instances.updateConfig(instance.nodeId, instance.name, {
+          configText,
+          restartAfterSave
+        });
+      } else {
+        await api<{ validation: ValidationData }>(`/api/instances/${instance.name}/config`, {
+          method: 'PUT',
+          body: JSON.stringify({ configText, restartAfterSave })
+        });
+      }
       setOriginalText(configText);
       toast('success', restartAfterSave ? '已保存并重启容器' : '已保存');
     } catch (err) {
@@ -92,9 +108,10 @@ export function ConfigEditor({
   }
 
   async function reset() {
+    if (!instance) return;
     try {
       const data = await api<{ configText: string }>(
-        `/api/config/default?name=${encodeURIComponent(name)}`
+        `/api/config/default?name=${encodeURIComponent(instance.name)}`
       );
       setConfigText(data.configText);
       toast('info', '已载入默认配置，未保存前不会写入磁盘');
@@ -103,7 +120,7 @@ export function ConfigEditor({
     }
   }
 
-  if (!name)
+  if (!instance)
     return (
       <main className="px-6 py-6">
         <h2 className="text-[18px] font-semibold text-[var(--color-fg)]">请选择需要编辑的实例</h2>

@@ -1,0 +1,30 @@
+name: frpc-multi-agent
+
+services:
+  frpc-agent:
+    build:
+      context: ./webui
+    container_name: frpc-agent
+    restart: unless-stopped
+    environment:
+      PROJECT_DIR: /opt/frpc-multi
+      WEBUI_HOST: 0.0.0.0
+      WEBUI_PORT: 8081
+      FRPC_MULTI_ROLE: agent
+      AGENT_AUTH_ENABLED: ${AGENT_AUTH_ENABLED:-true}
+      AGENT_TOKEN: ${AGENT_TOKEN:?set AGENT_TOKEN before starting the agent}
+      FRP_IMAGE: ${FRP_IMAGE:-ghcr.io/fatedier/frpc:v0.68.1}
+      FRPC_MEMORY_LIMIT: ${FRPC_MEMORY_LIMIT:-128m}
+      FRPC_CPU_LIMIT: ${FRPC_CPU_LIMIT:-0.25}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${AGENT_HOST:-127.0.0.1}:${AGENT_PORT:-8082}:8081"
+    volumes:
+      - ./:/opt/frpc-multi
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - frpc-agent
+
+networks:
+  frpc-agent:
+    driver: bridge

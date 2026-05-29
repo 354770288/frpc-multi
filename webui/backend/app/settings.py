@@ -25,6 +25,13 @@ def _resolve_jwt_secret() -> str:
     return value
 
 
+def _resolve_frpc_multi_role() -> str:
+    role = os.getenv("FRPC_MULTI_ROLE", "all").strip().lower()
+    if role not in {"all", "console", "agent"}:
+        raise ValueError("FRPC_MULTI_ROLE must be one of: all, console, agent")
+    return role
+
+
 class Settings:
     project_dir: Path = Path(os.getenv("PROJECT_DIR", "/opt/frpc-multi"))
     webui_host: str = os.getenv("WEBUI_HOST", "127.0.0.1")
@@ -33,10 +40,31 @@ class Settings:
     password: str = os.getenv("WEBUI_PASSWORD", "admin")
     jwt_secret: str = _resolve_jwt_secret()
     token_ttl_seconds: int = int(os.getenv("WEBUI_TOKEN_TTL_SECONDS", str(60 * 60 * 12)))
+    database_path: Path = Path(os.getenv("DATABASE_PATH", "/data/console.db"))
+    agent_token: str = os.getenv("AGENT_TOKEN", "").strip()
+    agent_auth_enabled: bool = os.getenv("AGENT_AUTH_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    frpc_multi_role: str = _resolve_frpc_multi_role()
 
     @property
     def credentials_path(self) -> Path:
         return self.project_dir / ".webui" / "credentials.json"
+
+    @property
+    def include_console_api(self) -> bool:
+        return self.frpc_multi_role in {"all", "console"}
+
+    @property
+    def include_agent_api(self) -> bool:
+        return self.frpc_multi_role in {"all", "agent"}
+
+    @property
+    def serve_frontend(self) -> bool:
+        return self.frpc_multi_role in {"all", "console"}
 
 
 settings = Settings()
