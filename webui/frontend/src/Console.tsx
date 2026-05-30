@@ -13,13 +13,13 @@ import { api, nodesApi } from './lib/api';
 import { actionLabel } from './lib/format';
 import type {
   AuthState,
+  ConsoleInfo,
   InstanceRef,
   InstanceStats,
   Node,
   Page,
   StatsMap,
   SummaryResponse,
-  SystemInfo,
   Toast,
   ToastKind
 } from './lib/types';
@@ -50,7 +50,7 @@ export function Console({
   const [counts, setCounts] = useState<SummaryCounts>(EMPTY_COUNTS);
   const [dockerAvailable, setDockerAvailable] = useState(false);
   const [dockerError, setDockerError] = useState('');
-  const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [system, setSystem] = useState<ConsoleInfo | null>(null);
   const [selected, setSelected] = useState('');
   const [pendingAction, setPendingAction] = useState<Record<string, string>>({});
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -136,7 +136,7 @@ export function Console({
   }
 
   async function loadSystem() {
-    const data = await api<SystemInfo>('/api/system').catch(() => null);
+    const data = await api<ConsoleInfo>('/api/console-info').catch(() => null);
     setSystem(data);
   }
 

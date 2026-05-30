@@ -1,5 +1,5 @@
 import { Boxes, ClipboardList, FileCode2, Home, Network, Plus, Settings } from 'lucide-react';
-import type { Page, SystemInfo } from '../lib/types';
+import type { ConsoleInfo, Page } from '../lib/types';
 
 export function Sidebar({
   page,
@@ -9,7 +9,7 @@ export function Sidebar({
 }: {
   page: Page;
   onPage: (page: Page) => void;
-  system: SystemInfo | null;
+  system: ConsoleInfo | null;
   collapsed: boolean;
 }) {
   const items = [
@@ -77,12 +77,12 @@ export function Sidebar({
             <span className="text-slate-300 font-mono">{system?.version || '--'}</span>
           </div>
           <div className="flex justify-between gap-2">
-            <span>frpc</span>
-            <span className="text-slate-300 font-mono">{system?.frpVersion || '--'}</span>
+            <span>节点数</span>
+            <span className="text-slate-300 font-mono">{system?.nodeCount ?? '--'}</span>
           </div>
           <div className="flex justify-between gap-2">
-            <span>Docker</span>
-            <span className="text-slate-300 font-mono">{system?.dockerVersion || '--'}</span>
+            <span>角色</span>
+            <span className="text-slate-300 font-mono">{system?.role || '--'}</span>
           </div>
           <div className="flex justify-between gap-2">
             <span>端口</span>
