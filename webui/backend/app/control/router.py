@@ -82,11 +82,17 @@ def _install_info(record: NodeRecord, *, include_secret: bool) -> dict:
             f"AGENT_TLS={tls_flag} bash frpc-agent-install.sh"
         )
     else:
+        # 关键：Agent 在容器内通过宿主 docker.sock 创建 frpc 容器（docker-out-of-docker），
+        # frpc 的配置 bind mount 路径由【宿主机】文件系统解析。因此 Agent 的数据目录必须
+        # 用"宿主路径 = 容器路径"的 bind mount（而非 named volume），并让 PROJECT_DIR 指向同一路径，
+        # 否则宿主 docker 找不到 /opt/frpc-multi/instances/<name>/frpc.toml，会建空目录导致
+        # frpc 报 "read /etc/frp/frpc.toml: is a directory"。
         install_command = (
             "docker run -d --name frpc-agent --restart unless-stopped "
             "-v /var/run/docker.sock:/var/run/docker.sock "
-            "-v frpc-agent-data:/opt/frpc-multi "
+            "-v /opt/frpc-multi:/opt/frpc-multi "
             "-e FRPC_MULTI_ROLE=agent "
+            "-e PROJECT_DIR=/opt/frpc-multi "
             f"-e AGENT_SERVER={host} -e AGENT_UUID={record.uuid} "
             f"-e AGENT_SECRET={secret} -e AGENT_TLS={tls_flag} "
             f"{settings.agent_image}"
