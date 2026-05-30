@@ -272,11 +272,34 @@ function InstallPanel({
   toast: (kind: ToastKind, text: string) => void;
 }) {
   async function copy(text: string, label: string) {
+    // navigator.clipboard 仅在安全上下文（HTTPS / localhost）可用。
+    // 裸 HTTP（如 http://VPS_IP:8081）下它是 undefined，需降级到 execCommand。
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('success', `${label}已复制`);
+        return;
+      } catch {
+        // 落到下面的降级方案
+      }
+    }
     try {
-      await navigator.clipboard.writeText(text);
-      toast('success', `${label}已复制`);
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (ok) {
+        toast('success', `${label}已复制`);
+      } else {
+        toast('error', '复制失败，请手动选择文本复制');
+      }
     } catch {
-      toast('error', '复制失败，请手动选择文本');
+      toast('error', '复制失败，请手动选择文本复制');
     }
   }
 
