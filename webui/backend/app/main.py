@@ -112,6 +112,23 @@ def default_config(_: Annotated[str, Depends(require_auth)], name: str | None = 
     return {"configText": text}
 
 
+@console_router.get("/api/console-info")
+def console_info(user: Annotated[str, Depends(require_auth)]):
+    """主控自身信息（反转模型下 Console 不执行本机 Docker，故不含 Docker/磁盘字段）。
+
+    系统页的 Docker 版本、frpc 镜像、磁盘等改由各节点的 /api/nodes/{id}/system 提供。
+    """
+    return {
+        "version": app.version,
+        "webuiHost": settings.webui_host,
+        "webuiPort": settings.webui_port,
+        "projectDir": str(settings.project_dir),
+        "role": settings.frpc_multi_role,
+        "username": user,
+        "nodeCount": len(NodeStore(settings.database_path).list_nodes()),
+    }
+
+
 @console_router.get("/api/summary")
 async def summary(
     _: Annotated[str, Depends(require_auth)],

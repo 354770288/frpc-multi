@@ -61,6 +61,18 @@ export type SystemInfo = {
   disk: { total: number; used: number; free: number };
 };
 
+// 主控自身信息（反转模型下 Console 不执行本机 Docker，故不含 Docker/磁盘/frp 字段）。
+// Docker 版本、磁盘等改由各节点的 SystemInfo（/api/nodes/{id}/system）提供。
+export type ConsoleInfo = {
+  version: string;
+  webuiHost: string;
+  webuiPort: number;
+  projectDir: string;
+  role: string;
+  username?: string;
+  nodeCount: number;
+};
+
 export type SummaryResponse = {
   total: number;
   running: number;

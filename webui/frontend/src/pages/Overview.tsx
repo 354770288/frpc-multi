@@ -16,12 +16,11 @@ import {
 } from 'lucide-react';
 import { MetricCard } from '../components/MetricCard';
 import {
-  bytesToHuman,
   instanceStateBadge,
   parsePercent,
   type InstanceTone
 } from '../lib/format';
-import type { InstanceRef, Page, StatsMap, SystemInfo } from '../lib/types';
+import type { ConsoleInfo, InstanceRef, Page, StatsMap } from '../lib/types';
 
 const TONE_DOT: Record<InstanceTone, string> = {
   success: 'bg-[var(--color-success)]',
@@ -56,7 +55,7 @@ export function Overview({
   counts: { total: number; running: number; stopped: number; error: number };
   dockerAvailable: boolean;
   dockerError: string;
-  system: SystemInfo | null;
+  system: ConsoleInfo | null;
   pendingAction: Record<string, string>;
   onSelect: (instance: InstanceRef) => void;
   onPage: (page: Page) => void;
@@ -94,9 +93,6 @@ export function Overview({
       )
     : instances;
 
-  const diskRatio =
-    system && system.disk.total > 0 ? (system.disk.used / system.disk.total) * 100 : 0;
-
   return (
     <main className="px-6 py-6 max-w-[1600px]">
       <div className="mb-6 flex items-center gap-3">
@@ -123,13 +119,9 @@ export function Overview({
         />
         <MetricCard
           icon={<HardDrive size={14} />}
-          title="磁盘"
-          value={system ? `${diskRatio.toFixed(0)}%` : '—'}
-          hint={
-            system
-              ? `${bytesToHuman(system.disk.used)} / ${bytesToHuman(system.disk.total)}`
-              : undefined
-          }
+          title="节点数"
+          value={system ? `${system.nodeCount}` : '—'}
+          hint={system ? `角色 ${system.role}` : undefined}
         />
       </section>
 

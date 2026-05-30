@@ -414,7 +414,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             conn.commit()
             conn.close()
 
-            # 连接后应自动补列，不报错
+            # 连接后应重建为新 schema：补 uuid/secret，移除旧的 base_url/token
             from app.control.database import connect_database
 
             conn2 = connect_database(db_path)
@@ -422,6 +422,9 @@ class DatabaseMigrationTests(unittest.TestCase):
             conn2.close()
             self.assertIn("uuid", cols)
             self.assertIn("secret", cols)
+            # 旧列必须被移除，否则其 NOT NULL 约束会让新建节点失败
+            self.assertNotIn("base_url", cols)
+            self.assertNotIn("token", cols)
 
             # NodeStore 能读取旧行（uuid/secret 为空字符串）
             store = NodeStore(db_path)
@@ -429,6 +432,12 @@ class DatabaseMigrationTests(unittest.TestCase):
             self.assertEqual(len(nodes), 1)
             self.assertEqual(nodes[0].name, "old")
             self.assertEqual(nodes[0].uuid, "")
+
+            # 关键回归：迁移后必须能新建节点（旧 base_url/token NOT NULL 约束已解除）
+            created = store.create_node(name="vps-test")
+            self.assertTrue(created.uuid)
+            self.assertTrue(created.secret)
+            self.assertEqual(created.status, "pending")
 
 
 class NodeApiTests(unittest.TestCase):
