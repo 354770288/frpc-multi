@@ -1,3 +1,8 @@
+> ⚠️ **历史文档（已被取代）**：本计划书描述的是旧的 "Console 主动 HTTP 连 Agent + all 单机模式" 架构。
+> 项目已于 2026-05 改为**反转连接模型**：Agent 主动出站连回 Console（WebSocket），取消 all 模式，
+> 节点用 uuid + secret + 一键安装命令。最新架构与部署见根目录 `README.md`、`docs/AGENT_INSTALL.md`、
+> `docs/SECURITY.md`、`docs/MIGRATION.md`。本文仅作历史背景保留，请勿据此部署。
+
 # frpc-multi Console + Agent 改造计划书
 
 ## 1. 背景

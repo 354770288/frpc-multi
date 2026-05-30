@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { Key, ShieldCheck } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, nodesApi } from '../lib/api';
 import { bytesToHuman } from '../lib/format';
 import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
 import { Input } from '../components/ui/Input';
 import { Panel } from '../components/ui/Panel';
-import type { AuthMe, AuthState, SystemInfo, ToastKind } from '../lib/types';
+import type { AuthMe, AuthState, Node, SystemInfo, ToastKind } from '../lib/types';
 
 function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return '已过期';
@@ -32,11 +32,13 @@ function formatTimestamp(epochSeconds: number): string {
 export function SystemPage({
   auth,
   system,
+  nodes,
   toast,
   onPasswordChanged
 }: {
   auth: AuthState;
   system: SystemInfo | null;
+  nodes: Node[];
   toast: (kind: ToastKind, text: string) => void;
   onPasswordChanged: (state: AuthState) => void;
 }) {
@@ -129,7 +131,7 @@ export function SystemPage({
       </h2>
 
       <section className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-4">
-        <Panel title="系统信息">
+        <Panel title="主控系统信息">
           <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-[12px]">
             <InfoItem label="面板版本" value={system?.version} mono />
             <InfoItem label="frpc 镜像" value={system?.frpImage} mono />
@@ -218,7 +220,84 @@ export function SystemPage({
           </Panel>
         </aside>
       </section>
+
+      {nodes.length > 0 && (
+        <section className="mt-4">
+          <h3 className="mb-3 text-[14px] font-semibold tracking-tight text-[var(--color-fg)]">
+            节点系统信息
+          </h3>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {nodes.map((node) => (
+              <NodeSystemCard key={node.id} node={node} />
+            ))}
+          </div>
+        </section>
+      )}
     </main>
+  );
+}
+
+function NodeSystemCard({ node }: { node: Node }) {
+  const [info, setInfo] = useState<SystemInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    nodesApi
+      .system(node.id)
+      .then((data) => {
+        if (!cancelled) setInfo(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : '节点不可达');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [node.id]);
+
+  const diskRatio = info && info.disk.total > 0 ? (info.disk.used / info.disk.total) * 100 : 0;
+
+  return (
+    <Panel
+      title={
+        <span className="inline-flex items-center gap-2">
+          {node.name}
+          <span className="font-mono text-[11px] font-normal text-[var(--color-fg-muted)]">
+            {node.uuid.slice(0, 12)}…
+          </span>
+        </span>
+      }
+    >
+      {loading ? (
+        <p className="text-[12px] text-[var(--color-fg-muted)]">加载中…</p>
+      ) : error ? (
+        <p className="text-[12px] text-[var(--color-danger)]">节点不可达：{error}</p>
+      ) : info ? (
+        <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-[12px]">
+          <InfoItem label="Docker 版本" value={info.dockerVersion || '未连接'} mono />
+          <InfoItem label="frpc 镜像" value={info.frpImage} mono />
+          <InfoItem label="frpc 版本" value={info.frpVersion} mono />
+          <InfoItem label="项目目录" value={info.projectDir} mono />
+          <InfoItem
+            label="磁盘占用"
+            value={
+              info.disk && info.disk.total > 0
+                ? `${diskRatio.toFixed(1)}%（${bytesToHuman(info.disk.used)} / ${bytesToHuman(info.disk.total)}）`
+                : undefined
+            }
+          />
+        </dl>
+      ) : (
+        <p className="text-[12px] text-[var(--color-fg-muted)]">—</p>
+      )}
+    </Panel>
   );
 }
 

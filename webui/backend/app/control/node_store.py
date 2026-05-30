@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -8,13 +9,6 @@ from .database import connect_database
 from .models import NodeRecord
 
 T = TypeVar("T")
-
-
-def _normalize_base_url(base_url: str) -> str:
-    value = (base_url or "").strip().rstrip("/")
-    if not value:
-        raise ValueError("节点地址不能为空")
-    return value
 
 
 def _normalize_name(name: str) -> str:
@@ -26,12 +20,23 @@ def _normalize_name(name: str) -> str:
     return value
 
 
+def _generate_uuid() -> str:
+    # 32 hex chars，作为节点的稳定身份标识，写入 Agent 安装命令。
+    return secrets.token_hex(16)
+
+
+def _generate_secret() -> str:
+    # Agent 出站连接 Console 的鉴权密钥，仅在创建/轮换时返回明文一次。
+    return secrets.token_urlsafe(32)
+
+
 def _record_from_row(row) -> NodeRecord:
+    keys = row.keys()
     return NodeRecord(
         id=int(row["id"]),
         name=row["name"],
-        base_url=row["base_url"],
-        token=row["token"],
+        uuid=row["uuid"] if "uuid" in keys else "",
+        secret=row["secret"] if "secret" in keys else "",
         status=row["status"],
         last_seen_at=row["last_seen_at"],
         created_at=row["created_at"],
@@ -60,39 +65,35 @@ class NodeStore:
 
     def get_node(self, node_id: int) -> NodeRecord:
         def read(connection):
-            row = connection.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
-            return row
+            return connection.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
 
         row = self._with_connection(read)
         if row is None:
             raise KeyError(f"节点不存在: {node_id}")
         return _record_from_row(row)
 
-    def create_node(
-        self,
-        *,
-        name: str,
-        base_url: str,
-        token: str,
-        status: str = "unknown",
-        last_seen_at: str | None = None,
-    ) -> NodeRecord:
+    def get_node_by_uuid(self, uuid: str) -> NodeRecord:
+        def read(connection):
+            return connection.execute("SELECT * FROM nodes WHERE uuid = ?", (uuid,)).fetchone()
+
+        row = self._with_connection(read)
+        if row is None:
+            raise KeyError(f"节点不存在: {uuid}")
+        return _record_from_row(row)
+
+    def create_node(self, *, name: str) -> NodeRecord:
+        """新建节点，自动生成 uuid + secret（用于一键安装命令）。"""
         now = now_iso()
+        node_uuid = _generate_uuid()
+        node_secret = _generate_secret()
+
         def write(connection):
             cursor = connection.execute(
                 """
-                INSERT INTO nodes (name, base_url, token, status, last_seen_at, created_at, updated_at)
+                INSERT INTO nodes (name, uuid, secret, status, last_seen_at, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    _normalize_name(name),
-                    _normalize_base_url(base_url),
-                    (token or "").strip(),
-                    (status or "unknown").strip(),
-                    last_seen_at,
-                    now,
-                    now,
-                ),
+                (_normalize_name(name), node_uuid, node_secret, "pending", None, now, now),
             )
             connection.commit()
             return int(cursor.lastrowid)
@@ -100,13 +101,29 @@ class NodeStore:
         node_id = self._with_connection(write)
         return self.get_node(node_id)
 
+    def rotate_secret(self, node_id: int) -> NodeRecord | None:
+        """轮换节点 secret（旧 Agent 需用新 secret 重连）。"""
+        try:
+            self.get_node(node_id)
+        except KeyError:
+            return None
+        new_secret = _generate_secret()
+
+        def write(connection):
+            connection.execute(
+                "UPDATE nodes SET secret = ?, updated_at = ? WHERE id = ?",
+                (new_secret, now_iso(), node_id),
+            )
+            connection.commit()
+
+        self._with_connection(write)
+        return self.get_node(node_id)
+
     def update_node(
         self,
         node_id: int,
         *,
         name: str | None = None,
-        base_url: str | None = None,
-        token: str | None = None,
         status: str | None = None,
         last_seen_at: str | None = None,
     ) -> NodeRecord | None:
@@ -116,23 +133,20 @@ class NodeStore:
             return None
         updated = {
             "name": _normalize_name(name) if name is not None else current.name,
-            "base_url": _normalize_base_url(base_url) if base_url is not None else current.base_url,
-            "token": (token or "").strip() if token is not None else current.token,
             "status": (status or "unknown").strip() if status is not None else current.status,
             "last_seen_at": last_seen_at if last_seen_at is not None else current.last_seen_at,
             "updated_at": now_iso(),
         }
+
         def write(connection):
             connection.execute(
                 """
                 UPDATE nodes
-                SET name = ?, base_url = ?, token = ?, status = ?, last_seen_at = ?, updated_at = ?
+                SET name = ?, status = ?, last_seen_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
                     updated["name"],
-                    updated["base_url"],
-                    updated["token"],
                     updated["status"],
                     updated["last_seen_at"],
                     updated["updated_at"],
@@ -143,6 +157,15 @@ class NodeStore:
 
         self._with_connection(write)
         return self.get_node(node_id)
+
+    def mark_status_by_uuid(
+        self, uuid: str, *, status: str, last_seen_at: str | None = None
+    ) -> NodeRecord | None:
+        try:
+            current = self.get_node_by_uuid(uuid)
+        except KeyError:
+            return None
+        return self.update_node(current.id, status=status, last_seen_at=last_seen_at)
 
     def delete_node(self, node_id: int) -> bool:
         def write(connection):

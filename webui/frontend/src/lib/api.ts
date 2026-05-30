@@ -1,5 +1,14 @@
 import { getAuthToken, notifyUnauthorized, AuthError } from './auth';
-import type { AuditLog, Instance, InstanceDetail, Node, ValidationData } from './types';
+import type {
+  AuditLog,
+  Instance,
+  InstanceDetail,
+  Node,
+  NodeInstall,
+  NodeWithInstall,
+  SystemInfo,
+  ValidationData
+} from './types';
 
 export function extractMessage(text: string, fallback: string): string {
   if (!text) return fallback;
@@ -51,23 +60,25 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type NodeCreatePayload = {
   name: string;
-  baseUrl: string;
-  token: string;
 };
 
-export type NodePatchPayload = Partial<NodeCreatePayload> & {
-  status?: Node['status'];
+export type NodePatchPayload = {
+  name?: string;
 };
 
 export const nodesApi = {
   list: () => api<Node[]>('/api/nodes'),
   create: (payload: NodeCreatePayload) =>
-    api<Node>('/api/nodes', { method: 'POST', body: JSON.stringify(payload) }),
+    api<NodeWithInstall>('/api/nodes', { method: 'POST', body: JSON.stringify(payload) }),
   get: (id: number) => api<Node>(`/api/nodes/${id}`),
+  install: (id: number) => api<NodeInstall>(`/api/nodes/${id}/install`),
+  rotateSecret: (id: number) =>
+    api<NodeWithInstall>(`/api/nodes/${id}/rotate-secret`, { method: 'POST' }),
   patch: (id: number, payload: NodePatchPayload) =>
     api<Node>(`/api/nodes/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   delete: (id: number) => api<{ deleted: boolean }>(`/api/nodes/${id}`, { method: 'DELETE' }),
-  ping: (id: number) => api<{ ok: boolean; node: Node; agent: unknown }>(`/api/nodes/${id}/ping`, { method: 'POST' }),
+  ping: (id: number) => api<{ ok: boolean; node: Node }>(`/api/nodes/${id}/ping`, { method: 'POST' }),
+  system: (id: number) => api<SystemInfo>(`/api/nodes/${id}/system`),
   instances: {
     list: (nodeId: number) => api<Instance[]>(`/api/nodes/${nodeId}/instances`),
     create: (nodeId: number, payload: Record<string, unknown>) =>

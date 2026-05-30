@@ -7,8 +7,8 @@ from dataclasses import dataclass
 class NodeRecord:
     id: int
     name: str
-    base_url: str
-    token: str
+    uuid: str
+    secret: str
     status: str
     last_seen_at: str | None
     created_at: str

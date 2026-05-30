@@ -10,19 +10,10 @@ os.environ.setdefault("PROJECT_DIR", tempfile.mkdtemp(prefix="frpc-multi-tests-"
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-import httpx
 
 from app.agent.service import LocalAgentService
 from app.compose_generator import generate_compose
 from app.config_validator import validate_config_text
-from app.control.agent_client import (
-    AgentAuthError,
-    AgentClient,
-    AgentConnectionError,
-    AgentNotFoundError,
-    AgentServerError,
-    AgentTimeoutError,
-)
 from app.control.node_store import NodeStore
 from app.instance_store import InstanceStore, validate_instance_name
 
@@ -33,9 +24,8 @@ def load_main_app(**env: str):
     for module_name in [
         "app.main",
         "app.control.router",
-        "app.control.agent_client",
-        "app.agent.router",
-        "app.agent.auth",
+        "app.control.ws_router",
+        "app.control.hub",
         "app.settings",
         "app.auth",
     ]:
@@ -53,6 +43,51 @@ def load_main_app(**env: str):
 def auth_headers(client: TestClient, username: str = "admin", password: str = "password") -> dict[str, str]:
     response = client.post("/api/auth/login", json={"username": username, "password": password})
     return {"Authorization": f"Bearer {response.json()['token']}"}
+
+
+class FakeConnection:
+    """模拟一条在线 Agent 连接，记录 call() 调用并按方法返回桩数据。"""
+
+    def __init__(self, uuid: str = "uuid", responses: dict | None = None, raises: Exception | None = None):
+        self.uuid = uuid
+        self.calls: list[tuple[str, dict]] = []
+        self.responses = responses or {}
+        self.raises = raises
+
+    async def call(self, method: str, params: dict | None = None, *, timeout: float = 15.0):
+        self.calls.append((method, params or {}))
+        if self.raises is not None:
+            raise self.raises
+        if method in self.responses:
+            value = self.responses[method]
+            return value(params or {}) if callable(value) else value
+        return {"ok": True, "method": method, "params": params or {}}
+
+
+def patch_hub(app, connection: FakeConnection | None, *, online: bool = True):
+    """把 control.router / main 用到的 hub 替换为受控版本。"""
+    from app.control import hub as hub_module
+
+    class FakeHub:
+        def is_online(self, uuid: str) -> bool:
+            return online and connection is not None
+
+        def get(self, uuid: str):
+            if connection is None or not online:
+                from app.control.hub import AgentOfflineError
+
+                raise AgentOfflineError("offline")
+            return connection
+
+    fake = FakeHub()
+    hub_module.hub = fake
+    # router/main 在模块顶层 `from .hub import hub` 之外还用了 `from .hub import ... hub`，
+    # 这些是名字绑定，需要同时改到已加载模块的引用。
+    for mod_name in ["app.control.router", "app.main", "app.control.ws_router"]:
+        mod = sys.modules.get(mod_name)
+        if mod is not None and hasattr(mod, "hub"):
+            mod.hub = fake
+    return fake
 
 
 class InstanceStoreTests(unittest.TestCase):
@@ -163,16 +198,28 @@ class ComposeGeneratorTests(unittest.TestCase):
 
 
 class ComposeFileTests(unittest.TestCase):
-    def test_default_and_console_compose_share_console_data_volume(self):
+    def test_console_compose_uses_console_role_and_data_volume(self):
         root = Path(__file__).resolve().parents[3]
-        default_compose = (root / "compose.yaml").read_text(encoding="utf-8")
         console_compose = (root / "compose.console.yaml").read_text(encoding="utf-8")
 
-        for compose_text in [default_compose, console_compose]:
-            self.assertIn("DATABASE_PATH: ${DATABASE_PATH:-/data/console.db}", compose_text)
-            self.assertIn("- console-data:/data", compose_text)
-            self.assertIn("console-data:", compose_text)
-            self.assertIn("name: ${CONSOLE_DATA_VOLUME:-frpc-multi-console_console-data}", compose_text)
+        self.assertIn("FRPC_MULTI_ROLE: console", console_compose)
+        self.assertIn("DATABASE_PATH: ${DATABASE_PATH:-/data/console.db}", console_compose)
+        self.assertIn("- console-data:/data", console_compose)
+        self.assertIn("name: ${CONSOLE_DATA_VOLUME:-frpc-multi-console_console-data}", console_compose)
+        # 反转模型：Console 不挂 docker.sock。
+        self.assertNotIn("/var/run/docker.sock", console_compose)
+
+    def test_agent_compose_dials_out_without_inbound_port(self):
+        root = Path(__file__).resolve().parents[3]
+        agent_compose = (root / "compose.agent.yaml").read_text(encoding="utf-8")
+
+        self.assertIn("FRPC_MULTI_ROLE: agent", agent_compose)
+        self.assertIn("AGENT_SERVER", agent_compose)
+        self.assertIn("AGENT_UUID", agent_compose)
+        self.assertIn("AGENT_SECRET", agent_compose)
+        self.assertIn("/var/run/docker.sock", agent_compose)
+        # 出站模型：不应有入站管理端口映射（容器内 8081 不再对外）。
+        self.assertNotIn(":8081\"", agent_compose)
 
 
 class LocalAgentServiceTests(unittest.TestCase):
@@ -231,123 +278,101 @@ class LocalAgentServiceTests(unittest.TestCase):
             self.assertEqual(summary["instances"][0]["name"], "client-001")
 
 
-class AppRoutingAndAuthTests(unittest.TestCase):
-    def test_agent_auth_requires_valid_bearer_token_when_enabled(self):
+class AppRoutingTests(unittest.TestCase):
+    def test_console_role_mounts_console_api_ws_and_static_frontend(self):
         with tempfile.TemporaryDirectory() as tmp:
-            app = load_main_app(
-                PROJECT_DIR=tmp,
-                AGENT_AUTH_ENABLED="true",
-                AGENT_TOKEN="secret-token",
-                FRPC_MULTI_ROLE="all",
-            )
-            client = TestClient(app)
+            app = load_main_app(PROJECT_DIR=tmp, FRPC_MULTI_ROLE="console")
+            routes = {getattr(route, "path", None) for route in app.routes}
 
-            missing = client.get("/agent/health")
-            wrong = client.get("/agent/health", headers={"Authorization": "Bearer wrong-token"})
-            valid = client.get("/agent/health", headers={"Authorization": "Bearer secret-token"})
+            self.assertIn("/api/health", routes)
+            self.assertIn("/api/nodes", routes)
+            self.assertIn("/ws/agent", routes)
+            self.assertIn("", routes)  # 静态前端挂载点
 
-            self.assertEqual(missing.status_code, 401)
-            self.assertEqual(wrong.status_code, 401)
-            self.assertEqual(valid.status_code, 200)
-            self.assertEqual(valid.json(), {"ok": True})
+    def test_agent_role_mounts_no_console_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = load_main_app(PROJECT_DIR=tmp, FRPC_MULTI_ROLE="agent")
+            routes = {getattr(route, "path", None) for route in app.routes}
 
-    def test_agent_auth_does_not_affect_console_api_login(self):
+            self.assertNotIn("/api/health", routes)
+            self.assertNotIn("/api/nodes", routes)
+            self.assertNotIn("/ws/agent", routes)
+
+    def test_all_role_falls_back_to_console(self):
+        # all 模式已废弃，应降级为 console 行为。
+        with tempfile.TemporaryDirectory() as tmp:
+            app = load_main_app(PROJECT_DIR=tmp, FRPC_MULTI_ROLE="all")
+            routes = {getattr(route, "path", None) for route in app.routes}
+
+            self.assertIn("/api/health", routes)
+            self.assertIn("/ws/agent", routes)
+
+    def test_login_succeeds_on_console(self):
         with tempfile.TemporaryDirectory() as tmp:
             app = load_main_app(
                 PROJECT_DIR=tmp,
                 WEBUI_USERNAME="admin",
                 WEBUI_PASSWORD="password",
-                AGENT_AUTH_ENABLED="true",
-                AGENT_TOKEN="secret-token",
-                FRPC_MULTI_ROLE="all",
+                FRPC_MULTI_ROLE="console",
             )
             client = TestClient(app)
-
             response = client.post("/api/auth/login", json={"username": "admin", "password": "password"})
-
             self.assertEqual(response.status_code, 200)
             self.assertIn("token", response.json())
-
-    def test_all_role_mounts_console_api_agent_api_and_static_frontend(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            app = load_main_app(PROJECT_DIR=tmp, FRPC_MULTI_ROLE="all")
-            routes = {route.path for route in app.routes}
-
-            self.assertIn("/api/health", routes)
-            self.assertIn("/agent/health", routes)
-            self.assertIn("", routes)
-
-    def test_console_role_mounts_console_api_and_static_frontend_only(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            app = load_main_app(PROJECT_DIR=tmp, FRPC_MULTI_ROLE="console")
-            routes = {route.path for route in app.routes}
-
-            self.assertIn("/api/health", routes)
-            self.assertNotIn("/agent/health", routes)
-            self.assertIn("", routes)
-
-    def test_agent_role_mounts_agent_api_only(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            app = load_main_app(PROJECT_DIR=tmp, FRPC_MULTI_ROLE="agent")
-            routes = {route.path for route in app.routes}
-
-            self.assertNotIn("/api/health", routes)
-            self.assertIn("/agent/health", routes)
-            self.assertNotIn("", routes)
 
 
 class NodeStoreTests(unittest.TestCase):
     def test_database_file_is_created_automatically(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "console.db"
-
             NodeStore(db_path)
-
             self.assertTrue(db_path.exists())
 
-    def test_node_crud_persists_records(self):
+    def test_create_node_generates_uuid_and_secret(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = NodeStore(Path(tmp) / "console.db")
+            created = store.create_node(name="local-agent")
 
-            created = store.create_node(
-                name="local-agent",
-                base_url="http://127.0.0.1:8082/",
-                token="secret-token",
-            )
+            self.assertTrue(created.uuid)
+            self.assertTrue(created.secret)
+            self.assertEqual(created.status, "pending")
             fetched = store.get_node(created.id)
+            self.assertEqual(fetched.uuid, created.uuid)
+            self.assertEqual(fetched.secret, created.secret)
+            # uuid 查询可命中
+            self.assertEqual(store.get_node_by_uuid(created.uuid).id, created.id)
 
-            self.assertEqual(created.id, fetched.id)
-            self.assertEqual(fetched.name, "local-agent")
-            self.assertEqual(fetched.base_url, "http://127.0.0.1:8082")
-            self.assertEqual(fetched.token, "secret-token")
-            self.assertEqual(fetched.status, "unknown")
-            self.assertEqual(len(store.list_nodes()), 1)
+    def test_rotate_secret_changes_secret_keeps_uuid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = NodeStore(Path(tmp) / "console.db")
+            created = store.create_node(name="n1")
+            rotated = store.rotate_secret(created.id)
+            self.assertEqual(rotated.uuid, created.uuid)
+            self.assertNotEqual(rotated.secret, created.secret)
 
-            updated = store.update_node(
-                created.id,
-                name="edge-agent",
-                base_url="https://agent.example.com",
-                token="new-token",
-                status="online",
-            )
-
-            self.assertEqual(updated.name, "edge-agent")
-            self.assertEqual(updated.base_url, "https://agent.example.com")
-            self.assertEqual(updated.token, "new-token")
+    def test_mark_status_by_uuid_updates_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = NodeStore(Path(tmp) / "console.db")
+            created = store.create_node(name="n1")
+            updated = store.mark_status_by_uuid(created.uuid, status="online", last_seen_at="2026-05-30T00:00:00+08:00")
             self.assertEqual(updated.status, "online")
+            self.assertEqual(updated.last_seen_at, "2026-05-30T00:00:00+08:00")
 
-            self.assertTrue(store.delete_node(created.id))
-            self.assertEqual(store.list_nodes(), [])
+    def test_node_crud_reports_missing_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = NodeStore(Path(tmp) / "console.db")
+            with self.assertRaises(KeyError):
+                store.get_node(404)
+            with self.assertRaises(KeyError):
+                store.get_node_by_uuid("nope")
+            self.assertIsNone(store.update_node(404, name="missing"))
+            self.assertFalse(store.delete_node(404))
 
-    def test_node_delete_succeeds_after_audit_logs_reference_node(self):
+    def test_delete_succeeds_after_audit_logs_reference_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "console.db"
             store = NodeStore(db_path)
-            created = store.create_node(
-                name="local-agent",
-                base_url="http://127.0.0.1:8082/",
-                token="secret-token",
-            )
+            created = store.create_node(name="local-agent")
             from app.control.audit_store import AuditStore
 
             AuditStore(db_path).create_log(
@@ -356,214 +381,210 @@ class NodeStoreTests(unittest.TestCase):
                 node_id=created.id,
                 instance_name="client-001",
             )
-
             self.assertTrue(store.delete_node(created.id))
             self.assertEqual(store.list_nodes(), [])
 
-    def test_node_crud_reports_missing_records(self):
+
+class DatabaseMigrationTests(unittest.TestCase):
+    def test_legacy_nodes_table_gets_uuid_and_secret_columns(self):
+        import sqlite3
+
         with tempfile.TemporaryDirectory() as tmp:
-            store = NodeStore(Path(tmp) / "console.db")
+            db_path = Path(tmp) / "console.db"
+            # 构造旧版表结构（base_url/token，无 uuid/secret）
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                CREATE TABLE nodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    base_url TEXT NOT NULL,
+                    token TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'unknown',
+                    last_seen_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO nodes (name, base_url, token, status, created_at, updated_at) "
+                "VALUES ('old', 'http://x', 'tok', 'unknown', '2026-01-01', '2026-01-01')"
+            )
+            conn.commit()
+            conn.close()
 
-            with self.assertRaises(KeyError):
-                store.get_node(404)
+            # 连接后应自动补列，不报错
+            from app.control.database import connect_database
 
-            self.assertIsNone(store.update_node(404, name="missing"))
-            self.assertFalse(store.delete_node(404))
+            conn2 = connect_database(db_path)
+            cols = {row[1] for row in conn2.execute("PRAGMA table_info(nodes)").fetchall()}
+            conn2.close()
+            self.assertIn("uuid", cols)
+            self.assertIn("secret", cols)
+
+            # NodeStore 能读取旧行（uuid/secret 为空字符串）
+            store = NodeStore(db_path)
+            nodes = store.list_nodes()
+            self.assertEqual(len(nodes), 1)
+            self.assertEqual(nodes[0].name, "old")
+            self.assertEqual(nodes[0].uuid, "")
 
 
 class NodeApiTests(unittest.TestCase):
-    def test_node_api_crud_hides_tokens(self):
+    def _app(self, tmp):
+        return load_main_app(
+            PROJECT_DIR=tmp,
+            DATABASE_PATH=str(Path(tmp) / "console.db"),
+            WEBUI_USERNAME="admin",
+            WEBUI_PASSWORD="password",
+            FRPC_MULTI_ROLE="console",
+        )
+
+    def test_create_node_returns_install_command_and_hides_secret_in_list(self):
         with tempfile.TemporaryDirectory() as tmp:
-            app = load_main_app(
-                PROJECT_DIR=tmp,
-                DATABASE_PATH=str(Path(tmp) / "console.db"),
-                WEBUI_USERNAME="admin",
-                WEBUI_PASSWORD="password",
-                FRPC_MULTI_ROLE="console",
-            )
+            app = self._app(tmp)
             client = TestClient(app)
             headers = auth_headers(client)
 
-            created = client.post(
-                "/api/nodes",
-                json={
-                    "name": "local-agent",
-                    "baseUrl": "http://127.0.0.1:8082/",
-                    "token": "secret-token",
-                },
-                headers=headers,
-            )
-
+            created = client.post("/api/nodes", json={"name": "vps-hk-01"}, headers=headers)
             self.assertEqual(created.status_code, 200)
-            created_body = created.json()
-            self.assertEqual(created_body["name"], "local-agent")
-            self.assertEqual(created_body["baseUrl"], "http://127.0.0.1:8082")
-            self.assertNotIn("token", created_body)
+            body = created.json()
+            self.assertEqual(body["name"], "vps-hk-01")
+            self.assertTrue(body["uuid"])
+            self.assertIn("install", body)
+            self.assertIn("installCommand", body["install"])
+            # 安装命令里应带上 uuid
+            self.assertIn(body["uuid"], body["install"]["installCommand"])
 
-            listed = client.get("/api/nodes", headers=headers)
-            self.assertEqual(listed.status_code, 200)
-            self.assertEqual(len(listed.json()), 1)
-            self.assertNotIn("token", listed.json()[0])
+            # 列表与详情不回显 secret
+            listed = client.get("/api/nodes", headers=headers).json()
+            self.assertEqual(len(listed), 1)
+            self.assertNotIn("secret", listed[0])
+            detail = client.get(f"/api/nodes/{body['id']}", headers=headers).json()
+            self.assertNotIn("secret", detail)
 
-            detail = client.get(f"/api/nodes/{created_body['id']}", headers=headers)
-            self.assertEqual(detail.status_code, 200)
-            self.assertNotIn("token", detail.json())
+    def test_install_endpoint_returns_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._app(tmp)
+            client = TestClient(app)
+            headers = auth_headers(client)
+            created = client.post("/api/nodes", json={"name": "n1"}, headers=headers).json()
 
-            patched = client.patch(
-                f"/api/nodes/{created_body['id']}",
-                json={"name": "edge-agent", "status": "online"},
-                headers=headers,
-            )
-            self.assertEqual(patched.status_code, 200)
-            self.assertEqual(patched.json()["name"], "edge-agent")
-            self.assertEqual(patched.json()["status"], "online")
-            self.assertNotIn("token", patched.json())
+            info = client.get(f"/api/nodes/{created['id']}/install", headers=headers)
+            self.assertEqual(info.status_code, 200)
+            self.assertIn("installCommand", info.json())
+            self.assertEqual(info.json()["uuid"], created["uuid"])
 
-            deleted = client.delete(f"/api/nodes/{created_body['id']}", headers=headers)
-            self.assertEqual(deleted.status_code, 200)
-            self.assertEqual(deleted.json(), {"deleted": True})
-            self.assertEqual(client.get("/api/nodes", headers=headers).json(), [])
+    def test_rotate_secret_returns_new_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._app(tmp)
+            client = TestClient(app)
+            headers = auth_headers(client)
+            created = client.post("/api/nodes", json={"name": "n1"}, headers=headers).json()
+
+            rotated = client.post(f"/api/nodes/{created['id']}/rotate-secret", headers=headers)
+            self.assertEqual(rotated.status_code, 200)
+            self.assertEqual(rotated.json()["uuid"], created["uuid"])
+            self.assertIn("install", rotated.json())
 
     def test_node_api_requires_console_auth(self):
         with tempfile.TemporaryDirectory() as tmp:
-            app = load_main_app(
-                PROJECT_DIR=tmp,
-                DATABASE_PATH=str(Path(tmp) / "console.db"),
-                FRPC_MULTI_ROLE="console",
-            )
+            app = self._app(tmp)
             client = TestClient(app)
-
             response = client.get("/api/nodes")
-
             self.assertEqual(response.status_code, 401)
 
-    def test_node_ping_uses_stored_token_and_updates_status(self):
-        class FakeAgentClient:
-            def __init__(self, base_url: str, token: str):
-                self.base_url = base_url
-                self.token = token
-
-            def ping(self):
-                return {"ok": True, "baseUrl": self.base_url, "tokenUsed": self.token}
-
+    def test_ping_reflects_online_state_from_hub(self):
         with tempfile.TemporaryDirectory() as tmp:
-            app = load_main_app(
-                PROJECT_DIR=tmp,
-                DATABASE_PATH=str(Path(tmp) / "console.db"),
-                WEBUI_USERNAME="admin",
-                WEBUI_PASSWORD="password",
-                FRPC_MULTI_ROLE="console",
-            )
-            from app.control.router import create_agent_client
-
-            app.dependency_overrides[create_agent_client] = lambda: FakeAgentClient
+            app = self._app(tmp)
             client = TestClient(app)
             headers = auth_headers(client)
-            created = client.post(
-                "/api/nodes",
-                json={
-                    "name": "local-agent",
-                    "baseUrl": "http://127.0.0.1:8082",
-                    "token": "secret-token",
-                },
-                headers=headers,
-            ).json()
+            created = client.post("/api/nodes", json={"name": "n1"}, headers=headers).json()
 
-            response = client.post(f"/api/nodes/{created['id']}/ping", headers=headers)
+            # 离线：hub 无连接
+            patch_hub(app, None, online=False)
+            offline = client.post(f"/api/nodes/{created['id']}/ping", headers=headers)
+            self.assertEqual(offline.status_code, 200)
+            self.assertFalse(offline.json()["ok"])
 
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["ok"], True)
-            self.assertEqual(response.json()["agent"]["tokenUsed"], "secret-token")
-            detail = client.get(f"/api/nodes/{created['id']}", headers=headers).json()
-            self.assertEqual(detail["status"], "online")
+            # 在线：hub 有连接
+            patch_hub(app, FakeConnection(uuid=created["uuid"]), online=True)
+            online = client.post(f"/api/nodes/{created['id']}/ping", headers=headers)
+            self.assertEqual(online.status_code, 200)
+            self.assertTrue(online.json()["ok"])
+            self.assertEqual(online.json()["node"]["status"], "online")
+
+    def test_node_system_calls_agent_over_hub(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._app(tmp)
+            client = TestClient(app)
+            headers = auth_headers(client)
+            created = client.post("/api/nodes", json={"name": "n1"}, headers=headers).json()
+
+            conn = FakeConnection(
+                uuid=created["uuid"],
+                responses={"get_system": {"dockerVersion": "27.0", "frpImage": "img"}},
+            )
+            patch_hub(app, conn, online=True)
+            resp = client.get(f"/api/nodes/{created['id']}/system", headers=headers)
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["dockerVersion"], "27.0")
+            self.assertEqual(conn.calls[0][0], "get_system")
+
+    def test_node_instance_offline_returns_502(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._app(tmp)
+            client = TestClient(app)
+            headers = auth_headers(client)
+            created = client.post("/api/nodes", json={"name": "n1"}, headers=headers).json()
+
+            patch_hub(app, None, online=False)
+            resp = client.get(f"/api/nodes/{created['id']}/instances", headers=headers)
+            self.assertEqual(resp.status_code, 502)
 
 
 class NodeInstanceApiTests(unittest.TestCase):
-    def test_node_instance_api_forwards_to_agent_client(self):
-        calls: list[tuple[str, str, str, object]] = []
+    def _setup(self, tmp, conn: FakeConnection):
+        app = load_main_app(
+            PROJECT_DIR=tmp,
+            DATABASE_PATH=str(Path(tmp) / "console.db"),
+            WEBUI_USERNAME="admin",
+            WEBUI_PASSWORD="password",
+            FRPC_MULTI_ROLE="console",
+        )
+        client = TestClient(app)
+        headers = auth_headers(client)
+        created = client.post("/api/nodes", json={"name": "remote"}, headers=headers).json()
+        conn.uuid = created["uuid"]
+        patch_hub(app, conn, online=True)
+        return client, headers, created["id"]
 
-        class FakeAgentClient:
-            def __init__(self, base_url: str, token: str):
-                self.base_url = base_url
-                self.token = token
-
-            def list_instances(self):
-                calls.append(("list_instances", self.base_url, self.token, None))
-                return [{"name": "client-001"}]
-
-            def create_instance(self, payload):
-                calls.append(("create_instance", self.base_url, self.token, payload))
-                return {"name": payload["name"]}
-
-            def get_instance(self, name: str):
-                calls.append(("get_instance", self.base_url, self.token, name))
-                return {"name": name}
-
-            def patch_instance(self, name: str, payload):
-                calls.append(("patch_instance", self.base_url, self.token, (name, payload)))
-                return {"name": name, **payload}
-
-            def delete_instance(self, name: str):
-                calls.append(("delete_instance", self.base_url, self.token, name))
-                return {"deleted": name}
-
-            def get_config(self, name: str):
-                calls.append(("get_config", self.base_url, self.token, name))
-                return {"configText": "serverAddr = \"x\""}
-
-            def update_config(self, name: str, payload):
-                calls.append(("update_config", self.base_url, self.token, (name, payload)))
-                return {"configPath": "/tmp/frpc.toml"}
-
-            def validate_config(self, name: str, config_text: str):
-                calls.append(("validate_config", self.base_url, self.token, (name, config_text)))
-                return {"valid": True, "errors": [], "warnings": [], "summary": {}}
-
-            def logs(self, name: str, tail: int = 300, keyword: str = ""):
-                calls.append(("logs", self.base_url, self.token, (name, tail, keyword)))
-                return {"lines": ["ok"]}
-
-            def start(self, name: str):
-                calls.append(("start", self.base_url, self.token, name))
-                return {"started": name}
-
-            def stop(self, name: str):
-                calls.append(("stop", self.base_url, self.token, name))
-                return {"stopped": name}
-
-            def restart(self, name: str):
-                calls.append(("restart", self.base_url, self.token, name))
-                return {"restarted": name}
-
-            def recreate(self, name: str):
-                calls.append(("recreate", self.base_url, self.token, name))
-                return {"recreated": name}
-
+    def test_instance_actions_map_to_hub_methods(self):
+        conn = FakeConnection(
+            responses={
+                "list_instances": [{"name": "client-001"}],
+                "create_instance": lambda p: {"name": p["name"]},
+                "get_instance": lambda p: {"name": p["name"]},
+                "patch_instance": lambda p: {"name": p["name"], **p.get("patch", {})},
+                "delete_instance": lambda p: {"deleted": p["name"]},
+                "get_config": {"configText": "x"},
+                "update_config": {"configPath": "/tmp/frpc.toml"},
+                "validate_config": {"valid": True, "errors": [], "warnings": [], "summary": {}},
+                "logs": {"lines": ["ok"]},
+                "start": lambda p: {"started": p["name"]},
+                "stop": lambda p: {"stopped": p["name"]},
+                "restart": lambda p: {"restarted": p["name"]},
+                "recreate": lambda p: {"recreated": p["name"]},
+            }
+        )
         with tempfile.TemporaryDirectory() as tmp:
-            app = load_main_app(
-                PROJECT_DIR=tmp,
-                DATABASE_PATH=str(Path(tmp) / "console.db"),
-                WEBUI_USERNAME="admin",
-                WEBUI_PASSWORD="password",
-                FRPC_MULTI_ROLE="console",
+            client, headers, node_id = self._setup(tmp, conn)
+
+            self.assertEqual(
+                client.get(f"/api/nodes/{node_id}/instances", headers=headers).json(),
+                [{"name": "client-001"}],
             )
-            from app.control.router import create_agent_client
-
-            app.dependency_overrides[create_agent_client] = lambda: FakeAgentClient
-            client = TestClient(app)
-            headers = auth_headers(client)
-            node = client.post(
-                "/api/nodes",
-                json={
-                    "name": "remote-agent",
-                    "baseUrl": "http://agent.example.com/",
-                    "token": "node-token",
-                },
-                headers=headers,
-            ).json()
-            node_id = node["id"]
-
-            self.assertEqual(client.get(f"/api/nodes/{node_id}/instances", headers=headers).json(), [{"name": "client-001"}])
             self.assertEqual(
                 client.post(
                     f"/api/nodes/{node_id}/instances",
@@ -572,7 +593,10 @@ class NodeInstanceApiTests(unittest.TestCase):
                 ).json(),
                 {"name": "client-002"},
             )
-            self.assertEqual(client.get(f"/api/nodes/{node_id}/instances/client-001", headers=headers).json(), {"name": "client-001"})
+            self.assertEqual(
+                client.get(f"/api/nodes/{node_id}/instances/client-001", headers=headers).json(),
+                {"name": "client-001"},
+            )
             self.assertEqual(
                 client.patch(
                     f"/api/nodes/{node_id}/instances/client-001",
@@ -581,7 +605,10 @@ class NodeInstanceApiTests(unittest.TestCase):
                 ).json(),
                 {"name": "client-001", "enabled": False},
             )
-            self.assertEqual(client.get(f"/api/nodes/{node_id}/instances/client-001/config", headers=headers).json(), {"configText": "serverAddr = \"x\""})
+            self.assertEqual(
+                client.get(f"/api/nodes/{node_id}/instances/client-001/config", headers=headers).json(),
+                {"configText": "x"},
+            )
             self.assertEqual(
                 client.put(
                     f"/api/nodes/{node_id}/instances/client-001/config",
@@ -590,41 +617,66 @@ class NodeInstanceApiTests(unittest.TestCase):
                 ).json(),
                 {"configPath": "/tmp/frpc.toml"},
             )
-            self.assertEqual(
+            self.assertTrue(
                 client.post(
                     f"/api/nodes/{node_id}/instances/client-001/config/validate",
-                    content="serverAddr = \"x\"",
+                    content='serverAddr = "x"',
                     headers={**headers, "Content-Type": "text/plain"},
-                ).json()["valid"],
-                True,
+                ).json()["valid"]
             )
-            self.assertEqual(client.get(f"/api/nodes/{node_id}/instances/client-001/logs?tail=50&keyword=ok", headers=headers).json(), {"lines": ["ok"]})
-            self.assertEqual(client.post(f"/api/nodes/{node_id}/instances/client-001/start", headers=headers).json(), {"started": "client-001"})
-            self.assertEqual(client.post(f"/api/nodes/{node_id}/instances/client-001/stop", headers=headers).json(), {"stopped": "client-001"})
-            self.assertEqual(client.post(f"/api/nodes/{node_id}/instances/client-001/restart", headers=headers).json(), {"restarted": "client-001"})
-            self.assertEqual(client.post(f"/api/nodes/{node_id}/instances/client-001/recreate", headers=headers).json(), {"recreated": "client-001"})
-            self.assertEqual(client.delete(f"/api/nodes/{node_id}/instances/client-001", headers=headers).json(), {"deleted": "client-001"})
+            self.assertEqual(
+                client.get(
+                    f"/api/nodes/{node_id}/instances/client-001/logs?tail=50&keyword=ok",
+                    headers=headers,
+                ).json(),
+                {"lines": ["ok"]},
+            )
+            self.assertEqual(
+                client.post(f"/api/nodes/{node_id}/instances/client-001/start", headers=headers).json(),
+                {"started": "client-001"},
+            )
+            self.assertEqual(
+                client.post(f"/api/nodes/{node_id}/instances/client-001/stop", headers=headers).json(),
+                {"stopped": "client-001"},
+            )
+            self.assertEqual(
+                client.post(f"/api/nodes/{node_id}/instances/client-001/restart", headers=headers).json(),
+                {"restarted": "client-001"},
+            )
+            self.assertEqual(
+                client.post(f"/api/nodes/{node_id}/instances/client-001/recreate", headers=headers).json(),
+                {"recreated": "client-001"},
+            )
+            self.assertEqual(
+                client.delete(f"/api/nodes/{node_id}/instances/client-001", headers=headers).json(),
+                {"deleted": "client-001"},
+            )
 
-        self.assertEqual(
-            calls,
-            [
-                ("list_instances", "http://agent.example.com", "node-token", None),
-                ("create_instance", "http://agent.example.com", "node-token", {"name": "client-002", "configText": "x"}),
-                ("get_instance", "http://agent.example.com", "node-token", "client-001"),
-                ("patch_instance", "http://agent.example.com", "node-token", ("client-001", {"enabled": False})),
-                ("get_config", "http://agent.example.com", "node-token", "client-001"),
-                ("update_config", "http://agent.example.com", "node-token", ("client-001", {"configText": "x", "restartAfterSave": True})),
-                ("validate_config", "http://agent.example.com", "node-token", ("client-001", "serverAddr = \"x\"")),
-                ("logs", "http://agent.example.com", "node-token", ("client-001", 50, "ok")),
-                ("start", "http://agent.example.com", "node-token", "client-001"),
-                ("stop", "http://agent.example.com", "node-token", "client-001"),
-                ("restart", "http://agent.example.com", "node-token", "client-001"),
-                ("recreate", "http://agent.example.com", "node-token", "client-001"),
-                ("delete_instance", "http://agent.example.com", "node-token", "client-001"),
-            ],
-        )
+            methods = [c[0] for c in conn.calls]
+            self.assertEqual(
+                methods,
+                [
+                    "list_instances",
+                    "create_instance",
+                    "get_instance",
+                    "patch_instance",
+                    "get_config",
+                    "update_config",
+                    "validate_config",
+                    "logs",
+                    "start",
+                    "stop",
+                    "restart",
+                    "recreate",
+                    "delete_instance",
+                ],
+            )
+            # logs 参数透传
+            logs_call = next(c for c in conn.calls if c[0] == "logs")
+            self.assertEqual(logs_call[1]["tail"], 50)
+            self.assertEqual(logs_call[1]["keyword"], "ok")
 
-    def test_node_instance_api_returns_404_for_missing_node(self):
+    def test_missing_node_returns_404(self):
         with tempfile.TemporaryDirectory() as tmp:
             app = load_main_app(
                 PROJECT_DIR=tmp,
@@ -635,95 +687,20 @@ class NodeInstanceApiTests(unittest.TestCase):
             )
             client = TestClient(app)
             headers = auth_headers(client)
-
             response = client.get("/api/nodes/404/instances", headers=headers)
-
             self.assertEqual(response.status_code, 404)
 
 
 class AuditLogApiTests(unittest.TestCase):
-    def test_mutating_local_instance_actions_create_audit_logs(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            app = load_main_app(
-                PROJECT_DIR=tmp,
-                DATABASE_PATH=str(Path(tmp) / "console.db"),
-                WEBUI_USERNAME="admin",
-                WEBUI_PASSWORD="password",
-                FRPC_MULTI_ROLE="all",
-            )
-            client = TestClient(app)
-            headers = auth_headers(client)
-
-            client.post(
-                "/api/instances",
-                json={
-                    "name": "client-001",
-                    "displayName": "Client 001",
-                    "configText": 'serverAddr = "frps.example.com"\nserverPort = 7000\n',
-                    "enabled": True,
-                    "startAfterCreate": False,
-                },
-                headers=headers,
-            )
-            client.patch(
-                "/api/instances/client-001",
-                json={"displayName": "Client 001 updated"},
-                headers=headers,
-            )
-            client.put(
-                "/api/instances/client-001/config",
-                json={
-                    "configText": 'serverAddr = "frps.example.com"\nserverPort = 7001\n',
-                    "restartAfterSave": False,
-                },
-                headers=headers,
-            )
-            client.delete("/api/instances/client-001", headers=headers)
-
-            response = client.get("/api/audit-logs", headers=headers)
-
-            self.assertEqual(response.status_code, 200)
-            logs = response.json()
-            self.assertEqual(
-                [item["action"] for item in logs],
-                [
-                    "delete_instance",
-                    "update_config",
-                    "patch_instance",
-                    "create_instance",
-                ],
-            )
-            self.assertTrue(all(item["username"] == "admin" for item in logs))
-            self.assertTrue(all(item["nodeId"] is None for item in logs))
-            self.assertTrue(all(item["instanceName"] == "client-001" for item in logs))
-            self.assertTrue(all(item["success"] is True for item in logs))
-
-    def test_mutating_node_instance_actions_create_audit_logs(self):
-        class FakeAgentClient:
-            def __init__(self, base_url: str, token: str):
-                pass
-
-            def create_instance(self, payload):
-                return {"name": payload["name"]}
-
-            def update_config(self, name: str, payload):
-                return {"configPath": "/tmp/frpc.toml"}
-
-            def start(self, name: str):
-                return {"started": name}
-
-            def stop(self, name: str):
-                return {"stopped": name}
-
-            def restart(self, name: str):
-                return {"restarted": name}
-
-            def recreate(self, name: str):
-                return {"recreated": name}
-
-            def delete_instance(self, name: str):
-                return {"deleted": name}
-
+    def test_node_instance_actions_create_success_audit_logs(self):
+        conn = FakeConnection(
+            responses={
+                "create_instance": lambda p: {"name": p["name"]},
+                "update_config": {"configPath": "/tmp/frpc.toml"},
+                "start": lambda p: {"started": p["name"]},
+                "delete_instance": lambda p: {"deleted": p["name"]},
+            }
+        )
         with tempfile.TemporaryDirectory() as tmp:
             app = load_main_app(
                 PROJECT_DIR=tmp,
@@ -732,78 +709,34 @@ class AuditLogApiTests(unittest.TestCase):
                 WEBUI_PASSWORD="password",
                 FRPC_MULTI_ROLE="console",
             )
-            from app.control.router import create_agent_client
-
-            app.dependency_overrides[create_agent_client] = lambda: FakeAgentClient
             client = TestClient(app)
             headers = auth_headers(client)
-            node = client.post(
-                "/api/nodes",
-                json={"name": "remote-agent", "baseUrl": "http://agent.example.com", "token": "node-token"},
-                headers=headers,
-            ).json()
+            node = client.post("/api/nodes", json={"name": "remote"}, headers=headers).json()
+            conn.uuid = node["uuid"]
+            patch_hub(app, conn, online=True)
             node_id = node["id"]
 
-            client.post(
-                f"/api/nodes/{node_id}/instances",
-                json={"name": "client-001", "configText": "x"},
-                headers=headers,
-            )
+            client.post(f"/api/nodes/{node_id}/instances", json={"name": "client-001", "configText": "x"}, headers=headers)
             client.put(
                 f"/api/nodes/{node_id}/instances/client-001/config",
                 json={"configText": "x", "restartAfterSave": True},
                 headers=headers,
             )
             client.post(f"/api/nodes/{node_id}/instances/client-001/start", headers=headers)
-            client.post(f"/api/nodes/{node_id}/instances/client-001/stop", headers=headers)
-            client.post(f"/api/nodes/{node_id}/instances/client-001/restart", headers=headers)
-            client.post(f"/api/nodes/{node_id}/instances/client-001/recreate", headers=headers)
             client.delete(f"/api/nodes/{node_id}/instances/client-001", headers=headers)
 
-            response = client.get("/api/audit-logs", headers=headers)
-
-            self.assertEqual(response.status_code, 200)
-            logs = response.json()
+            logs = client.get("/api/audit-logs", headers=headers).json()
             self.assertEqual(
                 [item["action"] for item in logs],
-                [
-                    "delete_instance",
-                    "recreate_instance",
-                    "restart_instance",
-                    "stop_instance",
-                    "start_instance",
-                    "update_config",
-                    "create_instance",
-                ],
+                ["delete_instance", "start_instance", "update_config", "create_instance"],
             )
-            self.assertTrue(all(item["username"] == "admin" for item in logs))
             self.assertTrue(all(item["nodeId"] == node_id for item in logs))
             self.assertTrue(all(item["success"] is True for item in logs))
-            self.assertEqual(logs[0]["instanceName"], "client-001")
 
+    def test_failed_node_instance_action_is_audited_as_failure(self):
+        from app.control.hub import AgentOfflineError
 
-class MultiNodeSummaryTests(unittest.TestCase):
-    def test_summary_aggregates_nodes_and_tolerates_offline_node(self):
-        class FakeAgentClient:
-            def __init__(self, base_url: str, token: str):
-                self.base_url = base_url
-
-            def summary(self):
-                if "offline" in self.base_url:
-                    raise AgentConnectionError("offline")
-                return {
-                    "total": 2,
-                    "running": 1,
-                    "stopped": 1,
-                    "error": 0,
-                    "dockerAvailable": True,
-                    "dockerError": "",
-                    "instances": [
-                        {"name": "client-001", "displayName": "A", "enabled": True, "runtime": {"state": "running"}},
-                        {"name": "client-002", "displayName": "B", "enabled": True, "runtime": {}},
-                    ],
-                }
-
+        conn = FakeConnection(raises=AgentOfflineError("node offline"))
         with tempfile.TemporaryDirectory() as tmp:
             app = load_main_app(
                 PROJECT_DIR=tmp,
@@ -812,102 +745,278 @@ class MultiNodeSummaryTests(unittest.TestCase):
                 WEBUI_PASSWORD="password",
                 FRPC_MULTI_ROLE="console",
             )
-            from app.control.router import create_agent_client
-
-            app.dependency_overrides[create_agent_client] = lambda: FakeAgentClient
             client = TestClient(app)
             headers = auth_headers(client)
-            client.post(
-                "/api/nodes",
-                json={"name": "online-node", "baseUrl": "http://online-agent", "token": "token-a"},
-                headers=headers,
+            node = client.post("/api/nodes", json={"name": "remote"}, headers=headers).json()
+            conn.uuid = node["uuid"]
+            patch_hub(app, conn, online=True)
+            node_id = node["id"]
+
+            response = client.post(f"/api/nodes/{node_id}/instances/client-001/start", headers=headers)
+            self.assertEqual(response.status_code, 502)
+
+            logs = client.get("/api/audit-logs", headers=headers).json()
+            self.assertEqual(len(logs), 1)
+            self.assertEqual(logs[0]["action"], "start_instance")
+            self.assertEqual(logs[0]["instanceName"], "client-001")
+            self.assertEqual(logs[0]["nodeId"], node_id)
+            self.assertFalse(logs[0]["success"])
+            self.assertTrue(logs[0]["message"])
+
+
+class MultiNodeSummaryTests(unittest.TestCase):
+    def test_summary_aggregates_online_and_tolerates_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = load_main_app(
+                PROJECT_DIR=tmp,
+                DATABASE_PATH=str(Path(tmp) / "console.db"),
+                WEBUI_USERNAME="admin",
+                WEBUI_PASSWORD="password",
+                FRPC_MULTI_ROLE="console",
             )
-            client.post(
-                "/api/nodes",
-                json={"name": "offline-node", "baseUrl": "http://offline-agent", "token": "token-b"},
-                headers=headers,
-            )
+            client = TestClient(app)
+            headers = auth_headers(client)
+            online_node = client.post("/api/nodes", json={"name": "online-node"}, headers=headers).json()
+            offline_node = client.post("/api/nodes", json={"name": "offline-node"}, headers=headers).json()
+
+            summary_data = {
+                "total": 2,
+                "running": 1,
+                "stopped": 1,
+                "error": 0,
+                "instances": [
+                    {"name": "client-001", "displayName": "A", "enabled": True, "runtime": {"state": "running"}},
+                    {"name": "client-002", "displayName": "B", "enabled": True, "runtime": {}},
+                ],
+            }
+
+            # 自定义 hub：只有 online-node 在线
+            from app.control import hub as hub_module
+
+            class FakeHub:
+                def is_online(self, uuid: str) -> bool:
+                    return uuid == online_node["uuid"]
+
+                def get(self, uuid: str):
+                    return FakeConnection(uuid=uuid, responses={"summary": summary_data})
+
+            fake = FakeHub()
+            hub_module.hub = fake
+            for mod_name in ["app.control.router", "app.main"]:
+                mod = sys.modules.get(mod_name)
+                if mod is not None and hasattr(mod, "hub"):
+                    mod.hub = fake
 
             response = client.get("/api/summary", headers=headers)
-
             self.assertEqual(response.status_code, 200)
             body = response.json()
             self.assertEqual(body["total"], 2)
             self.assertEqual(body["running"], 1)
-            self.assertEqual(body["stopped"], 1)
-            self.assertEqual(body["error"], 0)
-            self.assertFalse(body["dockerAvailable"])
-            self.assertEqual(len(body["nodes"]), 2)
-            self.assertEqual(body["nodes"][0]["status"], "online")
-            self.assertEqual(body["nodes"][1]["status"], "offline")
-            self.assertEqual(body["instances"][0]["nodeId"], body["nodes"][0]["id"])
+            self.assertEqual(body["nodeCount"], 2)
+            self.assertEqual(body["onlineCount"], 1)
+            statuses = {n["name"]: n["status"] for n in body["nodes"]}
+            self.assertEqual(statuses["online-node"], "online")
+            self.assertEqual(statuses["offline-node"], "offline")
             self.assertEqual(body["instances"][0]["nodeName"], "online-node")
+            _ = offline_node  # referenced for clarity
 
 
-class AgentClientTests(unittest.TestCase):
-    def test_agent_client_sends_bearer_token_and_maps_methods(self):
-        requests: list[httpx.Request] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            requests.append(request)
-            if request.method == "GET" and request.url.path == "/agent/instances/client-001/config":
-                return httpx.Response(200, json={"configText": "serverAddr = \"x\""})
-            return httpx.Response(200, json={"path": request.url.path, "method": request.method})
-
-        transport = httpx.MockTransport(handler)
-        client = AgentClient("http://agent.local/", "secret-token", transport=transport)
-
-        self.assertEqual(client.ping()["path"], "/agent/health")
-        self.assertEqual(client.get_system()["path"], "/agent/system")
-        self.assertEqual(client.list_instances()["path"], "/agent/instances")
-        self.assertEqual(client.create_instance({"name": "client-001"})["method"], "POST")
-        self.assertEqual(client.get_instance("client-001")["path"], "/agent/instances/client-001")
-        self.assertEqual(client.get_config("client-001")["configText"], 'serverAddr = "x"')
-        self.assertEqual(client.update_config("client-001", {"configText": "x"})["method"], "PUT")
-        self.assertEqual(client.validate_config("client-001", "serverAddr = \"x\"")["method"], "POST")
-        self.assertEqual(client.patch_instance("client-001", {"enabled": False})["method"], "PATCH")
-        self.assertEqual(client.delete_instance("client-001")["method"], "DELETE")
-        self.assertEqual(client.start("client-001")["path"], "/agent/instances/client-001/start")
-        self.assertEqual(client.stop("client-001")["path"], "/agent/instances/client-001/stop")
-        self.assertEqual(client.restart("client-001")["path"], "/agent/instances/client-001/restart")
-        self.assertEqual(client.recreate("client-001")["path"], "/agent/instances/client-001/recreate")
-        self.assertEqual(client.logs("client-001", tail=10, keyword="err")["path"], "/agent/instances/client-001/logs")
-        self.assertEqual(client.summary()["path"], "/agent/summary")
-        self.assertEqual(client.stats()["path"], "/agent/stats")
-
-        self.assertTrue(requests)
-        self.assertTrue(all(request.headers.get("Authorization") == "Bearer secret-token" for request in requests))
-        logs_request = next(request for request in requests if request.url.path.endswith("/logs"))
-        self.assertEqual(logs_request.url.params["tail"], "10")
-        self.assertEqual(logs_request.url.params["keyword"], "err")
-
-    def test_agent_client_classifies_http_errors(self):
-        cases = [
-            (401, AgentAuthError),
-            (404, AgentNotFoundError),
-            (500, AgentServerError),
+class SettingsTests(unittest.TestCase):
+    def _snapshot(self, **env: str) -> dict:
+        keys = [
+            "WEBUI_CORS_ORIGINS",
+            "FRPC_MULTI_ROLE",
+            "PROJECT_DIR",
+            "WEBUI_JWT_SECRET",
+            "CONSOLE_PUBLIC_HOST",
+            "CONSOLE_TLS",
+            "AGENT_SERVER",
+            "AGENT_UUID",
+            "AGENT_SECRET",
+            "AGENT_TLS",
         ]
+        previous = {key: os.environ.get(key) for key in keys}
+        for key in keys:
+            os.environ.pop(key, None)
+        os.environ["PROJECT_DIR"] = tempfile.mkdtemp(prefix="frpc-settings-")
+        os.environ["WEBUI_JWT_SECRET"] = "test-secret"
+        os.environ.update(env)
+        sys.modules.pop("app.settings", None)
+        try:
+            settings = importlib.import_module("app.settings").settings
+            return {
+                "cors_origins": list(settings.cors_origins),
+                "role": settings.frpc_multi_role,
+                "is_console": settings.is_console,
+                "is_agent": settings.is_agent,
+                "include_console_api": settings.include_console_api,
+                "serve_frontend": settings.serve_frontend,
+                "agent_ws_url": settings.agent_ws_url,
+            }
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            sys.modules.pop("app.settings", None)
 
-        for status_code, expected_error in cases:
-            with self.subTest(status_code=status_code):
-                transport = httpx.MockTransport(lambda request: httpx.Response(status_code, json={"detail": "failed"}))
-                client = AgentClient("http://agent.local", "secret-token", transport=transport)
+    def test_cors_origins_default_is_localhost(self):
+        snap = self._snapshot()
+        self.assertEqual(snap["cors_origins"], ["http://127.0.0.1:8081", "http://localhost:8081"])
 
-                with self.assertRaises(expected_error):
-                    client.ping()
+    def test_cors_origins_parsed_from_env(self):
+        snap = self._snapshot(WEBUI_CORS_ORIGINS="https://a.example.com, https://b.example.com")
+        self.assertEqual(snap["cors_origins"], ["https://a.example.com", "https://b.example.com"])
 
-    def test_agent_client_classifies_network_errors(self):
-        def timeout_handler(request: httpx.Request) -> httpx.Response:
-            raise httpx.TimeoutException("timed out", request=request)
+    def test_all_role_downgrades_to_console(self):
+        snap = self._snapshot(FRPC_MULTI_ROLE="all")
+        self.assertEqual(snap["role"], "console")
+        self.assertTrue(snap["is_console"])
 
-        def connection_handler(request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("connect failed", request=request)
+    def test_console_role_serves_frontend_and_api(self):
+        snap = self._snapshot(FRPC_MULTI_ROLE="console")
+        self.assertTrue(snap["include_console_api"])
+        self.assertTrue(snap["serve_frontend"])
+        self.assertFalse(snap["is_agent"])
 
-        with self.assertRaises(AgentTimeoutError):
-            AgentClient("http://agent.local", "secret-token", transport=httpx.MockTransport(timeout_handler)).ping()
+    def test_agent_role_no_console_api(self):
+        snap = self._snapshot(FRPC_MULTI_ROLE="agent")
+        self.assertTrue(snap["is_agent"])
+        self.assertFalse(snap["include_console_api"])
+        self.assertFalse(snap["serve_frontend"])
 
-        with self.assertRaises(AgentConnectionError):
-            AgentClient("http://agent.local", "secret-token", transport=httpx.MockTransport(connection_handler)).ping()
+    def test_agent_ws_url_builds_from_server_and_tls(self):
+        plain = self._snapshot(FRPC_MULTI_ROLE="agent", AGENT_SERVER="console:8081")
+        self.assertEqual(plain["agent_ws_url"], "ws://console:8081/ws/agent")
+        secure = self._snapshot(FRPC_MULTI_ROLE="agent", AGENT_SERVER="frpc.example.com", AGENT_TLS="true")
+        self.assertEqual(secure["agent_ws_url"], "wss://frpc.example.com/ws/agent")
+
+
+class WsProtoTests(unittest.TestCase):
+    def test_encode_decode_roundtrip(self):
+        from app.control import wsproto
+
+        frame = {"type": wsproto.T_REQUEST, "id": "abc", "method": "start", "params": {"name": "x"}}
+        raw = wsproto.encode(frame)
+        self.assertEqual(wsproto.decode(raw), frame)
+        # bytes 也能解码
+        self.assertEqual(wsproto.decode(raw.encode("utf-8")), frame)
+
+    def test_decode_rejects_non_object(self):
+        from app.control import wsproto
+
+        with self.assertRaises(ValueError):
+            wsproto.decode("[1,2,3]")
+
+
+class HubTests(unittest.IsolatedAsyncioTestCase):
+    async def test_call_resolves_on_matching_response(self):
+        from app.control.hub import AgentConnection
+        from app.control import wsproto
+
+        sent = []
+
+        async def send(text):
+            sent.append(text)
+
+        conn = AgentConnection("uuid", send)
+
+        import asyncio
+
+        async def respond():
+            # 等待请求帧发出后，构造响应
+            for _ in range(50):
+                if sent:
+                    break
+                await asyncio.sleep(0.005)
+            frame = wsproto.decode(sent[-1])
+            conn.handle_response(
+                {"type": wsproto.T_RESPONSE, "id": frame["id"], "ok": True, "result": {"done": True}}
+            )
+
+        task = asyncio.create_task(respond())
+        result = await conn.call("start", {"name": "x"}, timeout=2.0)
+        await task
+        self.assertEqual(result, {"done": True})
+
+    async def test_call_raises_on_error_response(self):
+        from app.control.hub import AgentConnection, AgentRpcError
+        from app.control import wsproto
+
+        sent = []
+
+        async def send(text):
+            sent.append(text)
+
+        conn = AgentConnection("uuid", send)
+
+        import asyncio
+
+        async def respond():
+            for _ in range(50):
+                if sent:
+                    break
+                await asyncio.sleep(0.005)
+            frame = wsproto.decode(sent[-1])
+            conn.handle_response(
+                {
+                    "type": wsproto.T_RESPONSE,
+                    "id": frame["id"],
+                    "ok": False,
+                    "status": 404,
+                    "error": "not found",
+                }
+            )
+
+        task = asyncio.create_task(respond())
+        with self.assertRaises(AgentRpcError) as ctx:
+            await conn.call("get_instance", {"name": "x"}, timeout=2.0)
+        await task
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_fail_all_wakes_pending_calls(self):
+        from app.control.hub import AgentConnection, AgentOfflineError
+
+        sent = []
+
+        async def send(text):
+            sent.append(text)
+
+        conn = AgentConnection("uuid", send)
+
+        import asyncio
+
+        async def kill():
+            for _ in range(50):
+                if sent:
+                    break
+                await asyncio.sleep(0.005)
+            conn.fail_all(AgentOfflineError("disconnected"))
+
+        task = asyncio.create_task(kill())
+        with self.assertRaises(AgentOfflineError):
+            await conn.call("start", {"name": "x"}, timeout=2.0)
+        await task
+
+    async def test_stream_queue_receives_data_then_end(self):
+        from app.control.hub import AgentConnection
+        from app.control import wsproto
+
+        sent = []
+
+        async def send(text):
+            sent.append(text)
+
+        conn = AgentConnection("uuid", send)
+        stream_id, queue = await conn.open_stream("logs_stream", {"name": "x"})
+        conn.handle_stream({"type": wsproto.T_STREAM, "id": stream_id, "data": "line-1"})
+        conn.handle_stream({"type": wsproto.T_STREAM, "id": stream_id, "end": True})
+
+        first = await queue.get()
+        second = await queue.get()
+        self.assertEqual(first, "line-1")
+        self.assertIsNone(second)
 
 
 if __name__ == "__main__":

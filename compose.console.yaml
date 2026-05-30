@@ -1,5 +1,8 @@
 name: frpc-multi-console
 
+# 主控 Console：托管前端 + /api/* + /ws/agent（接受 Agent 出站连接）。
+# 反转模型下 Console 不执行本机 Docker，也不挂载 docker.sock。
+# 本机若要运行 frpc 实例，请在本机另装一个 Agent（见 docs/AGENT_INSTALL.md）。
 services:
   frpc-console:
     build:
@@ -13,8 +16,17 @@ services:
       WEBUI_USERNAME: ${WEBUI_USERNAME:-admin}
       WEBUI_PASSWORD: ${WEBUI_PASSWORD:-change-this-password}
       WEBUI_JWT_SECRET: ${WEBUI_JWT_SECRET:-}
+      WEBUI_CORS_ORIGINS: ${WEBUI_CORS_ORIGINS:-}
       DATABASE_PATH: ${DATABASE_PATH:-/data/console.db}
       FRPC_MULTI_ROLE: console
+      # Agent 出站拨号回来时填的主控地址（写进一键安装命令）。例如 frpc.example.com:8081 或 1.2.3.4:8081。
+      CONSOLE_PUBLIC_HOST: ${CONSOLE_PUBLIC_HOST:-}
+      # 主控在 TLS 反代后时设为 true，安装命令会用 wss。
+      CONSOLE_TLS: ${CONSOLE_TLS:-false}
+      # 一键安装拉取的 Agent 镜像（GHCR）。
+      AGENT_IMAGE: ${AGENT_IMAGE:-ghcr.io/354770288/frpc-multi:latest}
+      # 可选：install.sh 下载地址，配置后一键命令会 curl 它。
+      AGENT_INSTALL_URL: ${AGENT_INSTALL_URL:-}
     ports:
       - "${CONSOLE_HOST:-127.0.0.1}:${CONSOLE_PORT:-8081}:8081"
     volumes:
