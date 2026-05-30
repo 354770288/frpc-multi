@@ -63,7 +63,35 @@ def generate_compose(project_dir: Path, instances: list[InstanceRecord]) -> str:
     return "\n".join(lines)
 
 
+BASE_COMPOSE = """\
+name: frpc-multi
+
+# frpc 实例容器的基础编排文件（base），由 Agent 自动确保存在。
+# Agent 通过 `docker compose -f compose.yaml -f compose.generated.yaml ...` 管理本机 frpc
+# 实例；compose.generated.yaml 定义各 frpc 服务并挂在下面这个网络上。
+
+networks:
+  frpc-outbound:
+    driver: bridge
+"""
+
+
+def ensure_base_compose(project_dir: Path) -> Path:
+    """确保 base ``compose.yaml`` 存在。
+
+    纯镜像部署（named volume 为空、无源码）时，``/opt/frpc-multi`` 里不会有 base
+    ``compose.yaml``，而 Agent 跑 frpc 实例时需要它（与 ``compose.generated.yaml`` 一起加载）。
+    不存在则写入；已存在则保留（不覆盖源码挂载部署里仓库自带的版本或用户自定义）。
+    """
+    path = Path(project_dir) / "compose.yaml"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(BASE_COMPOSE, encoding="utf-8")
+    return path
+
+
 def write_generated_compose(project_dir: Path, instances: list[InstanceRecord]) -> Path:
+    ensure_base_compose(project_dir)
     path = Path(project_dir) / "compose.generated.yaml"
     path.write_text(generate_compose(Path(project_dir), instances), encoding="utf-8")
     return path
