@@ -10,3 +10,13 @@ webui/backend/.venv/
 webui/backend/static/
 __pycache__/
 *.pyc
+
+# 运行时生成的实例数据（含各实例 frpc.toml，可能有 frps token）
+instances/
+# 本地开发覆盖（写死本机绝对路径）
+compose.agent.local.yaml
+# 本地工具 / IDE 配置
+.claude/
+.kiro/
+.vscode/
+

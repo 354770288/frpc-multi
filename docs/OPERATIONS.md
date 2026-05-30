@@ -36,13 +36,14 @@ journalctl -u frpc-multi-health.service -n 100 --no-pager
 
 ## 日常巡检
 
-建议每天或每周至少执行一次：
+建议每天或每周至少执行一次（在 Agent 服务器查看 frpc 实例，在主控查看 Console）：
 
 ```bash
 cd /opt/frpc-multi
 free -h
 df -h
-docker compose ps
+# Agent 机器：查看 frpc 实例
+docker compose -f compose.yaml -f compose.generated.yaml ps
 docker stats --no-stream
 bash scripts/check-health.sh
 ```
@@ -55,16 +56,11 @@ bash scripts/check-health.sh
 - 磁盘是否接近写满。
 - 某个容器日志是否异常增长。
 
-## Console / Agent 分离部署运维
+## Console / Agent 运维（反转模型）
 
-单机兼容部署继续使用默认 compose：
+连接方向是 Agent 主动出站连回 Console。Console 不执行本机 Docker，frpc 实例全部跑在各 Agent 上。
 
-```bash
-cd /opt/frpc-multi
-docker compose ps
-```
-
-Console 主控服务器使用：
+主控 Console 服务器：
 
 ```bash
 cd /opt/frpc-multi
@@ -72,25 +68,26 @@ docker compose -f compose.console.yaml ps
 docker compose -f compose.console.yaml logs --tail 100 frpc-console
 ```
 
-`compose.console.yaml` 固定运行 `FRPC_MULTI_ROLE=console`。即使 `.env` 中写了 `FRPC_MULTI_ROLE=all`，该容器也只提供前端和 Console API，不会启动本机 Agent API，也不会监听 `8082`。需要 all-in-one 单机模式时使用默认 `compose.yaml`；需要 Agent 能力时在执行服务器启动 `compose.agent.yaml`。
+`compose.console.yaml` 固定运行 `FRPC_MULTI_ROLE=console`，只提供前端、`/api/*` 和 `/ws/agent`，不挂载 Docker socket。若 `.env` 误写 `FRPC_MULTI_ROLE=all`，后端会自动降级为 console 并在日志告警。
 
-Console 节点数据存储在 `/data/console.db`。默认 `compose.yaml` 和 `compose.console.yaml` 使用同一个 Docker volume：`frpc-multi-console_console-data`。如果从 `docker compose -f compose.console.yaml up -d` 切换到 `docker compose up -d` 后节点为空，通常是旧版本默认 compose 没有挂载 `/data`，新容器读到了空数据库。
+Console 节点数据存储在 `/data/console.db`（Docker volume `frpc-multi-console_console-data`），保存节点的 uuid/secret 与审计日志。切换部署或重建容器时不要用 `docker compose down -v`，否则会删除该 volume。
 
-Agent 执行服务器使用：
+Agent 执行服务器：
 
 ```bash
+# Agent 容器本身（含连回主控的状态）
+docker logs --tail 100 frpc-agent
+# 该机器上的 frpc 实例
 cd /opt/frpc-multi
-docker compose -f compose.agent.yaml ps
-docker compose -f compose.agent.yaml logs --tail 100 frpc-agent
-docker compose -f compose.generated.yaml ps
+docker compose -f compose.yaml -f compose.generated.yaml ps
 ```
 
-Agent 的 `.env` 必须设置 `AGENT_TOKEN`，Console 节点页面中保存的 token 要与对应 Agent 一致。轮换 token 时，先更新 Agent `.env` 并重启 Agent，再到 Console 节点页面更新该节点 token 并执行测试连接。
+节点凭据由 Console 生成并通过一键安装命令注入 Agent（`AGENT_UUID` / `AGENT_SECRET`）。轮换密钥：在 Console 节点页点"轮换密钥"，旧 secret 立即失效，然后用新命令在目标机重装 Agent：
 
 ```bash
-cd /opt/frpc-multi
-nano .env
-docker compose -f compose.agent.yaml up -d
+# 在 Agent 机器上，用新一键命令重装（脚本会用新配置重建容器）
+docker rm -f frpc-agent
+# 粘贴 Console 新生成的一键安装命令
 ```
 
 ## 节点突然为空时的恢复步骤
@@ -102,7 +99,6 @@ docker compose -f compose.agent.yaml up -d
 ```bash
 cd /opt/frpc-multi
 docker volume ls | grep frpc-multi
-docker compose ps
 docker compose -f compose.console.yaml ps
 ```
 
@@ -116,142 +112,76 @@ docker run --rm \
   alpine sh -c 'cp /data/console.db /backup/console-db-$(date +%Y%m%d-%H%M%S).db'
 ```
 
-然后拉取最新代码并重启你要使用的模式：
+然后拉取最新代码并重启主控：
 
 ```bash
 git pull origin main
-```
-
-继续使用 Console-only：
-
-```bash
-docker compose down
 docker compose -f compose.console.yaml up -d --build
-```
-
-切换到单机 all-in-one：
-
-```bash
-docker compose -f compose.console.yaml down
-docker compose up -d --build frpc-webui
 ```
 
 确认容器读到同一个数据库：
 
 ```bash
-# Console-only
 docker exec frpc-console sh -c 'ls -lh /data/console.db'
-
-# all-in-one
-docker exec frpc-webui sh -c 'ls -lh /data/console.db'
 ```
 
 ## Console / Agent 联调验收
 
-以下步骤用于确认前后端分离和 Console / Agent 分离部署已经在真实环境跑通。
+以下步骤用于确认反转模型在真实环境跑通。
 
-### 1. 验证 Agent 自身可用
+### 1. 部署主控并添加节点
 
-在 Agent 服务器执行：
+- 按 README 部署 Console，确认 `.env` 里 `CONSOLE_PUBLIC_HOST` 填了 Agent 能访问到的主控地址。
+- 登录面板，进入"节点"，新建节点（例如 `agent-01`），复制生成的一键安装命令。
 
-```bash
-cd /opt/frpc-multi
-grep -E '^AGENT_TOKEN=' .env
-docker compose -f compose.agent.yaml ps
-curl -fsS -H "Authorization: Bearer $(grep '^AGENT_TOKEN=' .env | cut -d= -f2-)" http://127.0.0.1:8082/agent/health
-```
+### 2. 在目标机器安装 Agent
 
-预期返回：
-
-```json
-{"ok":true}
-```
-
-如果 Console 与 Agent 不在同一台机器，还需要在 Console 服务器或你的本机验证 Agent 的可访问地址：
+在 Agent 服务器粘贴运行一键命令，然后看日志：
 
 ```bash
-curl -fsS -H "Authorization: Bearer <AGENT_TOKEN>" http://<agent-address>:8082/agent/health
+docker logs -f frpc-agent
+# 期望看到："已连接主控 ws://... （节点：agent-01）"
 ```
 
-`<agent-address>` 应是内网、VPN、Tailscale、WireGuard、Cloudflare Tunnel 或 HTTPS 反向代理地址，不建议裸公网 HTTP。
-
-### 2. 验证 Console 节点管理
-
-在 Console 页面中进入“节点”：
-
-- 新增节点，名称例如 `agent-01`。
-- Agent 地址填写第 1 步验证过的可访问地址，例如 `http://10.0.0.12:8082`。
-- Token 填写该 Agent 的 `AGENT_TOKEN`。
-- 点击“测试”，预期节点状态变为“在线”。
-
-Console 服务器可同时查看日志：
-
-```bash
-cd /opt/frpc-multi
-docker compose -f compose.console.yaml logs --tail 100 frpc-console
-```
+回到面板，节点状态应从"待连接"变为"在线"。若一直重连，检查目标机能否出站访问 `AGENT_SERVER`，以及 uuid/secret 是否与面板一致。
 
 ### 3. 验证远程实例创建
 
-在 Console 页面中进入“创建实例”：
+在 Console"创建实例"：节点选 `agent-01`，实例名用临时名（如 `client-smoke-001`），填测试用 `serverAddr` / `serverPort`，首次先关闭"创建后启动"。
 
-- 节点选择刚新增的 `agent-01`。
-- 实例名使用临时名称，例如 `client-smoke-001`。
-- 填写一个可用于测试的 `serverAddr` 和 `serverPort`。
-- 首次验收建议先关闭“创建后启动”，先验证文件和 compose 生成。
-
-在 Agent 服务器执行：
+在 Agent 服务器确认：
 
 ```bash
 cd /opt/frpc-multi
 test -f instances/client-smoke-001/frpc.toml
 grep -n "frpc-client-smoke-001" compose.generated.yaml
-docker compose -f compose.generated.yaml config >/tmp/frpc-agent-generated-check.yaml
+docker compose -f compose.yaml -f compose.generated.yaml config >/tmp/frpc-agent-generated-check.yaml
 ```
 
-预期：实例配置文件存在，`compose.generated.yaml` 中存在对应 service，Compose 配置检查无报错。
+预期：配置文件存在、`compose.generated.yaml` 有对应 service、Compose 配置检查无报错。
 
 ### 4. 验证远程实例操作
 
-如果测试配置能连接真实 `frps`，在 Console 页面执行：
-
-- 启动实例。
-- 查看详情和日志。
-- 修改配置并保存。
-- 停止实例。
-- 重启或重建实例。
-
-在 Agent 服务器辅助确认：
+在 Console 页面执行启动、查看详情和日志（含实时跟随）、修改配置并保存、停止、重启或重建。Agent 服务器辅助确认：
 
 ```bash
 cd /opt/frpc-multi
-docker compose -f compose.generated.yaml ps
+docker compose -f compose.yaml -f compose.generated.yaml ps
 docker logs --tail 100 frpc-client-smoke-001
 ```
 
-如果测试配置只是占位配置，不建议长期启动；启动失败时重点看 Console 是否返回明确错误、Agent 日志是否可解释。
-
 ### 5. 验证审计日志
 
-在 Console 页面进入“审计”：
-
-- 应能看到创建、修改配置、启动、停止、重启、重建、删除等操作记录。
-- 远程 Agent 操作应显示对应节点 ID；单机兼容路径操作显示“本机”。
-- 操作人应为当前登录用户名。
+在 Console"审计"页应看到创建、修改配置、启停、重启、重建、删除记录；每条带对应节点 ID 和操作人；失败操作也记录为失败。
 
 ### 6. 清理临时实例
 
-验收结束后在 Console 删除 `client-smoke-001`。随后在 Agent 服务器确认：
+在 Console 删除 `client-smoke-001`，随后在 Agent 服务器确认：
 
 ```bash
 cd /opt/frpc-multi
 test ! -d instances/client-smoke-001
 ! grep -q "frpc-client-smoke-001" compose.generated.yaml
-```
-
-最后再跑一次：
-
-```bash
 bash scripts/check-health.sh
 ```
 
@@ -298,7 +228,7 @@ bash scripts/check-health.sh
 date
 free -h
 df -h
-docker compose ps
+docker compose -f compose.yaml -f compose.generated.yaml ps
 docker stats --no-stream
 ```
 

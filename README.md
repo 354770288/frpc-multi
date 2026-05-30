@@ -1,6 +1,6 @@
 # frpc 多实例 Docker Compose 部署项目
 
-这是一个面向生产长期运行的 `frpc` 多开部署项目，目标是在一台小型 VPS 上稳定运行多个 `frpc` 实例。项目使用 Docker Compose 作为唯一执行层，每个 `frpc` 实例独立成一个容器，分别拥有独立配置、资源限制、自动重启策略和日志轮转边界。实例由 WebUI 动态创建和管理，单机兼容模式在本机执行，Console / Agent 分离模式由 Agent 执行，写入 `instances/<name>/frpc.toml` 并生成 `compose.generated.yaml`。
+这是一个面向生产长期运行的 `frpc` 多开部署项目，目标是在一台小型 VPS 上稳定运行多个 `frpc` 实例。项目使用 Docker Compose 作为唯一执行层，每个 `frpc` 实例独立成一个容器，分别拥有独立配置、资源限制、自动重启策略和日志轮转边界。实例由 WebUI 动态创建和管理：在主控（Console）页面新建节点会生成一条一键安装命令，在目标机器运行后 Agent 会主动连回主控并自动上线，随后即可在面板里为该节点创建、启停、查看 `frpc` 实例。
 
 推荐 VPS 配置：
 
@@ -14,29 +14,63 @@ Swap: 1-2GB
 
 本项目不再把"二进制 + systemd"作为主方案。原因是过去已经出现过 `frpc` 长时间运行后内存异常增长并拖垮服务器的问题，所以本项目优先解决隔离、限制、重启、日志和巡检这些长期稳定性问题。
 
+## 架构：Console + Agent（Agent 主动连主控）
+
+参考探针项目的部署方式，本项目采用"主控 + 探针"式的反转连接模型：
+
+```text
+Console（主控）  ── 托管前端 + /api/* + /ws/agent（接受 Agent 连接）
+     ▲
+     │ Agent 主动出站连接（ws/wss 长连接）
+     │
+Agent（执行端）  ── 出站连回主控 + 挂 docker.sock 管理本机 frpc 实例
+```
+
+关键点：**连接方向是 Agent 主动连 Console**，不是 Console 去连 Agent。因此：
+
+- Agent 所在机器无需公网 IP、无需开放任何入站端口，NAT / 家宽 / 内网机器都能纳管，只要它能出站访问主控。
+- 主控只需要一个 Agent 能访问到的地址（公网 IP、域名或内网地址）。
+- 新增节点不用手填地址和 token：在面板创建节点 → 自动生成 uuid + 密钥 + 一键安装命令 → 在目标机运行命令即自注册上线。
+- 主控自身若也要跑 `frpc` 实例，同样在主控机上安装一个 Agent，没有特殊的"单机模式"。
+
+只有两种角色，由 `FRPC_MULTI_ROLE` 决定：
+
+```text
+console —— compose.console.yaml，提供前端、/api/* 和 /ws/agent，不挂载 docker.sock
+agent   —— compose.agent.yaml，出站连回主控，挂载 docker.sock 管理本机 frpc 实例
+```
+
 ## 项目结构
 
 ```text
 .
-  compose.yaml                 # 单机兼容入口，运行 WebUI/all 角色并挂载 Docker socket
-  compose.console.yaml         # Console 独立部署入口，不挂载 Docker socket
-  compose.agent.yaml           # Agent 独立部署入口，挂载 Docker socket 管理本机实例
-  compose.generated.yaml       # 由本机执行层/Agent 根据 instances/ 自动生成
-  .env.example                 # 镜像版本、内存限制、CPU 限制等默认值
-  instances/                   # 每个 frpc 实例的目录，由本机兼容路径或 Agent 创建
+  compose.yaml                 # frpc 实例容器的基础编排（仅项目名 + 共享网络，被 Agent 引用）
+  compose.console.yaml         # 主控 Console 部署入口
+  compose.agent.yaml           # Agent 部署入口（出站连回主控）
+  compose.generated.yaml       # 由 Agent 根据 instances/ 自动生成的 frpc 服务定义
+  .env.example                 # 镜像版本、角色、主控地址、节点凭据等默认值
+  instances/                   # 每个 frpc 实例的目录，由 Agent 创建
     <name>/frpc.toml           # 实例配置
     <name>/meta.json           # 实例元数据
-  webui/                       # WebUI 前后端
-  scripts/                     # 部署、巡检、备份、swap 调整脚本
-  systemd/                     # 每日健康检查 timer
-  docs/                        # 运维、安全、二期管理平台文档
+  webui/                       # WebUI 前后端（单镜像，多阶段构建）
+  scripts/                     # 部署、巡检、备份、swap、Agent 一键安装脚本
+  .github/workflows/           # 构建并发布镜像到 GHCR
+  docs/                        # 运维、安全、迁移、Agent 安装文档
   backups/                     # 配置备份输出目录
   logs/                        # 预留日志目录
 ```
 
-## 首次部署到 VPS
+## 镜像
 
-以下命令假设项目部署目录为 `/opt/frpc-multi`。
+Console 和 Agent 是**同一个镜像**，靠 `FRPC_MULTI_ROLE` 区分角色。仓库的 GitHub Actions 会把镜像发布到 GHCR：
+
+```text
+ghcr.io/354770288/frpc-multi:latest
+```
+
+也可以本地构建：`docker compose -f compose.console.yaml build`。
+
+## 部署主控 Console
 
 ```bash
 mkdir -p /opt/frpc-multi
@@ -46,102 +80,46 @@ cd /opt/frpc-multi
 cp .env.example .env
 sudo bash scripts/install-docker-debian-ubuntu.sh
 sudo bash scripts/apply-swap-tuning.sh
-```
-
-启动 WebUI（单机兼容模式，默认 `FRPC_MULTI_ROLE=all`）：
-
-```bash
-bash scripts/deploy.sh
-```
-
-`deploy.sh` 会在发现 `instances/` 里仍存在 `CHANGE_ME` 时拒绝启动，避免把未配置好的实例直接跑到生产环境。
-
-之后浏览器打开 `http://127.0.0.1:8081`（建议通过 SSH 隧道），登录后在 WebUI 内创建 frpc 实例。没有配置节点时，创建页会默认选择“本机”，继续走旧的单机 `/api/instances` 兼容路径；WebUI 在每次创建/启动实例时会刷新 `compose.generated.yaml` 并执行 `docker compose -f compose.yaml -f compose.generated.yaml up -d <service>`。
-
-## Console / Agent 分离部署
-
-当前有三种运行路径：
-
-```text
-单机兼容：compose.yaml，FRPC_MULTI_ROLE=all，同时提供前端、Console API、本机 Agent API 和本机 Docker 执行能力。
-Console：compose.console.yaml，FRPC_MULTI_ROLE=console，只提供前端和 /api/*，不挂载 Docker socket。
-Agent：compose.agent.yaml，FRPC_MULTI_ROLE=agent，只提供 /agent/*，挂载 Docker socket 管理本机实例。
-```
-
-注意：`compose.console.yaml` 会在 compose 文件内固定 `FRPC_MULTI_ROLE=console`，不会因为 `.env` 写了 `FRPC_MULTI_ROLE=all` 就启动本机 Agent 能力，也不会监听 `8082`。如果要单机 all-in-one，请使用 `compose.yaml`；如果要分离部署，请在执行节点单独启动 `compose.agent.yaml`。
-
-Console 节点数据存储在 `/data/console.db`。默认 `compose.yaml` 和 `compose.console.yaml` 会挂载同一个 Docker volume：`frpc-multi-console_console-data`。从 Console-only 切换到 all-in-one 前，不要执行 `docker compose down -v`；如果页面里节点突然为空，通常是启动到了另一个未挂载旧 `/data` 的容器，先按 `docs/OPERATIONS.md` 的恢复步骤检查 volume。
-
-默认 `compose.yaml` 适合一台 VPS 同时运行管理界面和本机 frpc 实例。多服务器管理时，使用专用 compose 文件：
-
-主控 Console 服务器：
-
-```bash
-cd /opt/frpc-multi
-cp .env.example .env
-nano .env
+nano .env   # 至少设置 WEBUI_PASSWORD、CONSOLE_PUBLIC_HOST
 docker compose -f compose.console.yaml up -d --build
 ```
 
-Console 默认监听：
+关键 `.env` 项：
 
-```text
-127.0.0.1:8081
-```
+- `WEBUI_PASSWORD`：登录密码，务必修改默认值。
+- `CONSOLE_PUBLIC_HOST`：Agent 能访问到的主控地址 `host:port`，例如 `frpc.example.com:8081` 或 `1.2.3.4:8081`。会写进一键安装命令；留空则命令里是占位符，需在目标机手填。
+- `CONSOLE_TLS`：主控在 TLS 反代后访问时设为 `true`（安装命令会用 `wss`）。
+- `CONSOLE_HOST` / `CONSOLE_PORT`：主控监听地址，默认 `127.0.0.1:8081`。
 
-frpc Agent 服务器：
+Console 默认监听 `127.0.0.1:8081`，建议通过 SSH 隧道访问：`ssh -L 8081:127.0.0.1:8081 root@主控IP`，再用浏览器打开 `http://127.0.0.1:8081`。节点数据存于 `/data/console.db`（Docker volume）。
 
-```bash
-cd /opt/frpc-multi
-cp .env.example .env
-nano .env
-docker compose -f compose.agent.yaml up -d --build
-```
+## 添加节点并部署 Agent
 
-Agent 启动前必须在 `.env` 中设置高强度 `AGENT_TOKEN`。`compose.agent.yaml` 默认启用 `AGENT_AUTH_ENABLED=true`，并把容器内 `8081` 映射到宿主机：
+1. 登录 Console，进入"节点"页，输入节点名称，点"创建节点"。
+2. 页面弹出一条一键安装命令（含该节点的 uuid 和密钥）。复制它。
+3. 在目标机器上（已装 Docker）运行该命令。Agent 会拉取镜像、启动并主动连回主控。
+4. 几秒后节点在面板变为"在线"，即可为它创建和管理 `frpc` 实例。
 
-```text
-127.0.0.1:8082
-```
-
-如果 Console 和 Agent 不在同一台机器，建议通过内网、VPN、Tailscale、WireGuard、Cloudflare Tunnel 或 HTTPS 反向代理连通 Agent，不建议把 Agent HTTP 服务裸露到公网。Console 页面中新增节点时，节点地址填写 Agent 的可访问地址（例如 `http://10.0.0.12:8082`），token 填写对应 Agent 的 `AGENT_TOKEN`。添加节点后，实例创建、详情、配置、启动、停止、重启、删除会走 `nodeId + instanceName` 的多节点路径；没有任何节点时仍保留本机兼容路径。
+详细步骤见 [Agent 安装说明](docs/AGENT_INSTALL.md)。主控自身要跑 frpc 时，同样新建一个节点、在主控机上跑安装命令即可。
 
 ## 常用操作
 
-查看所有实例状态：
+实例的创建、配置、启停、删除、日志都在 Console 页面完成，操作通过 WebSocket 下发到对应 Agent 执行。命令行排查（在 Agent 机器上）：
 
 ```bash
+# 查看 Agent 容器日志（含连回主控的状态）
+docker logs -f frpc-agent
+
+# 查看某个 frpc 实例的日志
+docker logs --tail 200 frpc-<instance-name>
+
+# 查看 / 重启全部 frpc 实例
 cd /opt/frpc-multi
 docker compose -f compose.yaml -f compose.generated.yaml ps
-bash scripts/check-health.sh
-```
-
-重启单个实例：
-
-```bash
-cd /opt/frpc-multi
-bash scripts/restart-one.sh <instance-name>
-```
-
-重启全部实例：
-
-```bash
-cd /opt/frpc-multi
 docker compose -f compose.yaml -f compose.generated.yaml restart
-```
 
-备份当前配置：
-
-```bash
-cd /opt/frpc-multi
+# 备份配置
 bash scripts/backup-configs.sh
-```
-
-查看单个实例日志：
-
-```bash
-cd /opt/frpc-multi
-docker logs --tail 200 frpc-<instance-name>
 ```
 
 ## 资源限制策略
@@ -178,38 +156,29 @@ host.docker.internal
 
 ## 升级与回滚
 
-镜像版本固定在 `.env`：
+主控/Agent 镜像版本可固定在各自的部署命令或 `.env`：
 
 ```text
+AGENT_IMAGE=ghcr.io/354770288/frpc-multi:latest
 FRP_IMAGE=ghcr.io/fatedier/frpc:v0.68.1
 ```
 
-升级流程：
+升级主控：
 
 ```bash
 cd /opt/frpc-multi
 bash scripts/backup-configs.sh
-nano .env
-docker compose -f compose.yaml -f compose.generated.yaml pull
-docker compose -f compose.yaml -f compose.generated.yaml up -d
-bash scripts/check-health.sh
+docker compose -f compose.console.yaml pull
+docker compose -f compose.console.yaml up -d
 ```
 
-回滚流程：
-
-```bash
-cd /opt/frpc-multi
-nano .env
-docker compose -f compose.yaml -f compose.generated.yaml pull
-docker compose -f compose.yaml -f compose.generated.yaml up -d
-bash scripts/check-health.sh
-```
-
-建议每次升级前先备份配置，并只修改 `.env` 里的 `FRP_IMAGE` 版本号。
+升级 Agent：在 Agent 机器上重新运行一键安装命令（脚本会用新镜像重建容器），或 `docker pull` 后重建。
 
 ## 相关文档
 
 - [运维手册](docs/OPERATIONS.md)
 - [安全说明](docs/SECURITY.md)
+- [Agent 安装说明](docs/AGENT_INSTALL.md)
+- [从旧架构迁移](docs/MIGRATION.md)
 - [二期管理平台规划](docs/PHASE-2.md)
 - [WebUI 使用说明](webui/README.md)

@@ -1,33 +1,13 @@
 name: frpc-multi
 
-services:
-  frpc-webui:
-    build:
-      context: ./webui
-    container_name: frpc-webui
-    restart: unless-stopped
-    environment:
-      PROJECT_DIR: /opt/frpc-multi
-      WEBUI_HOST: 0.0.0.0
-      WEBUI_PORT: 8081
-      WEBUI_USERNAME: ${WEBUI_USERNAME:-admin}
-      WEBUI_PASSWORD: ${WEBUI_PASSWORD:-change-this-password}
-      DATABASE_PATH: ${DATABASE_PATH:-/data/console.db}
-      FRPC_MULTI_ROLE: ${FRPC_MULTI_ROLE:-all}
-      AGENT_AUTH_ENABLED: ${AGENT_AUTH_ENABLED:-false}
-      AGENT_TOKEN: ${AGENT_TOKEN:-}
-    ports:
-      - "${WEBUI_HOST:-127.0.0.1}:${WEBUI_PORT:-8081}:8081"
-    volumes:
-      - console-data:/data
-      - ./:/opt/frpc-multi
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - frpc-outbound
-
-volumes:
-  console-data:
-    name: ${CONSOLE_DATA_VOLUME:-frpc-multi-console_console-data}
+# frpc 实例容器的基础编排文件（base）。
+# Agent 通过 `docker compose -f compose.yaml -f compose.generated.yaml ...` 管理本机 frpc 实例，
+# compose.generated.yaml 由 WebUI 根据 instances/ 自动生成，定义各 frpc 服务并挂在下面这个网络上。
+#
+# 反转模型说明：WebUI 本体不在此文件里。
+#   - 主控 Console：compose.console.yaml（前端 + /api/* + /ws/agent）
+#   - 执行端 Agent：compose.agent.yaml（出站连回主控 + 挂 docker.sock 管理本机 frpc 实例）
+# 本文件只负责为 frpc 实例提供稳定的项目名与共享网络。
 
 networks:
   frpc-outbound:

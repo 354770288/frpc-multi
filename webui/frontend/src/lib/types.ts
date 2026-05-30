@@ -99,17 +99,30 @@ export type ValidationData = {
   summary: InstanceSummary;
 };
 
-export type NodeStatus = 'unknown' | 'online' | 'offline' | 'error';
+export type NodeStatus = 'unknown' | 'pending' | 'online' | 'offline' | 'error';
 
 export type Node = {
   id: number;
   name: string;
-  baseUrl: string;
+  uuid: string;
   status: NodeStatus;
+  online: boolean;
   lastSeenAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
+
+export type NodeInstall = {
+  server: string;
+  serverConfigured: boolean;
+  tls: boolean;
+  uuid: string;
+  image: string;
+  env: Record<string, string>;
+  installCommand: string;
+};
+
+export type NodeWithInstall = Node & { install: NodeInstall };
 
 export type InstanceRef = Instance & {
   nodeId: number;
@@ -119,7 +132,7 @@ export type InstanceRef = Instance & {
 export type NodeSummary = {
   id: number;
   name: string;
-  baseUrl: string;
+  uuid: string;
   status: NodeStatus;
   lastSeenAt: string | null;
   error?: string;

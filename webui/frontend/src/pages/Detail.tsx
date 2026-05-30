@@ -72,7 +72,7 @@ export function Detail({
   }, [instance, tail, appliedKeyword, follow]);
 
   useEffect(() => {
-    if (!instance || !follow || instance.nodeId > 0) return;
+    if (!instance || !follow) return;
     const token = getAuthToken();
     if (!token) {
       setFollowState('error');
@@ -80,7 +80,11 @@ export function Detail({
     }
     const params = new URLSearchParams({ tail: String(tail), token });
     if (appliedKeyword) params.set('keyword', appliedKeyword);
-    const url = `/api/instances/${instance.name}/logs/stream?${params.toString()}`;
+    const base =
+      instance.nodeId > 0
+        ? `/api/nodes/${instance.nodeId}/instances/${instance.name}/logs/stream`
+        : `/api/instances/${instance.name}/logs/stream`;
+    const url = `${base}?${params.toString()}`;
     setLogs([]);
     setFollowState('connecting');
     const source = new EventSource(url);
@@ -184,9 +188,6 @@ export function Detail({
           title={
             <span className="inline-flex items-center gap-2">
               最近日志
-              {instance.nodeId > 0 && (
-                <span className="text-[11px] font-normal text-[var(--color-fg-muted)]">节点实例暂不支持实时跟随</span>
-              )}
               {follow && (
                 <span
                   className={`inline-flex items-center gap-1 text-[11px] font-normal ${
@@ -222,7 +223,7 @@ export function Detail({
           }
           actions={
             <div className="flex items-center gap-2 flex-wrap">
-              <FollowToggle checked={follow} onChange={setFollow} disabled={instance.nodeId > 0} />
+              <FollowToggle checked={follow} onChange={setFollow} />
               <select
                 value={tail}
                 onChange={(event) => setTail(Number(event.target.value) as TailOption)}

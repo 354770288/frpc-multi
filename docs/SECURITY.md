@@ -72,24 +72,46 @@ docker logs --tail 200 frpc-<instance-name>
 
 ## Console / Agent 角色边界
 
-生产分离部署时应显式设置运行角色：
+只有两种角色，生产部署显式设置：
 
 ```text
 FRPC_MULTI_ROLE=console
 FRPC_MULTI_ROLE=agent
 ```
 
-建议：
+连接方向是 **Agent 主动出站连 Console**（WebSocket 长连接 `/ws/agent`），不是 Console 去连 Agent。安全含义：
 
-- Console 节点使用 `FRPC_MULTI_ROLE=console`，只挂载 `/api/*` 和前端，不挂载 Docker socket。
-- Agent 节点使用 `FRPC_MULTI_ROLE=agent`，只挂载 `/agent/*`，并且只在内网、VPN、Tailscale、WireGuard 或 HTTPS 反向代理后暴露。
-- 兼容单机部署可以继续使用默认 `FRPC_MULTI_ROLE=all`，但这不是生产分离部署的推荐值。
-- Agent 生产部署必须设置 `AGENT_AUTH_ENABLED=true` 和高强度 `AGENT_TOKEN`。
-- Console 访问 Agent 时使用 `Authorization: Bearer <AGENT_TOKEN>`，不要把 Agent token 暴露给浏览器或前端构建产物。
+- Console 节点（`FRPC_MULTI_ROLE=console`）只挂载前端、`/api/*` 和 `/ws/agent`，不挂载 Docker socket，不执行本机 Docker。
+- Agent 节点（`FRPC_MULTI_ROLE=agent`）挂载 `/var/run/docker.sock` 管理本机 frpc 实例，但**不监听任何入站管理端口**，因此不存在"Agent 接口裸露公网"的问题——它只发起出站连接。
+- Agent 机器无需公网、无需开放端口，NAT / 内网机器也能纳管。需要暴露给 Agent 的只有主控地址。
 
 专用部署文件：
 
-- `compose.console.yaml`：只运行 Console，不挂载 `/var/run/docker.sock`，适合作为主控入口。
-- `compose.agent.yaml`：只运行 Agent，必须挂载 `/var/run/docker.sock`，只应部署在需要管理本机 frpc 实例的服务器上。
+- `compose.console.yaml`：只运行 Console，不挂载 `/var/run/docker.sock`，作为主控入口。
+- `compose.agent.yaml`：只运行 Agent，必须挂载 `/var/run/docker.sock`，出站连回主控。
 
-Agent 默认绑定 `127.0.0.1:8082`。如果需要跨机器访问，应优先通过私有网络或受控隧道暴露，不建议直接改成 `0.0.0.0` 后裸露到公网。
+主控的暴露面是 `/ws/agent`（接受 Agent 连接）和 `/api/*` + 前端（用户登录）。把主控暴露到公网时应放在 HTTPS 反代后，并启用 `CONSOLE_TLS=true`。
+
+## Agent 出站鉴权（uuid + secret）
+
+每个节点在 Console 创建时生成一对凭据：
+
+- `uuid`：节点身份标识，绑定到一条节点记录。
+- `secret`：出站鉴权密钥，Agent 连回主控时在握手帧里携带，主控用常量时间比对（`hmac.compare_digest`）。
+
+要点：
+
+- secret 仅在创建 / 轮换节点时随响应返回一次，用于展示一键安装命令；列表、详情、ping 响应都不回显 secret。
+- secret 泄露或人员变动后，在 Console 节点页"轮换密钥"，旧 secret 立即失效，需用新命令在目标机重装 Agent。
+- 不同节点使用各自独立的 secret，不复用。
+- 握手失败（uuid 不存在或 secret 不匹配）时主控直接关闭连接（WebSocket close 1008），不泄露原因细节。
+
+## Console 节点凭据存储
+
+Console 把各节点的 `uuid` 和 `secret` 保存在 `/data/console.db`（SQLite）。secret 当前为明文存储，不在前端回显。因此：
+
+- 限制 `/data/console.db`（或对应 Docker volume）的访问权限，按主机管理员级别保护。
+- 不要把 `console.db` 提交到仓库或随备份外发。
+- secret 泄露或人员变动后，在 Console 节点页轮换密钥，并用新命令重装对应 Agent。
+
+通过域名或反向代理访问 Console 时，用环境变量 `WEBUI_CORS_ORIGINS`（逗号分隔）配置允许的前端来源，默认只允许同源本机访问。反代需放行 `/ws/agent` 的 WebSocket 升级（`Upgrade` / `Connection` 头）。

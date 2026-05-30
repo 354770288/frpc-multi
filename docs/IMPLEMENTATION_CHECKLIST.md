@@ -1,3 +1,7 @@
+> ⚠️ **历史文档（已被取代）**：本清单基于旧的 "Console 主动 HTTP 连 Agent + all 单机模式 + AGENT_TOKEN bearer" 架构。
+> 项目已于 2026-05 改为**反转连接模型**（Agent 出站连回 Console、取消 all 模式、uuid+secret 一键安装）。
+> 最新架构见根目录 `README.md` 与 `docs/AGENT_INSTALL.md`。本文仅作历史记录保留。
+
 # Console + Agent 实施清单
 
 ## 当前实际状态

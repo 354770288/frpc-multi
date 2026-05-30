@@ -92,7 +92,12 @@ export function Console({
         nodeList.map((node) => {
           const summary = summaryByNodeId.get(node.id);
           return summary
-            ? { ...node, status: summary.status, lastSeenAt: summary.lastSeenAt }
+            ? {
+                ...node,
+                status: summary.status,
+                online: summary.status === 'online',
+                lastSeenAt: summary.lastSeenAt
+              }
             : node;
         })
       );
@@ -283,7 +288,7 @@ export function Console({
           onCancel={() => setPage('overview')}
         />
       );
-    return <SystemPage auth={auth} system={system} toast={toast} onPasswordChanged={onAuthRefresh} />;
+    return <SystemPage auth={auth} system={system} nodes={nodes} toast={toast} onPasswordChanged={onAuthRefresh} />;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, instances, nodes, stats, counts, dockerAvailable, dockerError, system, selected, pendingAction]);
 

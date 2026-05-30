@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, PlugZap, Plus, RefreshCw, Trash2, XCircle } from 'lucide-react';
-import { nodesApi, type NodeCreatePayload } from '../lib/api';
+import {
+  CheckCircle2,
+  ClipboardCopy,
+  KeyRound,
+  Plus,
+  RefreshCw,
+  Terminal,
+  Trash2,
+  XCircle
+} from 'lucide-react';
+import { nodesApi } from '../lib/api';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
 import { Input } from '../components/ui/Input';
 import { Panel } from '../components/ui/Panel';
-import type { Node, ToastKind } from '../lib/types';
-
-const EMPTY_FORM: NodeCreatePayload = {
-  name: '',
-  baseUrl: '',
-  token: ''
-};
+import type { Node, NodeInstall, ToastKind } from '../lib/types';
 
 export function NodesPage({
   toast,
@@ -22,10 +25,12 @@ export function NodesPage({
   onChanged?: () => void;
 }) {
   const [nodes, setNodes] = useState<Node[]>([]);
-  const [form, setForm] = useState<NodeCreatePayload>(EMPTY_FORM);
+  const [name, setName] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [pending, setPending] = useState<Record<number, string>>({});
+  // 当前展示安装命令的节点（新建或点"安装命令"后填充）。
+  const [install, setInstall] = useState<{ node: Node; info: NodeInstall } | null>(null);
 
   async function loadNodes() {
     setLoading(true);
@@ -40,16 +45,16 @@ export function NodesPage({
 
   useEffect(() => {
     loadNodes();
+    // 反转模型下节点上线靠 Agent 主动连回，这里轮询刷新在线状态。
+    const timer = setInterval(loadNodes, 10000);
+    return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const formError = useMemo(() => {
-    if (!form.name.trim()) return '请填写节点名称';
-    if (!form.baseUrl.trim()) return '请填写 Agent 地址';
-    if (!/^https?:\/\//i.test(form.baseUrl.trim())) return 'Agent 地址需要以 http:// 或 https:// 开头';
-    if (!form.token.trim()) return '请填写 Agent token';
+    if (!name.trim()) return '请填写节点名称';
     return '';
-  }, [form]);
+  }, [name]);
 
   async function createNode() {
     if (formError) {
@@ -58,13 +63,10 @@ export function NodesPage({
     }
     setSaving(true);
     try {
-      await nodesApi.create({
-        name: form.name.trim(),
-        baseUrl: form.baseUrl.trim(),
-        token: form.token.trim()
-      });
-      setForm(EMPTY_FORM);
-      toast('success', '节点已新增');
+      const created = await nodesApi.create({ name: name.trim() });
+      setName('');
+      setInstall({ node: created, info: created.install });
+      toast('success', '节点已创建，请在目标机运行安装命令');
       await loadNodes();
       onChanged?.();
     } catch (err) {
@@ -74,17 +76,32 @@ export function NodesPage({
     }
   }
 
-  async function pingNode(node: Node) {
-    setPending((prev) => ({ ...prev, [node.id]: 'ping' }));
+  async function showInstall(node: Node) {
+    setPending((prev) => ({ ...prev, [node.id]: 'install' }));
     try {
-      await nodesApi.ping(node.id);
-      toast('success', `${node.name} 连接正常`);
-      await loadNodes();
-      onChanged?.();
+      const info = await nodesApi.install(node.id);
+      setInstall({ node, info });
     } catch (err) {
-      toast('error', `${node.name} 连接失败：${err instanceof Error ? err.message : '未知错误'}`);
+      toast('error', err instanceof Error ? err.message : '获取安装命令失败');
+    } finally {
+      setPending((prev) => {
+        const next = { ...prev };
+        delete next[node.id];
+        return next;
+      });
+    }
+  }
+
+  async function rotateSecret(node: Node) {
+    if (!window.confirm(`轮换 ${node.name} 的密钥？旧 Agent 需用新命令重新部署才能再次连上。`)) return;
+    setPending((prev) => ({ ...prev, [node.id]: 'rotate' }));
+    try {
+      const updated = await nodesApi.rotateSecret(node.id);
+      setInstall({ node: updated, info: updated.install });
+      toast('success', `${node.name} 密钥已轮换`);
       await loadNodes();
-      onChanged?.();
+    } catch (err) {
+      toast('error', err instanceof Error ? err.message : '轮换密钥失败');
     } finally {
       setPending((prev) => {
         const next = { ...prev };
@@ -99,6 +116,7 @@ export function NodesPage({
     setPending((prev) => ({ ...prev, [node.id]: 'delete' }));
     try {
       await nodesApi.delete(node.id);
+      if (install?.node.id === node.id) setInstall(null);
       toast('success', `${node.name} 已删除`);
       await loadNodes();
       onChanged?.();
@@ -125,91 +143,104 @@ export function NodesPage({
       </div>
 
       <section className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-4">
-        <Panel title="节点列表" bodyClassName="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface-muted)]">
-                  <Th>名称</Th>
-                  <Th>状态</Th>
-                  <Th>Agent 地址</Th>
-                  <Th>最近连接</Th>
-                  <Th align="right">操作</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {nodes.map((node) => (
-                  <tr
-                    key={node.id}
-                    className="border-b border-[var(--color-border)] last:border-b-0 hover:bg-[var(--color-surface-muted)] transition-colors"
-                  >
-                    <Td>
-                      <span className="text-[13px] font-medium text-[var(--color-fg)]">{node.name}</span>
-                    </Td>
-                    <Td>
-                      <StatusBadge node={node} />
-                    </Td>
-                    <Td>
-                      <span className="font-mono text-[11px] text-[var(--color-fg-muted)]">{node.baseUrl}</span>
-                    </Td>
-                    <Td>
-                      <span className="text-[12px] text-[var(--color-fg-muted)]">
-                        {node.lastSeenAt || '—'}
-                      </span>
-                    </Td>
-                    <Td align="right">
-                      <div className="flex items-center justify-end gap-1">
-                        <Button size="sm" onClick={() => pingNode(node)} disabled={!!pending[node.id]}>
-                          <PlugZap size={13} />
-                          测试
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="danger"
-                          onClick={() => deleteNode(node)}
-                          disabled={!!pending[node.id]}
-                        >
-                          <Trash2 size={13} />
-                          删除
-                        </Button>
-                      </div>
-                    </Td>
+        <div className="flex flex-col gap-4">
+          <Panel title="节点列表" bodyClassName="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface-muted)]">
+                    <Th>名称</Th>
+                    <Th>状态</Th>
+                    <Th>UUID</Th>
+                    <Th>最近在线</Th>
+                    <Th align="right">操作</Th>
                   </tr>
-                ))}
-                {!nodes.length && (
-                  <tr>
-                    <td colSpan={5} className="px-4 py-10 text-center text-[12px] text-[var(--color-fg-muted)]">
-                      {loading ? '加载中…' : '暂无节点'}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
+                </thead>
+                <tbody>
+                  {nodes.map((node) => (
+                    <tr
+                      key={node.id}
+                      className="border-b border-[var(--color-border)] last:border-b-0 hover:bg-[var(--color-surface-muted)] transition-colors"
+                    >
+                      <Td>
+                        <span className="text-[13px] font-medium text-[var(--color-fg)]">{node.name}</span>
+                      </Td>
+                      <Td>
+                        <StatusBadge node={node} />
+                      </Td>
+                      <Td>
+                        <span className="font-mono text-[11px] text-[var(--color-fg-muted)]">
+                          {node.uuid.slice(0, 12)}…
+                        </span>
+                      </Td>
+                      <Td>
+                        <span className="text-[12px] text-[var(--color-fg-muted)]">
+                          {node.lastSeenAt || '—'}
+                        </span>
+                      </Td>
+                      <Td align="right">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button size="sm" onClick={() => showInstall(node)} disabled={!!pending[node.id]}>
+                            <Terminal size={13} />
+                            安装命令
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => rotateSecret(node)}
+                            disabled={!!pending[node.id]}
+                          >
+                            <KeyRound size={13} />
+                            轮换密钥
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            onClick={() => deleteNode(node)}
+                            disabled={!!pending[node.id]}
+                          >
+                            <Trash2 size={13} />
+                            删除
+                          </Button>
+                        </div>
+                      </Td>
+                    </tr>
+                  ))}
+                  {!nodes.length && (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-10 text-center text-[12px] text-[var(--color-fg-muted)]">
+                        {loading ? '加载中…' : '暂无节点，先在右侧创建一个'}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+
+          {install && (
+            <InstallPanel
+              nodeName={install.node.name}
+              info={install.info}
+              onClose={() => setInstall(null)}
+              toast={toast}
+            />
+          )}
+        </div>
 
         <Panel title="新增节点">
           <div className="flex flex-col gap-4">
+            <p className="text-[12px] leading-relaxed text-[var(--color-fg-muted)]">
+              创建节点后会生成一条一键安装命令。在目标机器上运行它，Agent 会主动连回主控并自动上线，
+              目标机无需公网或开放任何入站端口。
+            </p>
             <Field label="节点名称">
               <Input
-                value={form.name}
-                onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
                 placeholder="vps-hk-01"
-              />
-            </Field>
-            <Field label="Agent 地址">
-              <Input
-                value={form.baseUrl}
-                onChange={(event) => setForm((prev) => ({ ...prev, baseUrl: event.target.value }))}
-                placeholder="http://127.0.0.1:8082"
-              />
-            </Field>
-            <Field label="Agent token">
-              <Input
-                type="password"
-                value={form.token}
-                onChange={(event) => setForm((prev) => ({ ...prev, token: event.target.value }))}
-                autoComplete="off"
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') createNode();
+                }}
               />
             </Field>
             {formError && (
@@ -220,7 +251,7 @@ export function NodesPage({
             )}
             <Button variant="primary" onClick={createNode} disabled={saving || !!formError}>
               <Plus size={13} />
-              {saving ? '新增中…' : '新增节点'}
+              {saving ? '创建中…' : '创建节点'}
             </Button>
           </div>
         </Panel>
@@ -229,14 +260,92 @@ export function NodesPage({
   );
 }
 
+function InstallPanel({
+  nodeName,
+  info,
+  onClose,
+  toast
+}: {
+  nodeName: string;
+  info: NodeInstall;
+  onClose: () => void;
+  toast: (kind: ToastKind, text: string) => void;
+}) {
+  async function copy(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('success', `${label}已复制`);
+    } catch {
+      toast('error', '复制失败，请手动选择文本');
+    }
+  }
+
+  return (
+    <Panel title={`安装命令 · ${nodeName}`}>
+      <div className="flex flex-col gap-3">
+        {!info.serverConfigured && (
+          <div className="flex items-start gap-2 rounded-md bg-[var(--color-warning-soft)] p-2 text-[12px] text-[var(--color-warning)]">
+            <XCircle size={13} className="mt-0.5 shrink-0" />
+            <span>
+              主控未配置对外可达地址（CONSOLE_PUBLIC_HOST），命令里的 <code>{info.server}</code> 需手动替换为
+              Agent 能访问到的主控地址。
+            </span>
+          </div>
+        )}
+        <p className="text-[12px] text-[var(--color-fg-muted)]">
+          在目标机器上以 root（或有 docker 权限的用户）运行：
+        </p>
+        <div className="relative">
+          <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-[var(--color-border)] bg-[var(--color-surface-muted)] p-3 pr-10 font-mono text-[11px] leading-relaxed text-[var(--color-fg)]">
+            {info.installCommand}
+          </pre>
+          <button
+            type="button"
+            onClick={() => copy(info.installCommand, '安装命令')}
+            className="absolute right-2 top-2 rounded p-1.5 text-[var(--color-fg-muted)] hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"
+            title="复制"
+          >
+            <ClipboardCopy size={14} />
+          </button>
+        </div>
+        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[11px]">
+          <span className="text-[var(--color-fg-muted)]">主控地址</span>
+          <span className="font-mono text-[var(--color-fg)]">{info.server}</span>
+          <span className="text-[var(--color-fg-muted)]">UUID</span>
+          <span className="font-mono text-[var(--color-fg)]">{info.uuid}</span>
+          <span className="text-[var(--color-fg-muted)]">TLS</span>
+          <span className="font-mono text-[var(--color-fg)]">{info.tls ? 'wss（已启用）' : 'ws（未启用）'}</span>
+          <span className="text-[var(--color-fg-muted)]">镜像</span>
+          <span className="font-mono text-[var(--color-fg)]">{info.image}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => copy(info.installCommand, '安装命令')}>
+            <ClipboardCopy size={13} />
+            复制命令
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onClose}>
+            关闭
+          </Button>
+        </div>
+        <p className="text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
+          密钥仅在创建/轮换时展示一次。如需重新查看可点节点行的"安装命令"，但出于安全考虑请妥善保管。
+        </p>
+      </div>
+    </Panel>
+  );
+}
+
 function StatusBadge({ node }: { node: Node }) {
-  if (node.status === 'online') {
+  if (node.online || node.status === 'online') {
     return (
       <Badge tone="success">
         <CheckCircle2 size={12} />
         在线
       </Badge>
     );
+  }
+  if (node.status === 'pending') {
+    return <Badge tone="muted">待连接</Badge>;
   }
   if (node.status === 'offline' || node.status === 'error') {
     return (
