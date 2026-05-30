@@ -5,6 +5,9 @@ name: frpc-multi-console
 # 本机若要运行 frpc 实例，请在本机另装一个 Agent（见 docs/AGENT_INSTALL.md）。
 services:
   frpc-console:
+    # 默认拉取 GHCR 发布的镜像（目标机无需源码）。开发时本地构建用：
+    #   docker compose -f compose.console.yaml up -d --build
+    image: ${CONSOLE_IMAGE:-ghcr.io/354770288/frpc-multi:latest}
     build:
       context: ./webui
     container_name: frpc-console

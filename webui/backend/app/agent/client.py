@@ -57,6 +57,11 @@ class AgentWsClient:
                 file=sys.stderr,
             )
             return
+        # 纯镜像部署时铺好目录与 base/generated compose，避免首次心跳的 docker compose 因缺文件失败。
+        try:
+            await asyncio.to_thread(self.service.ensure_ready)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[frpc-agent] 初始化工作目录失败（继续运行）：{exc}", file=sys.stderr)
         backoff = settings.agent_reconnect_min_seconds
         while not self._stop.is_set():
             try:

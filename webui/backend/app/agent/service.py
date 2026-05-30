@@ -92,6 +92,17 @@ class LocalAgentService:
         active_store = instance_store or self.store
         return write_generated_compose(self.project_dir, active_store.list_instances())
 
+    def ensure_ready(self) -> None:
+        """Agent 启动时确保运行所需的文件就绪。
+
+        纯镜像部署（named volume 为空、无源码）时，``/opt/frpc-multi`` 里既没有 base
+        ``compose.yaml`` 也没有 ``compose.generated.yaml``。此时即使还没有任何实例，
+        心跳/概要里的 ``docker compose ps`` 也会因缺文件失败。这里先把目录、base
+        compose 和（基于现有 instances 的）generated compose 都铺好。
+        """
+        self.store.ensure_dirs()
+        self._regenerate_compose()
+
     def _record_payload(self, record) -> dict[str, Any]:
         return {
             "name": record.name,
