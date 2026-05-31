@@ -19,4 +19,8 @@ compose.agent.local.yaml
 .claude/
 .kiro/
 .vscode/
+# 本地记忆/笔记（跨会话记忆文档，不进版本库）
+chat/
+chat.md
+前端优化-*.md
 

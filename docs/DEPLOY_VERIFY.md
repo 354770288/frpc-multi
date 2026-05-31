@@ -133,7 +133,7 @@ docker compose -f compose.agent.yaml pull
 docker compose -f compose.agent.yaml up -d
 ```
 
-数据在挂载目录 / named volume 里，升级不丢。
+数据在挂载的宿主目录（默认 `/opt/frpc-multi`）里，升级不丢。
 
 ## 8. 常见问题
 
@@ -143,3 +143,7 @@ docker compose -f compose.agent.yaml up -d
 - **同机 Agent 连不上**：`AGENT_SERVER` 写成了 `127.0.0.1`，改成本机 LAN/公网 IP。
 - **创建实例报 compose 相关错误**：旧镜像缺 base compose 自举逻辑。确认拉的是最新镜像（含本次修复），Agent 启动日志应无"初始化工作目录失败"。
 - **frpc 实例日志报 `read /etc/frp/frpc.toml: is a directory`**：docker-out-of-docker 路径不对齐。Agent 经宿主 docker.sock 创建 frpc 容器，frpc 的配置 bind mount 由宿主机文件系统解析，所以 Agent 的数据目录必须"宿主路径 = 容器内路径"。① 不要用 named volume（如 `-v frpc-agent-data:/opt/frpc-multi`），要用 `-v /opt/frpc-multi:/opt/frpc-multi`；② `PROJECT_DIR` 要等于这个挂载的宿主路径。用最新的一键命令/`compose.agent.yaml`/`install-agent.sh` 即已对齐；老命令需删掉 Agent 容器用新命令重装。
+- **系统页"节点系统信息"无 frpc 镜像/版本**：远程 Agent 用一键 `docker run` 装、没有 `.env` 文件，旧版读不到 `FRP_IMAGE`。最新镜像已让 Agent 优先读环境变量，且一键命令/脚本/`compose.agent.yaml` 都会注入 `FRP_IMAGE`。确认拉的是最新镜像、且启动命令带 `-e FRP_IMAGE=...`（面板生成的最新命令已含）。注意：主控自带的源码挂载 Agent 因有 `.env.example` 一直能读到，这是正常差异。
+- **实例详情页"实时跟随"报连接失败 / "暂无日志或 Docker 未连接"**：多为 frpc 容器没真正起来（常因上面的镜像/路径问题），或该实例未启动。先确认实例已 start、`docker ps` 能看到 `frpc-<name>` 容器；再开实时跟随。
+- **删除节点后 Agent 容器还在**：删节点会让 Agent 停删所有实例 + 删配置 + 自毁容器（`docker rm -f $HOSTNAME`）。自毁在极端情况下可能不成功（权限/时序），此时 Agent 已停止连回主控、不会变幽灵节点，但容器壳可能残留。到该机器 `docker ps -a | grep frpc-agent` 确认，残留则手动 `docker rm -f frpc-agent`。实例容器和配置目录此时已被清理。
+- **节点离线时删除**：无法远程清理，只删主控的节点记录并返回提示。需自行登录该机器 `docker rm -f frpc-agent` 并清理 `instances/` 目录。
