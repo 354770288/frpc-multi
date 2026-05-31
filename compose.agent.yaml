@@ -13,7 +13,11 @@ services:
     container_name: frpc-agent
     restart: unless-stopped
     environment:
-      PROJECT_DIR: /opt/frpc-multi
+      # docker-out-of-docker：Agent 经宿主 docker.sock 创建 frpc 容器，frpc 的配置 bind mount
+      # 由【宿主机】文件系统解析。因此 PROJECT_DIR 必须等于下方挂载的【宿主】路径（AGENT_DATA_DIR），
+      # 做到"宿主路径 = 容器内路径"，否则宿主 docker 找不到 instances/<name>/frpc.toml 会建空目录，
+      # frpc 报 "read /etc/frp/frpc.toml: is a directory"。
+      PROJECT_DIR: ${AGENT_DATA_DIR:-/opt/frpc-multi}
       FRPC_MULTI_ROLE: agent
       # 主控可达地址 host:port（与一键安装命令一致）。
       AGENT_SERVER: ${AGENT_SERVER:?set AGENT_SERVER (console host:port) before starting the agent}
@@ -28,7 +32,8 @@ services:
       FRPC_CPU_LIMIT: ${FRPC_CPU_LIMIT:-0.25}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
-      - ./:/opt/frpc-multi
+      # 宿主路径 = 容器内路径（见上方 PROJECT_DIR 说明）。AGENT_DATA_DIR 默认 /opt/frpc-multi。
+      - ${AGENT_DATA_DIR:-/opt/frpc-multi}:${AGENT_DATA_DIR:-/opt/frpc-multi}
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - frpc-agent

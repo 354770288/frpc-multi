@@ -50,13 +50,17 @@ if docker ps -a --format '{{.Names}}' | grep -qx "${AGENT_CONTAINER}"; then
 fi
 
 echo "==> 启动 Agent 容器：${AGENT_CONTAINER}"
+# 关键：Agent 在容器内经宿主 docker.sock 创建 frpc 容器（docker-out-of-docker），
+# frpc 的配置 bind mount 由【宿主机】文件系统解析。因此数据目录必须"宿主路径 = 容器路径"，
+# 并让 PROJECT_DIR 指向同一路径，否则宿主 docker 找不到 instances/<name>/frpc.toml，
+# 会建空目录导致 frpc 报 "is a directory"。
 docker run -d \
   --name "${AGENT_CONTAINER}" \
   --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "${AGENT_DATA_DIR}:/opt/frpc-multi" \
+  -v "${AGENT_DATA_DIR}:${AGENT_DATA_DIR}" \
   -e FRPC_MULTI_ROLE=agent \
-  -e PROJECT_DIR=/opt/frpc-multi \
+  -e PROJECT_DIR="${AGENT_DATA_DIR}" \
   -e AGENT_SERVER="${AGENT_SERVER}" \
   -e AGENT_UUID="${AGENT_UUID}" \
   -e AGENT_SECRET="${AGENT_SECRET}" \

@@ -142,3 +142,4 @@ docker compose -f compose.agent.yaml up -d
 - **`pull` 拉不到镜像**：确认 GHCR 包 Public；否则先 `docker login ghcr.io`。
 - **同机 Agent 连不上**：`AGENT_SERVER` 写成了 `127.0.0.1`，改成本机 LAN/公网 IP。
 - **创建实例报 compose 相关错误**：旧镜像缺 base compose 自举逻辑。确认拉的是最新镜像（含本次修复），Agent 启动日志应无"初始化工作目录失败"。
+- **frpc 实例日志报 `read /etc/frp/frpc.toml: is a directory`**：docker-out-of-docker 路径不对齐。Agent 经宿主 docker.sock 创建 frpc 容器，frpc 的配置 bind mount 由宿主机文件系统解析，所以 Agent 的数据目录必须"宿主路径 = 容器内路径"。① 不要用 named volume（如 `-v frpc-agent-data:/opt/frpc-multi`），要用 `-v /opt/frpc-multi:/opt/frpc-multi`；② `PROJECT_DIR` 要等于这个挂载的宿主路径。用最新的一键命令/`compose.agent.yaml`/`install-agent.sh` 即已对齐；老命令需删掉 Agent 容器用新命令重装。
