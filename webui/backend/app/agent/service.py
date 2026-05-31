@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -115,6 +116,10 @@ class LocalAgentService:
         }
 
     def read_env_value(self, key: str) -> str:
+        # 优先读进程环境变量：一键 docker run 装的 Agent 没有 .env 文件，FRP_IMAGE 等靠 -e 注入。
+        env_value = os.getenv(key, "").strip()
+        if env_value:
+            return env_value
         env_path = self.project_dir / ".env"
         if not env_path.exists():
             env_path = self.project_dir / ".env.example"
@@ -342,3 +347,25 @@ class LocalAgentService:
             "dockerError": status.get("error", ""),
             "instances": enriched,
         }
+
+    def decommission(self) -> dict[str, Any]:
+        """注销本节点：停掉并移除所有 frpc 实例容器，删除全部实例配置目录。
+
+        删节点时由 Console 下发。容器自毁（docker rm 掉 agent 自身）由调用方（AgentWsClient）
+        在本方法返回后处理，因为那需要操作 agent 自己的容器。
+        """
+        # 1. 停掉并移除所有 frpc 实例容器（compose down 会按 generated 里的服务清理）。
+        self.docker.compose("down", "--remove-orphans")
+        # 2. 删除所有实例配置目录。
+        removed: list[str] = []
+        store = self.store
+        for record in store.list_instances():
+            try:
+                store.delete_instance(record.name)
+                removed.append(record.name)
+            except (ValueError, FileNotFoundError):
+                continue
+        # 3. 重新生成空的 generated compose。
+        self._regenerate_compose(store)
+        return {"removedInstances": removed}
+

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
 import sys
 from typing import Any
@@ -264,7 +265,39 @@ class AgentWsClient:
                 params.get("tail", 300),
                 params.get("keyword", ""),
             )
+        if method == wsproto.M_DECOMMISSION:
+            # 停所有实例 + 删配置目录，然后调度容器自毁（在响应发出后执行）。
+            result = await asyncio.to_thread(svc.decommission)
+            self._schedule_self_destruct()
+            return result
         raise HTTPException(status_code=400, detail=f"未知方法: {method}")
+
+    def _schedule_self_destruct(self) -> None:
+        """删节点后让 Agent 容器自毁。先停重连循环，再延迟 docker rm 掉自身容器。
+
+        延迟是为了让 decommission 的响应帧能先发回 Console。自毁通过宿主 docker.sock
+        执行 `docker rm -f <自身容器>`（容器名由 HOSTNAME 提供，即容器 ID 前缀）。
+        若 docker 不可用则退化为 stop 自身进程，至少不再连回主控。
+        """
+
+        async def _destruct() -> None:
+            await asyncio.sleep(1.5)
+            container = os.getenv("HOSTNAME", "").strip()
+            try:
+                if container:
+                    await asyncio.create_subprocess_exec(
+                        "docker", "rm", "-f", container,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+            # 兜底：无论 rm 是否成功，停掉重连循环。
+            self.stop()
+
+        self.stop()  # 立即停重连，避免删除后又连回主控产生幽灵节点
+        asyncio.create_task(_destruct())
+
 
     # ------------------------------------------------------------------
     # 日志流

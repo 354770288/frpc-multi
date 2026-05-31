@@ -38,6 +38,7 @@ M_LOGS_STREAM = "logs_stream"
 M_GET_SYSTEM = "get_system"
 M_SUMMARY = "summary"
 M_STATS = "stats"
+M_DECOMMISSION = "decommission"  # console -> agent：删节点时停所有实例、删配置、自毁 agent 容器
 
 
 def encode(frame: dict[str, Any]) -> str:

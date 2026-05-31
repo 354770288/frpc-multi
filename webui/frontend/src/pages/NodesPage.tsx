@@ -112,12 +112,26 @@ export function NodesPage({
   }
 
   async function deleteNode(node: Node) {
-    if (!window.confirm(`确认删除节点 ${node.name}？`)) return;
+    if (
+      !window.confirm(
+        `确认删除节点「${node.name}」？\n\n` +
+          `⚠️ 该节点下的所有 frpc 实例将一并被删除：\n` +
+          `· 停止并移除所有实例容器\n` +
+          `· 删除所有实例配置目录\n` +
+          `· 卸载并移除该节点的 Agent 容器\n\n` +
+          `此操作不可撤销，请谨慎选择。`
+      )
+    )
+      return;
     setPending((prev) => ({ ...prev, [node.id]: 'delete' }));
     try {
-      await nodesApi.delete(node.id);
+      const result = await nodesApi.delete(node.id);
       if (install?.node.id === node.id) setInstall(null);
-      toast('success', `${node.name} 已删除`);
+      if (result?.detail) {
+        toast('info', result.detail);
+      } else {
+        toast('success', `${node.name} 及其实例已删除`);
+      }
       await loadNodes();
       onChanged?.();
     } catch (err) {

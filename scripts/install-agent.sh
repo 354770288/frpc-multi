@@ -21,6 +21,8 @@ AGENT_IMAGE="${AGENT_IMAGE:-ghcr.io/354770288/frpc-multi:latest}"
 AGENT_DATA_DIR="${AGENT_DATA_DIR:-/opt/frpc-multi}"
 AGENT_CONTAINER="${AGENT_CONTAINER:-frpc-agent}"
 AGENT_TLS="${AGENT_TLS:-false}"
+# frpc 实例镜像，注入 Agent 供其起 frpc 容器并显示版本。
+FRP_IMAGE="${FRP_IMAGE:-ghcr.io/fatedier/frpc:v0.68.1}"
 
 require() {
   if [ -z "${!1:-}" ]; then
@@ -61,6 +63,7 @@ docker run -d \
   -v "${AGENT_DATA_DIR}:${AGENT_DATA_DIR}" \
   -e FRPC_MULTI_ROLE=agent \
   -e PROJECT_DIR="${AGENT_DATA_DIR}" \
+  -e FRP_IMAGE="${FRP_IMAGE}" \
   -e AGENT_SERVER="${AGENT_SERVER}" \
   -e AGENT_UUID="${AGENT_UUID}" \
   -e AGENT_SECRET="${AGENT_SECRET}" \

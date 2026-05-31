@@ -76,7 +76,10 @@ export const nodesApi = {
     api<NodeWithInstall>(`/api/nodes/${id}/rotate-secret`, { method: 'POST' }),
   patch: (id: number, payload: NodePatchPayload) =>
     api<Node>(`/api/nodes/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
-  delete: (id: number) => api<{ deleted: boolean }>(`/api/nodes/${id}`, { method: 'DELETE' }),
+  delete: (id: number) =>
+    api<{ deleted: boolean; decommissioned?: boolean; detail?: string }>(`/api/nodes/${id}`, {
+      method: 'DELETE'
+    }),
   ping: (id: number) => api<{ ok: boolean; node: Node }>(`/api/nodes/${id}/ping`, { method: 'POST' }),
   system: (id: number) => api<SystemInfo>(`/api/nodes/${id}/system`),
   instances: {
