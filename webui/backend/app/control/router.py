@@ -297,6 +297,37 @@ def ping_node(
 
 
 # ---------------------------------------------------------------------------
+# Agent 生命周期操作
+# ---------------------------------------------------------------------------
+@router.post("/{node_id}/agent/upgrade")
+async def upgrade_agent(
+    node_id: int,
+    user: Annotated[str, Depends(require_auth)],
+    store: Annotated[NodeStore, Depends(node_store)],
+    audits: Annotated[AuditStore, Depends(audit_store)],
+):
+    """发起 Agent docker run 自升级。
+
+    一键安装命令部署的 Agent 容器不归 compose.agent.yaml 管理，因此这里只通过
+    在线 Agent 启动临时 helper 容器，拉取当前镜像标签最新版并重建 Agent 自身。
+    """
+    node = _get_node(node_id, store)
+
+    async def factory():
+        connection = hub.get(node.uuid)
+        return await connection.call(wsproto.M_UPGRADE_AGENT, timeout=30.0)
+
+    return await _run_node_action(
+        audits,
+        username=user,
+        action="upgrade_agent",
+        node_id=node_id,
+        instance_name=None,
+        factory=factory,
+    )
+
+
+# ---------------------------------------------------------------------------
 # 节点系统信息
 # ---------------------------------------------------------------------------
 @router.get("/{node_id}/system")

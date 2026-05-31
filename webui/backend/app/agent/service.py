@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import shutil
 import subprocess
 from pathlib import Path
@@ -28,6 +29,68 @@ def sse_pack(event: str, data: str) -> bytes:
         chunks.append(f"data: {line}\n")
     chunks.append("\n")
     return "".join(chunks).encode("utf-8")
+
+
+AGENT_UPGRADE_HELPER = r"""
+import json
+import subprocess
+import sys
+import time
+
+
+def run(args):
+    subprocess.run(args, check=True)
+
+
+target = sys.argv[1]
+time.sleep(1.5)
+info = json.loads(subprocess.check_output(["docker", "inspect", target], text=True))[0]
+config = info.get("Config") or {}
+host_config = info.get("HostConfig") or {}
+image = config.get("Image")
+name = (info.get("Name") or target).lstrip("/")
+if not image or not name:
+    raise SystemExit("missing image or container name")
+
+run(["docker", "pull", image])
+
+args = ["docker", "run", "-d", "--name", name]
+restart = host_config.get("RestartPolicy") or {}
+restart_name = restart.get("Name") or ""
+retry_count = int(restart.get("MaximumRetryCount") or 0)
+if restart_name and restart_name != "no":
+    value = f"{restart_name}:{retry_count}" if restart_name == "on-failure" and retry_count else restart_name
+    args.extend(["--restart", value])
+
+network_mode = (host_config.get("NetworkMode") or "").strip()
+if network_mode and network_mode not in {"default", "bridge"}:
+    args.extend(["--network", network_mode])
+
+for item in config.get("Env") or []:
+    args.extend(["-e", item])
+
+for key, value in (config.get("Labels") or {}).items():
+    args.extend(["--label", f"{key}={value}"])
+
+for mount in info.get("Mounts") or []:
+    source = mount.get("Source")
+    destination = mount.get("Destination")
+    if not source or not destination:
+        continue
+    mode = mount.get("Mode") or ""
+    if not mode and not mount.get("RW", True):
+        mode = "ro"
+    volume = f"{source}:{destination}" + (f":{mode}" if mode else "")
+    args.extend(["-v", volume])
+
+working_dir = config.get("WorkingDir") or ""
+if working_dir:
+    args.extend(["-w", working_dir])
+
+args.append(image)
+run(["docker", "rm", "-f", target])
+run(args)
+"""
 
 
 async def stream_process_lines(
@@ -320,6 +383,69 @@ class LocalAgentService:
         path = self._regenerate_compose()
         return {"path": str(path)}
 
+    def _current_agent_image(self, container: str) -> str:
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "--format", "{{.Config.Image}}", container],
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            raise HTTPException(status_code=500, detail=f"读取 Agent 容器镜像失败: {exc}") from exc
+        image = (result.stdout or "").strip()
+        if result.returncode != 0 or not image:
+            detail = (result.stderr or result.stdout or "无法读取当前 Agent 容器镜像").strip()
+            raise HTTPException(status_code=500, detail=detail)
+        return image
+
+    def schedule_agent_upgrade(self) -> dict[str, Any]:
+        """发起 docker run 模式的 Agent 自升级。
+
+        前端一键安装命令创建的 Agent 容器不归 compose.agent.yaml 管理，因此升级不能走
+        docker compose。这里启动一个临时 helper 容器，由 helper 通过宿主 docker.sock
+        inspect 当前 Agent，拉取同镜像标签最新版，并用原 env/volume/restart policy 重建同名容器。
+        """
+        target = os.getenv("HOSTNAME", "").strip()
+        if not target:
+            raise HTTPException(status_code=500, detail="无法识别当前 Agent 容器")
+        image = self._current_agent_image(target)
+        helper_name = f"frpc-agent-upgrader-{secrets.token_hex(4)}"
+        argv = [
+            "docker",
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            helper_name,
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            image,
+            "python",
+            "-c",
+            AGENT_UPGRADE_HELPER,
+            target,
+        ]
+        try:
+            subprocess.Popen(  # noqa: S603 - argv is fixed; only Docker executes the helper container.
+                argv,
+                cwd=str(self.project_dir),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=500, detail="docker 命令不可用") from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"启动升级 helper 失败: {exc}") from exc
+        return {
+            "accepted": True,
+            "mode": "docker-run",
+            "targetContainer": target,
+            "helperContainer": helper_name,
+            "image": image,
+        }
+
     def get_summary(self) -> dict[str, Any]:
         instances = self.list_instances()
         status = self.docker.collect_status()
@@ -368,4 +494,3 @@ class LocalAgentService:
         # 3. 重新生成空的 generated compose。
         self._regenerate_compose(store)
         return {"removedInstances": removed}
-

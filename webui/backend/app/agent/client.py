@@ -265,6 +265,8 @@ class AgentWsClient:
                 params.get("tail", 300),
                 params.get("keyword", ""),
             )
+        if method == wsproto.M_UPGRADE_AGENT:
+            return await asyncio.to_thread(svc.schedule_agent_upgrade)
         if method == wsproto.M_DECOMMISSION:
             # 停所有实例 + 删配置目录，然后调度容器自毁（在响应发出后执行）。
             result = await asyncio.to_thread(svc.decommission)

@@ -17,8 +17,10 @@
    ```bash
    docker run -d --name frpc-agent --restart unless-stopped \
      -v /var/run/docker.sock:/var/run/docker.sock \
-     -v frpc-agent-data:/opt/frpc-multi \
+     -v /opt/frpc-multi:/opt/frpc-multi \
      -e FRPC_MULTI_ROLE=agent \
+     -e PROJECT_DIR=/opt/frpc-multi \
+     -e FRP_IMAGE=ghcr.io/fatedier/frpc:v0.68.1 \
      -e AGENT_SERVER=frpc.example.com:8081 \
      -e AGENT_UUID=<自动生成> \
      -e AGENT_SECRET=<自动生成> \
@@ -30,6 +32,11 @@
 5. 几秒后回到 Console，节点状态会从"待连接"变为"在线"。
 
 命令里的 `AGENT_UUID` 是节点身份，`AGENT_SECRET` 是出站鉴权密钥，二者由主控生成并绑定到这条节点记录。Agent 启动后用它们连回 `/ws/agent` 完成握手。
+
+一键命令是 **docker run 安装模式**：Agent 容器本身是一个独立的 `docker run` 容器，不由
+`compose.agent.yaml` 管理。Agent 在容器内维护的 `compose.yaml` + `compose.generated.yaml` 只用于管理本机
+frpc 实例容器，不管理 Agent 自己。由于 Agent 会通过宿主 docker.sock 创建 frpc 实例容器，数据目录必须使用
+`/opt/frpc-multi:/opt/frpc-multi` 这种"宿主路径 = 容器内路径"的 bind mount，不能用 named volume。
 
 ## 使用安装脚本
 
@@ -60,6 +67,9 @@ nano .env   # 填 AGENT_SERVER / AGENT_UUID / AGENT_SECRET / AGENT_TLS
 docker compose -f compose.agent.yaml up -d --build
 ```
 
+这是另一种手动部署方式。若节点最初是从面板复制一键命令安装的，后续在面板点"升级 Agent"会按 docker run
+模式自升级，不会假设该节点存在 `compose.agent.yaml`。
+
 ## 主控自身作为节点
 
 主控机器要跑 frpc 实例时，没有特殊模式：在 Console 新建一个节点（如 `console-local`），把生成的一键命令在主控机上运行即可。此时 `AGENT_SERVER` 可以填主控的本机可达地址（如 `127.0.0.1:8081`，前提是 Agent 容器能访问到——通常用主机网络或主控的内网地址）。
@@ -83,7 +93,8 @@ docker logs -f frpc-agent
 - 握手被拒（鉴权失败）：多半是 secret 不匹配。可在面板对该节点"轮换密钥"，用新命令重装。
 - 节点显示在线但实例操作失败：检查 Agent 机器的 docker.sock 是否挂载、docker 是否可用。
 
-## 轮换密钥 / 删除节点
+## 升级 / 轮换密钥 / 删除节点
 
+- 升级 Agent：面板节点行点"升级 Agent"，在线 Agent 会启动一个临时 helper 容器，拉取当前 Agent 镜像标签的最新版，并按原 env、挂载和重启策略用 `docker run` 重建 Agent 自己。接口成功只表示升级 helper 已发起；升级过程中节点会短暂离线，稍后应自动重新上线。
 - 轮换密钥：面板节点行点"轮换密钥"，旧密钥立即失效，需用新命令在目标机重装 Agent。
-- 删除节点：面板删除后，到目标机 `docker rm -f frpc-agent` 停掉 Agent。已有的 `instances/` 配置不会被删除。
+- 删除节点：面板删除在线节点时会让 Agent 停删所有 frpc 实例、删除实例配置，并尝试移除 Agent 容器自己；若节点离线，只会删除主控记录，需自行登录目标机清理残留。

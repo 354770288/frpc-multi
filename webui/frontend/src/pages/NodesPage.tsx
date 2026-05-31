@@ -7,6 +7,7 @@ import {
   RefreshCw,
   Terminal,
   Trash2,
+  UploadCloud,
   XCircle
 } from 'lucide-react';
 import { nodesApi } from '../lib/api';
@@ -111,6 +112,37 @@ export function NodesPage({
     }
   }
 
+  async function upgradeAgent(node: Node) {
+    if (
+      !window.confirm(
+        `确认升级节点「${node.name}」的 Agent？\n\n` +
+          `面板会让该 Agent 拉取当前镜像标签的最新版本，并用 docker run 模式重建 Agent 容器。\n` +
+          `升级过程中节点会短暂离线，稍后应自动重新上线。`
+      )
+    )
+      return;
+    setPending((prev) => ({ ...prev, [node.id]: 'upgrade' }));
+    try {
+      const result = await nodesApi.upgradeAgent(node.id);
+      toast(
+        'success',
+        result?.image
+          ? `${node.name} Agent 升级已发起：${result.image}`
+          : `${node.name} Agent 升级已发起`
+      );
+      await loadNodes();
+      onChanged?.();
+    } catch (err) {
+      toast('error', `${node.name} Agent 升级失败：${err instanceof Error ? err.message : '未知错误'}`);
+    } finally {
+      setPending((prev) => {
+        const next = { ...prev };
+        delete next[node.id];
+        return next;
+      });
+    }
+  }
+
   async function deleteNode(node: Node) {
     if (
       !window.confirm(
@@ -205,6 +237,14 @@ export function NodesPage({
                           >
                             <KeyRound size={13} />
                             轮换密钥
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => upgradeAgent(node)}
+                            disabled={!!pending[node.id] || !node.online}
+                          >
+                            <UploadCloud size={13} />
+                            升级 Agent
                           </Button>
                           <Button
                             size="sm"

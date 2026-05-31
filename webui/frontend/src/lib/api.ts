@@ -74,6 +74,14 @@ export const nodesApi = {
   install: (id: number) => api<NodeInstall>(`/api/nodes/${id}/install`),
   rotateSecret: (id: number) =>
     api<NodeWithInstall>(`/api/nodes/${id}/rotate-secret`, { method: 'POST' }),
+  upgradeAgent: (id: number) =>
+    api<{
+      accepted: boolean;
+      mode: string;
+      targetContainer?: string;
+      helperContainer?: string;
+      image?: string;
+    }>(`/api/nodes/${id}/agent/upgrade`, { method: 'POST' }),
   patch: (id: number, payload: NodePatchPayload) =>
     api<Node>(`/api/nodes/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   delete: (id: number) =>

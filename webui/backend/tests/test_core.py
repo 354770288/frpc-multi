@@ -1,9 +1,11 @@
 import json
 import importlib
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 os.environ.setdefault("PROJECT_DIR", tempfile.mkdtemp(prefix="frpc-multi-tests-"))
@@ -51,11 +53,13 @@ class FakeConnection:
     def __init__(self, uuid: str = "uuid", responses: dict | None = None, raises: Exception | None = None):
         self.uuid = uuid
         self.calls: list[tuple[str, dict]] = []
+        self.timeouts: list[float] = []
         self.responses = responses or {}
         self.raises = raises
 
     async def call(self, method: str, params: dict | None = None, *, timeout: float = 15.0):
         self.calls.append((method, params or {}))
+        self.timeouts.append(timeout)
         if self.raises is not None:
             raise self.raises
         if method in self.responses:
@@ -276,6 +280,41 @@ class LocalAgentServiceTests(unittest.TestCase):
             self.assertEqual(summary["total"], 1)
             self.assertEqual(summary["stopped"], 1)
             self.assertEqual(summary["instances"][0]["name"], "client-001")
+
+    def test_schedule_agent_upgrade_starts_docker_run_helper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalAgentService(Path(tmp))
+            image = "ghcr.io/354770288/frpc-multi:latest"
+
+            with mock.patch.dict(os.environ, {"HOSTNAME": "abc123"}), mock.patch(
+                "app.agent.service.secrets.token_hex", return_value="up123"
+            ), mock.patch("app.agent.service.subprocess.run") as run_mock, mock.patch(
+                "app.agent.service.subprocess.Popen"
+            ) as popen_mock:
+                run_mock.return_value = subprocess.CompletedProcess(
+                    ["docker"], 0, f"{image}\n", ""
+                )
+
+                result = service.schedule_agent_upgrade()
+
+            self.assertTrue(result["accepted"])
+            self.assertEqual(result["mode"], "docker-run")
+            self.assertEqual(result["targetContainer"], "abc123")
+            self.assertEqual(result["image"], image)
+            argv = popen_mock.call_args.args[0]
+            self.assertEqual(argv[:4], ["docker", "run", "-d", "--rm"])
+            self.assertIn("--name", argv)
+            self.assertIn("frpc-agent-upgrader-up123", argv)
+            self.assertIn("-v", argv)
+            self.assertIn("/var/run/docker.sock:/var/run/docker.sock", argv)
+            self.assertIn(image, argv)
+            self.assertIn("abc123", argv)
+            script = argv[argv.index("-c") + 1]
+            self.assertIn("docker\", \"pull\"", script)
+            self.assertIn("docker\", \"rm\", \"-f\"", script)
+            self.assertIn("docker\", \"run\", \"-d\"", script)
+            self.assertIn("Config", script)
+            self.assertIn("Mounts", script)
 
 
 class AppRoutingTests(unittest.TestCase):
@@ -541,6 +580,29 @@ class NodeApiTests(unittest.TestCase):
             self.assertEqual(resp.json()["dockerVersion"], "27.0")
             self.assertEqual(conn.calls[0][0], "get_system")
 
+    def test_upgrade_agent_calls_agent_over_hub_and_audits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self._app(tmp)
+            client = TestClient(app)
+            headers = auth_headers(client)
+            created = client.post("/api/nodes", json={"name": "n1"}, headers=headers).json()
+
+            conn = FakeConnection(
+                uuid=created["uuid"],
+                responses={"upgrade_agent": {"accepted": True, "mode": "docker-run"}},
+            )
+            patch_hub(app, conn, online=True)
+            resp = client.post(f"/api/nodes/{created['id']}/agent/upgrade", headers=headers)
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(resp.json()["accepted"])
+            self.assertEqual(conn.calls[0], ("upgrade_agent", {}))
+            self.assertEqual(conn.timeouts[0], 30.0)
+
+            logs = client.get("/api/audit-logs", headers=headers).json()
+            self.assertEqual(logs[0]["action"], "upgrade_agent")
+            self.assertEqual(logs[0]["nodeId"], created["id"])
+            self.assertTrue(logs[0]["success"])
+
     def test_node_instance_offline_returns_502(self):
         with tempfile.TemporaryDirectory() as tmp:
             app = self._app(tmp)
@@ -743,9 +805,6 @@ class AuditLogApiTests(unittest.TestCase):
             self.assertTrue(all(item["success"] is True for item in logs))
 
     def test_failed_node_instance_action_is_audited_as_failure(self):
-        from app.control.hub import AgentOfflineError
-
-        conn = FakeConnection(raises=AgentOfflineError("node offline"))
         with tempfile.TemporaryDirectory() as tmp:
             app = load_main_app(
                 PROJECT_DIR=tmp,
@@ -754,6 +813,9 @@ class AuditLogApiTests(unittest.TestCase):
                 WEBUI_PASSWORD="password",
                 FRPC_MULTI_ROLE="console",
             )
+            from app.control.hub import AgentOfflineError
+
+            conn = FakeConnection(raises=AgentOfflineError("node offline"))
             client = TestClient(app)
             headers = auth_headers(client)
             node = client.post("/api/nodes", json={"name": "remote"}, headers=headers).json()
@@ -825,7 +887,7 @@ class MultiNodeSummaryTests(unittest.TestCase):
             self.assertEqual(body["onlineCount"], 1)
             statuses = {n["name"]: n["status"] for n in body["nodes"]}
             self.assertEqual(statuses["online-node"], "online")
-            self.assertEqual(statuses["offline-node"], "offline")
+            self.assertEqual(statuses["offline-node"], "pending")
             self.assertEqual(body["instances"][0]["nodeName"], "online-node")
             _ = offline_node  # referenced for clarity
 
@@ -917,6 +979,11 @@ class WsProtoTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             wsproto.decode("[1,2,3]")
+
+    def test_upgrade_agent_method_is_defined(self):
+        from app.control import wsproto
+
+        self.assertEqual(wsproto.M_UPGRADE_AGENT, "upgrade_agent")
 
 
 class HubTests(unittest.IsolatedAsyncioTestCase):
