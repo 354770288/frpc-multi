@@ -93,6 +93,7 @@ def _install_info(record: NodeRecord, *, include_secret: bool) -> dict:
             "-v /opt/frpc-multi:/opt/frpc-multi "
             "-e FRPC_MULTI_ROLE=agent "
             "-e PROJECT_DIR=/opt/frpc-multi "
+            f"-e FRP_IMAGE={settings.frp_image} "
             f"-e AGENT_SERVER={host} -e AGENT_UUID={record.uuid} "
             f"-e AGENT_SECRET={secret} -e AGENT_TLS={tls_flag} "
             f"{settings.agent_image}"
@@ -256,14 +257,29 @@ def patch_node(
 
 
 @router.delete("/{node_id}")
-def delete_node(
+async def delete_node(
     node_id: int,
     _: Annotated[str, Depends(require_auth)],
     store: Annotated[NodeStore, Depends(node_store)],
 ):
+    """删除节点。若节点在线，先让 Agent 停所有实例、删配置、自毁容器，再删库记录。
+
+    节点离线时无法远程清理，只删库记录（返回提示，让用户自行在该机器清理残留容器）。
+    """
+    record = _get_node(node_id, store)
+    decommissioned = False
+    detail = ""
+    if hub.is_online(record.uuid):
+        try:
+            # 等待时间放宽：Agent 要 compose down + 删目录。
+            await hub.get(record.uuid).call(wsproto.M_DECOMMISSION, timeout=60.0)
+            decommissioned = True
+        except (AgentRpcError, AgentOfflineError, AgentTimeoutError) as exc:
+            detail = f"远程清理未完成：{exc}。已删除节点记录，请在该机器手动清理残留容器。"
+
     if not store.delete_node(node_id):
         raise HTTPException(status_code=404, detail="节点不存在")
-    return {"deleted": True}
+    return {"deleted": True, "decommissioned": decommissioned, "detail": detail}
 
 
 @router.post("/{node_id}/ping")

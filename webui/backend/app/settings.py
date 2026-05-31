@@ -65,6 +65,8 @@ class Settings:
     console_tls: bool = _as_bool(os.getenv("CONSOLE_TLS"))
     # 一键安装使用的 Agent 镜像（GHCR）。
     agent_image: str = os.getenv("AGENT_IMAGE", "ghcr.io/354770288/frpc-multi:latest").strip()
+    # frpc 实例镜像，写进一键安装命令注入 Agent（Agent 无 .env 时靠它起 frpc 容器并显示版本）。
+    frp_image: str = os.getenv("FRP_IMAGE", "ghcr.io/fatedier/frpc:v0.68.1").strip()
     # install.sh 的下载地址（一键命令 curl 它）。留空则在文档里给出仓库内脚本路径。
     agent_install_url: str = os.getenv("AGENT_INSTALL_URL", "").strip()
 
