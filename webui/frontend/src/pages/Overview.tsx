@@ -1,33 +1,41 @@
-import { useRef, useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  AlertTriangle,
-  Cpu,
-  HardDrive,
-  MemoryStick,
-  MoreHorizontal,
   Pause,
   Play,
   Plus,
   RotateCcw,
   Search,
-  Server,
-  Square,
-  Trash2
 } from 'lucide-react';
-import { MetricCard } from '../components/MetricCard';
+import {
+  Badge,
+  ContextCell,
+  EmptyState,
+  IconAction,
+  Metric,
+  NodeCard,
+  PanelHead,
+  RowMenu,
+  Select,
+  StatusTab,
+  Switch,
+  Td,
+  Th
+} from './overview/WorkspaceParts';
 import {
   instanceStateBadge,
   parsePercent,
-  type InstanceTone
+  shortNodeUuid
 } from '../lib/format';
-import type { ConsoleInfo, InstanceRef, Page, StatsMap } from '../lib/types';
-
-const TONE_DOT: Record<InstanceTone, string> = {
-  success: 'bg-[var(--color-success)]',
-  warning: 'bg-[var(--color-warning)]',
-  danger: 'bg-[var(--color-danger)]',
-  muted: 'bg-[var(--color-fg-subtle)]'
-};
+import { api, nodesApi } from '../lib/api';
+import type {
+  ConsoleInfo,
+  InstanceDetail,
+  InstanceRef,
+  InstanceSummary,
+  Node as ConsoleNode,
+  Page,
+  StatsMap
+} from '../lib/types';
 
 type InstancePatch = {
   displayName?: string;
@@ -36,7 +44,14 @@ type InstancePatch = {
   applyImmediately?: boolean;
 };
 
+type StatusFilter = 'all' | 'running' | 'error' | 'stopped' | 'disabled';
+type EnabledFilter = 'all' | 'enabled' | 'disabled';
+type SummaryCache = Record<string, InstanceSummary | null>;
+
 export function Overview({
+  nodes,
+  selectedNodeId,
+  instanceKeyword,
   instances,
   stats,
   counts,
@@ -45,11 +60,16 @@ export function Overview({
   system,
   pendingAction,
   onSelect,
+  onSelectedNodeChange,
+  onInstanceKeywordChange,
   onPage,
   onAction,
   onPatch,
   onDelete
 }: {
+  nodes: ConsoleNode[];
+  selectedNodeId: number | 'all';
+  instanceKeyword: string;
   instances: InstanceRef[];
   stats: StatsMap;
   counts: { total: number; running: number; stopped: number; error: number };
@@ -58,249 +78,606 @@ export function Overview({
   system: ConsoleInfo | null;
   pendingAction: Record<string, string>;
   onSelect: (instance: InstanceRef) => void;
+  onSelectedNodeChange: (nodeId: number | 'all') => void;
+  onInstanceKeywordChange: (keyword: string) => void;
   onPage: (page: Page) => void;
   onAction: (instance: InstanceRef, action: string) => void;
   onPatch: (instance: InstanceRef, patch: InstancePatch) => void;
   onDelete: (instance: InstanceRef) => void;
 }) {
-  const [keyword, setKeyword] = useState('');
+  const [nodeKeyword, setNodeKeyword] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [enabledFilter, setEnabledFilter] = useState<EnabledFilter>('all');
+  const [proxyTypeFilter, setProxyTypeFilter] = useState('all');
+  const [summaryCache, setSummaryCache] = useState<SummaryCache>({});
 
-  let cpuTotal = 0;
-  let memTotal = 0;
-  let cpuSamples = 0;
-  let memSamples = 0;
-  for (const item of instances) {
-    const stat = stats[instanceKey(item)];
-    if (stat?.cpuPercent) {
-      cpuTotal += parsePercent(stat.cpuPercent);
-      cpuSamples += 1;
-    }
-    if (stat?.memPercent) {
-      memTotal += parsePercent(stat.memPercent);
-      memSamples += 1;
-    }
-  }
-  const { total, running, stopped, error } = counts;
+  useEffect(() => {
+    if (selectedNodeId === 'all') return;
+    if (!nodes.some((node) => node.id === selectedNodeId)) onSelectedNodeChange('all');
+  }, [nodes, onSelectedNodeChange, selectedNodeId]);
 
-  const lower = keyword.toLowerCase();
-  const filtered = lower
-    ? instances.filter(
-        (item) =>
-          item.name.toLowerCase().includes(lower) ||
-          (item.displayName || '').toLowerCase().includes(lower) ||
-          (item.description || '').toLowerCase().includes(lower) ||
-          item.nodeName.toLowerCase().includes(lower)
-      )
-    : instances;
+  const nodeSummaries = useMemo(() => {
+    return nodes.map((node) => {
+      const nodeInstances = instances.filter((item) => item.nodeId === node.id);
+      let running = 0;
+      let error = 0;
+      let stopped = 0;
+      let disabled = 0;
+      for (const item of nodeInstances) {
+        const badge = instanceStateBadge(stats[instanceKey(item)], item.enabled);
+        if (!item.enabled) disabled += 1;
+        if (badge.tone === 'success') running += 1;
+        else if (badge.tone === 'danger') error += 1;
+        else stopped += 1;
+      }
+      return {
+        ...node,
+        total: nodeInstances.length,
+        running,
+        error,
+        stopped,
+        disabled
+      };
+    });
+  }, [instances, nodes, stats]);
+
+  const selectedNode =
+    selectedNodeId === 'all'
+      ? null
+      : nodeSummaries.find((node) => node.id === selectedNodeId) || null;
+
+  const selectedNodeInstances = useMemo(() => {
+    return selectedNode ? instances.filter((item) => item.nodeId === selectedNode.id) : instances;
+  }, [instances, selectedNode]);
+
+  const baseVisibleInstances = useMemo(() => {
+    const lower = instanceKeyword.trim().toLowerCase();
+    return selectedNodeInstances.filter((item) => {
+      const stat = stats[instanceKey(item)];
+      const summary = summaryCache[instanceKey(item)];
+      const badge = instanceStateBadge(stat, item.enabled);
+      const searchable = [
+        item.name,
+        item.displayName,
+        item.description,
+        item.nodeName,
+        item.configPath,
+        summary?.serverAddr,
+        summary?.serverPort,
+        summary?.remotePorts?.join(' '),
+        summary?.proxyTypes ? Object.keys(summary.proxyTypes).join(' ') : '',
+        stat?.containerName,
+        stat?.status
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (lower && !searchable.includes(lower)) return false;
+      if (enabledFilter === 'enabled' && !item.enabled) return false;
+      if (enabledFilter === 'disabled' && item.enabled) return false;
+      if (statusFilter === 'running') return badge.tone === 'success';
+      if (statusFilter === 'error') return badge.tone === 'danger';
+      if (statusFilter === 'stopped') return item.enabled && badge.tone !== 'success' && badge.tone !== 'danger';
+      if (statusFilter === 'disabled') return !item.enabled;
+      return true;
+    });
+  }, [enabledFilter, instanceKeyword, selectedNodeInstances, stats, statusFilter, summaryCache]);
+
+  const visibleInstances = useMemo(() => {
+    if (proxyTypeFilter === 'all') return baseVisibleInstances;
+    return baseVisibleInstances.filter((item) => {
+      const summary = summaryCache[instanceKey(item)];
+      return !!summary?.proxyTypes?.[proxyTypeFilter];
+    });
+  }, [baseVisibleInstances, proxyTypeFilter, summaryCache]);
+
+  const visibleSummaryKey = useMemo(
+    () => baseVisibleInstances.slice(0, 25).map(instanceKey).join('|'),
+    [baseVisibleInstances]
+  );
+
+  useEffect(() => {
+    const targets = baseVisibleInstances
+      .slice(0, 25)
+      .filter((item) => !(instanceKey(item) in summaryCache));
+    if (!targets.length) return;
+    let cancelled = false;
+    async function loadSummaries() {
+      const entries = await Promise.all(
+        targets.map(async (item) => {
+          try {
+            const detail =
+              item.nodeId > 0
+                ? await nodesApi.instances.get(item.nodeId, item.name)
+                : await api<InstanceDetail>(`/api/instances/${item.name}`);
+            return [instanceKey(item), detail.summary] as const;
+          } catch {
+            return [instanceKey(item), null] as const;
+          }
+        })
+      );
+      if (!cancelled) {
+        setSummaryCache((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
+      }
+    }
+    loadSummaries();
+    return () => {
+      cancelled = true;
+    };
+    // summaryCache intentionally omitted; visibleSummaryKey marks the request set.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleSummaryKey]);
+
+  const proxyTypeOptions = useMemo(() => {
+    const types = new Set<string>();
+    for (const summary of Object.values(summaryCache)) {
+      if (!summary?.proxyTypes) continue;
+      for (const type of Object.keys(summary.proxyTypes)) types.add(type);
+    }
+    return Array.from(types).sort();
+  }, [summaryCache]);
+
+  const filteredNodes = useMemo(() => {
+    const lower = nodeKeyword.trim().toLowerCase();
+    if (!lower) return nodeSummaries;
+    return nodeSummaries.filter((node) =>
+      [node.name, node.uuid, node.status].join(' ').toLowerCase().includes(lower)
+    );
+  }, [nodeKeyword, nodeSummaries]);
+
+  const cpuTotal = useMemo(() => {
+    let total = 0;
+    let samples = 0;
+    for (const item of selectedNodeInstances) {
+      const value = stats[instanceKey(item)]?.cpuPercent;
+      if (!value) continue;
+      total += parsePercent(value);
+      samples += 1;
+    }
+    return samples ? `${total.toFixed(1)}%` : '--';
+  }, [selectedNodeInstances, stats]);
+
+  const memoryTotal = useMemo(() => {
+    let total = 0;
+    let samples = 0;
+    for (const item of selectedNodeInstances) {
+      const value = stats[instanceKey(item)]?.memPercent;
+      if (!value) continue;
+      total += parsePercent(value);
+      samples += 1;
+    }
+    return samples ? `${total.toFixed(1)}%` : '--';
+  }, [selectedNodeInstances, stats]);
+
+  const onlineNodes = nodes.filter((node) => node.online || node.status === 'online').length;
+  const offlineNodes = Math.max(nodes.length - onlineNodes, 0);
+  const selectedRunning = selectedNode
+    ? selectedNode.running
+    : nodeSummaries.reduce((sum, node) => sum + node.running, 0);
+  const selectedError = selectedNode
+    ? selectedNode.error
+    : nodeSummaries.reduce((sum, node) => sum + node.error, 0);
+  const selectedDisabled = selectedNode
+    ? selectedNode.disabled
+    : nodeSummaries.reduce((sum, node) => sum + node.disabled, 0);
 
   return (
-    <main className="px-6 py-6 max-w-[1600px]">
-      <div className="mb-6 flex items-center gap-3">
-        <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
-          运行摘要
-        </h2>
-        {!dockerAvailable && dockerError && (
-          <span className="text-[12px] text-[var(--color-warning)]">
-            Docker：{dockerError}
-          </span>
-        )}
-      </div>
-
-      <section className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3">
-        <MetricCard
-          icon={<Cpu size={14} />}
-          title="CPU"
-          value={cpuSamples ? `${cpuTotal.toFixed(1)}%` : '—'}
-        />
-        <MetricCard
-          icon={<MemoryStick size={14} />}
-          title="内存"
-          value={memSamples ? `${memTotal.toFixed(1)}%` : '—'}
-        />
-        <MetricCard
-          icon={<HardDrive size={14} />}
-          title="节点数"
-          value={system ? `${system.nodeCount}` : '—'}
-          hint={system ? `角色 ${system.role}` : undefined}
-        />
+    <main className="w-full max-w-[1720px] mx-auto px-4 sm:px-6 py-5 sm:py-6">
+      <section className="mb-4 grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+        <Metric tone="blue" label="在线节点" value={`${onlineNodes} / ${nodes.length || 0}`} />
+        <Metric tone="green" label="运行实例" value={`${counts.running} / ${counts.total}`} />
+        <Metric tone="orange" label={selectedNode ? `${selectedNode.name} 过滤` : '当前范围'} value={`${visibleInstances.length} 条`} />
+        <Metric tone="red" label="异常实例" value={String(counts.error)} />
       </section>
 
-      <section className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
-        <MetricCard icon={<Server size={14} />} title="运行中" value={`${running}/${total}`} />
-        <MetricCard
-          icon={<AlertTriangle size={14} />}
-          title="异常"
-          value={`${error}/${total}`}
-        />
-        <MetricCard icon={<Square size={14} />} title="已停止" value={`${stopped}/${total}`} />
-      </section>
+      {!dockerAvailable && dockerError && (
+        <div className="mb-4 rounded-lg border border-[var(--color-warning)]/25 bg-[var(--color-warning-soft)] px-3 py-2 text-[12px] text-[var(--color-warning)]">
+          Console 摘要：{dockerError}
+        </div>
+      )}
 
-      <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-[var(--color-border)]">
-          <h3 className="text-[13px] font-semibold text-[var(--color-fg)]">实例列表</h3>
-          <div className="ml-auto flex items-center gap-2">
-            <div className="flex items-center gap-2 px-2.5 py-1.5 w-[240px] rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] focus-within:border-[var(--color-accent)] focus-within:ring-2 focus-within:ring-[var(--color-accent)]/15">
-              <Search size={13} className="text-[var(--color-fg-subtle)]" aria-hidden="true" />
+      <section className="grid grid-cols-1 xl:grid-cols-[360px_minmax(0,1fr)] gap-4 items-start">
+        <aside className="rounded-lg border border-purple-200 bg-white shadow-sm overflow-hidden">
+          <PanelHead
+            label="节点"
+            labelClass="bg-violet-50 text-violet-700"
+            title="Agent 节点"
+            description="节点卡片固定在左侧，作为第一层操作入口。"
+            badge={`${onlineNodes} 在线`}
+            tone="violet"
+          />
+
+          <div className="border-b border-[var(--color-border)] bg-[var(--color-surface-muted)] p-3">
+            <label className="flex h-8 items-center gap-2 rounded-lg border border-[var(--color-border)] bg-white px-2.5 text-[12px] text-[var(--color-fg-muted)] focus-within:border-[var(--color-accent)] focus-within:ring-2 focus-within:ring-[var(--color-accent)]/15">
+              <Search size={13} aria-hidden="true" />
               <input
-                placeholder="搜索实例名"
-                aria-label="搜索实例名"
-                value={keyword}
-                onChange={(event) => setKeyword(event.target.value)}
-                className="flex-1 min-w-0 bg-transparent outline-none text-[12px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-subtle)]"
+                value={nodeKeyword}
+                onChange={(event) => setNodeKeyword(event.target.value)}
+                placeholder="搜索节点名称"
+                aria-label="搜索节点名称"
+                className="min-w-0 flex-1 bg-transparent outline-none text-[var(--color-fg)] placeholder:text-[var(--color-fg-subtle)]"
+              />
+            </label>
+          </div>
+
+          <div className="p-3 grid gap-2.5">
+            {nodes.length === 0 ? (
+              <EmptyState
+                title="还没有 Agent 节点"
+                text="先添加节点并完成 Agent 接入，工作台才会出现可创建实例的目标范围。"
+                actions={
+                  <button
+                    onClick={() => onPage('nodes')}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white hover:bg-[var(--color-accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2"
+                  >
+                    <Plus size={13} />
+                    添加节点
+                  </button>
+                }
+              />
+            ) : (
+              <>
+                <NodeCard
+                  active={selectedNodeId === 'all'}
+                  name="全部节点"
+                  uuid="跨节点实例检索"
+                  statusLabel="聚合"
+                  statusTone="gray"
+                  total={counts.total}
+                  running={counts.running}
+                  error={counts.error}
+                  onClick={() => onSelectedNodeChange('all')}
+                />
+                {filteredNodes.map((node) => (
+                  <NodeCard
+                    key={node.id}
+                    active={selectedNodeId === node.id}
+                    offline={!(node.online || node.status === 'online')}
+                    name={node.name}
+                    uuid={`uuid ${shortNodeUuid(node.uuid, 8)} · ${formatLastSeen(node.lastSeenAt)}`}
+                    statusLabel={node.online || node.status === 'online' ? '在线' : node.status}
+                    statusTone={node.online || node.status === 'online' ? 'green' : 'red'}
+                    total={node.total}
+                    running={node.running}
+                    error={node.error}
+                    onClick={() => onSelectedNodeChange(node.id)}
+                  />
+                ))}
+                {filteredNodes.length === 0 && (
+                  <EmptyState
+                    title="没有匹配的节点"
+                    text="清除节点搜索后可重新查看全部节点。"
+                    actions={
+                      <button
+                        onClick={() => setNodeKeyword('')}
+                        className="inline-flex h-8 items-center rounded-lg border border-[var(--color-border)] bg-white px-3 text-[12px] font-semibold text-[var(--color-fg)] hover:bg-[var(--color-surface-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
+                      >
+                        清除搜索
+                      </button>
+                    }
+                  />
+                )}
+              </>
+            )}
+          </div>
+        </aside>
+
+        <section className="rounded-lg border border-blue-200 bg-white shadow-sm overflow-hidden">
+          <PanelHead
+            label="当前节点"
+            labelClass="bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+            title={selectedNode ? selectedNode.name : '全部节点'}
+            description={
+              selectedNode
+                ? '右侧展示选中节点信息和该节点下的实例列表。'
+                : '当前展示所有节点实例；选择左侧节点可收敛到单节点范围。'
+            }
+            badge={`${selectedNodeInstances.length} 实例 · ${selectedRunning} 运行中`}
+            tone="blue"
+          />
+
+          <div className="border-b border-[var(--color-border)] bg-gradient-to-r from-[var(--color-accent-soft)] to-white px-4 py-3">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h2 className="text-[17px] font-semibold text-[var(--color-fg)]">
+                  {selectedNode ? `${selectedNode.name} 节点信息` : '全部节点工作台'}
+                </h2>
+                <p className="mt-1 text-[11px] leading-5 text-[var(--color-fg-muted)]">
+                  {selectedNode
+                    ? `Agent ${selectedNode.online || selectedNode.status === 'online' ? '在线' : '离线'}，实例列表只显示当前节点范围。`
+                    : 'Console 只聚合在线 Agent 上报的数据；节点安装、轮换密钥和升级 Agent 仍在节点页执行。'}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2 lg:justify-end">
+                <button
+                  onClick={() => onPage('nodes')}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-white px-3 text-[12px] font-semibold text-[var(--color-fg)] hover:bg-[var(--color-surface-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
+                >
+                  节点管理
+                </button>
+                <button
+                  onClick={() => onPage('create')}
+                  disabled={nodes.length === 0}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white hover:bg-[var(--color-accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-white"
+                >
+                  <Plus size={13} />
+                  {selectedNode ? '在此节点创建实例' : '创建实例'}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 lg:grid-cols-5 gap-2">
+              <ContextCell label="Console 角色" value={system?.role || '--'} />
+              <ContextCell label="在线节点" value={`${onlineNodes} / ${nodes.length || 0}`} mono />
+              <ContextCell label="离线节点" value={String(offlineNodes)} mono />
+              <ContextCell label="CPU 采样" value={cpuTotal} mono />
+              <ContextCell label="内存采样" value={memoryTotal} mono />
+            </div>
+          </div>
+
+          {nodes.length === 0 ? (
+            <div className="p-4">
+              <EmptyState
+                title="先添加节点"
+                text="节点工作台以 Agent 节点为操作边界。添加节点后，再在选中节点范围内创建和管理实例。"
+                actions={
+                  <button
+                    onClick={() => onPage('nodes')}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white hover:bg-[var(--color-accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2"
+                  >
+                    <Plus size={13} />
+                    打开节点管理
+                  </button>
+                }
               />
             </div>
-            <button
-              onClick={() => onPage('create')}
-              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)]"
-            >
-              <Plus size={13} />
-              创建实例
-            </button>
-          </div>
-        </div>
+          ) : (
+            <>
+              <div className="grid gap-2 border-b border-[var(--color-border)] bg-blue-50/70 p-3 lg:grid-cols-[minmax(240px,1fr)_145px_145px_150px_auto]">
+                <label className="flex h-8 items-center gap-2 rounded-lg border border-[var(--color-border)] bg-white px-2.5 text-[12px] text-[var(--color-fg-muted)] focus-within:border-[var(--color-accent)] focus-within:ring-2 focus-within:ring-[var(--color-accent)]/15">
+                  <Search size={13} aria-hidden="true" />
+                  <input
+                    value={instanceKeyword}
+                    onChange={(event) => onInstanceKeywordChange(event.target.value)}
+                    placeholder="搜索实例、节点、配置路径"
+                    aria-label="搜索实例"
+                    className="min-w-0 flex-1 bg-transparent outline-none text-[var(--color-fg)] placeholder:text-[var(--color-fg-subtle)]"
+                  />
+                </label>
+                <Select value={statusFilter} onChange={(value) => setStatusFilter(value as StatusFilter)} label="状态">
+                  <option value="all">全部状态</option>
+                  <option value="running">运行中</option>
+                  <option value="error">异常</option>
+                  <option value="stopped">已停止</option>
+                  <option value="disabled">已停用</option>
+                </Select>
+                <Select value={enabledFilter} onChange={(value) => setEnabledFilter(value as EnabledFilter)} label="启用">
+                  <option value="all">启用状态</option>
+                  <option value="enabled">已启用</option>
+                  <option value="disabled">已停用</option>
+                </Select>
+                <Select value={proxyTypeFilter} onChange={setProxyTypeFilter} label="代理类型">
+                  <option value="all">代理类型</option>
+                  {proxyTypeOptions.map((type) => (
+                    <option key={type} value={type}>
+                      {type}
+                    </option>
+                  ))}
+                </Select>
+                <button
+                  onClick={() => {
+                    onInstanceKeywordChange('');
+                    setStatusFilter('all');
+                    setEnabledFilter('all');
+                    setProxyTypeFilter('all');
+                  }}
+                  className="h-8 rounded-lg border border-[var(--color-border)] bg-white px-3 text-[12px] font-semibold text-[var(--color-fg)] hover:bg-[var(--color-surface-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
+                >
+                  清除筛选
+                </button>
+              </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface-muted)]">
-                <Th>实例名</Th>
-                <Th>节点</Th>
-                <Th>状态</Th>
-                <Th>启用</Th>
-                <Th align="right">CPU</Th>
-                <Th align="right">内存</Th>
-                <Th align="right">重启</Th>
-                <Th>配置路径</Th>
-                <Th align="right">操作</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((item) => {
-                const key = instanceKey(item);
-                const stat = stats[key];
-                const badge = instanceStateBadge(stat, item.enabled);
-                const pending = pendingAction[key];
-                const isRunning = stat?.state === 'running';
-                return (
-                  <tr
-                    key={item.name}
-                    className="border-b border-[var(--color-border)] last:border-b-0 hover:bg-[var(--color-surface-muted)] transition-colors"
-                  >
-                    <Td>
-                      <div className="flex flex-col gap-0.5">
+              <div className="flex gap-1.5 overflow-x-auto px-3 pt-3">
+                <StatusTab active={statusFilter === 'all'} onClick={() => setStatusFilter('all')}>
+                  全部 {selectedNodeInstances.length}
+                </StatusTab>
+                <StatusTab active={statusFilter === 'running'} onClick={() => setStatusFilter('running')}>
+                  运行中 {selectedRunning}
+                </StatusTab>
+                <StatusTab active={statusFilter === 'error'} onClick={() => setStatusFilter('error')}>
+                  异常 {selectedError}
+                </StatusTab>
+                <StatusTab active={statusFilter === 'disabled'} onClick={() => setStatusFilter('disabled')}>
+                  已停用 {selectedDisabled}
+                </StatusTab>
+              </div>
+
+              {selectedNodeInstances.length === 0 && !instanceKeyword.trim() && statusFilter === 'all' && enabledFilter === 'all' ? (
+                <div className="p-4">
+                  <EmptyState
+                    title={selectedNode ? '该节点还没有实例' : '还没有实例'}
+                    text={selectedNode ? '从当前节点创建实例时，创建页会自动预选这个节点。' : '先在左侧选择一个节点，再从该节点范围创建实例。'}
+                    actions={
+                      selectedNode ? (
                         <button
-                          onClick={() => {
-                            onSelect(item);
-                            onPage('detail');
-                          }}
-                          className="self-start rounded-sm text-[13px] font-medium text-[var(--color-fg)] hover:text-[var(--color-accent)] hover:underline transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:underline focus-visible:text-[var(--color-accent)]"
+                          onClick={() => onPage('create')}
+                          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white hover:bg-[var(--color-accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2"
                         >
-                          {item.displayName || item.name}
+                          <Plus size={13} />
+                          在此节点创建实例
                         </button>
-                        {item.description && (
-                          <span
-                            className="text-[11px] text-[var(--color-fg-muted)] line-clamp-1"
-                            title={item.description}
-                          >
-                            {item.description}
-                          </span>
-                        )}
-                      </div>
-                    </Td>
-                    <Td>
-                      <span className="text-[12px] text-[var(--color-fg-muted)]">{item.nodeName}</span>
-                    </Td>
-                    <Td>
-                      <span
-                        role="img"
-                        aria-label={badge.label}
-                        title={badge.label}
-                        className={`inline-block w-2.5 h-2.5 rounded-full align-middle ${TONE_DOT[badge.tone]}`}
-                      />
-                    </Td>
-                    <Td>
-                      <Switch
-                        checked={item.enabled}
-                        disabled={pending === 'toggle'}
-                        label={item.enabled ? '点击停用' : '点击启用'}
-                        onChange={(next) =>
-                          onPatch(item, { enabled: next, applyImmediately: true })
-                        }
-                      />
-                    </Td>
-                    <Td align="right" mono>
-                      {stat?.cpuPercent || '—'}
-                    </Td>
-                    <Td align="right" mono>
-                      {stat?.memUsage || '—'}
-                    </Td>
-                    <Td align="right" mono>
-                      {stat ? stat.restartCount : '—'}
-                    </Td>
-                    <Td>
-                      <span className="font-mono text-[11px] text-[var(--color-fg-muted)]">
-                        {item.configPath}
-                      </span>
-                    </Td>
-                    <Td align="right">
-                      <div className="flex items-center justify-end gap-1">
-                        {isRunning ? (
-                          <IconAction
-                            onClick={() => onAction(item, 'stop')}
-                            disabled={!!pending}
-                            label="停止"
-                            tone="default"
-                          >
-                            <Pause size={13} />
-                          </IconAction>
-                        ) : (
-                          <IconAction
-                            onClick={() => onAction(item, 'start')}
-                            disabled={!!pending || !item.enabled}
-                            label={item.enabled ? '启动' : '已停用，无法启动'}
-                            tone="primary"
-                          >
-                            <Play size={13} />
-                          </IconAction>
-                        )}
-                        <IconAction
-                          onClick={() => onAction(item, 'restart')}
-                          disabled={!!pending || !item.enabled}
-                          label={item.enabled ? '重启' : '已停用，无法重启'}
-                          tone="default"
+                      ) : (
+                        <button
+                          onClick={() => onSelectedNodeChange(nodes[0].id)}
+                          className="inline-flex h-8 items-center rounded-lg bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white hover:bg-[var(--color-accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2"
                         >
-                          <RotateCcw size={13} />
-                        </IconAction>
-                        <RowMenu
-                          onLog={() => {
-                            onSelect(item);
-                            onPage('detail');
-                          }}
-                          onConfig={() => {
-                            onSelect(item);
-                            onPage('config');
-                          }}
-                          onDelete={() => onDelete(item)}
-                          deleting={pending === 'delete'}
-                        />
-                      </div>
-                    </Td>
-                  </tr>
-                );
-              })}
-              {filtered.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={9}
-                    className="px-4 py-10 text-center text-[12px] text-[var(--color-fg-muted)]"
-                  >
-                    没有匹配的实例
-                  </td>
-                </tr>
+                          选择 {nodes[0].name}
+                        </button>
+                      )
+                    }
+                  />
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1320px] border-collapse">
+                    <thead>
+                      <tr className="h-9 border-y border-[var(--color-border)] bg-slate-50">
+                        <Th>实例</Th>
+                        <Th>节点</Th>
+                        <Th>状态</Th>
+                        <Th>启用</Th>
+                        <Th>frps</Th>
+                        <Th align="right">代理</Th>
+                        <Th>远端端口</Th>
+                        <Th>类型</Th>
+                        <Th>容器</Th>
+                        <Th align="right">CPU</Th>
+                        <Th align="right">内存</Th>
+                        <Th align="right">重启</Th>
+                        <Th>配置路径</Th>
+                        <Th align="right">操作</Th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleInstances.map((item) => {
+                        const key = instanceKey(item);
+                        const stat = stats[key];
+                        const summary = summaryCache[key];
+                        const badge = instanceStateBadge(stat, item.enabled);
+                        const pending = pendingAction[key];
+                        const isRunning = stat?.state === 'running';
+                        const server = formatServer(summary);
+                        const ports = formatPorts(summary);
+                        const types = formatTypes(summary);
+                        return (
+                          <tr
+                            key={key}
+                            className="h-[58px] border-b border-[var(--color-border)] bg-white transition-colors hover:bg-blue-50/45"
+                          >
+                            <Td>
+                              <button
+                                onClick={() => {
+                                  onSelect(item);
+                                  onPage('detail');
+                                }}
+                                className="block max-w-[240px] rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
+                              >
+                                <span className="block truncate text-[13px] font-semibold text-[var(--color-fg)] hover:text-[var(--color-accent)] hover:underline">
+                                  {item.displayName || item.name}
+                                </span>
+                                <span className="mt-0.5 block truncate font-mono text-[11px] text-[var(--color-fg-muted)]">
+                                  {item.name}
+                                  {item.description ? ` · ${item.description}` : ''}
+                                </span>
+                              </button>
+                            </Td>
+                            <Td>
+                              <span className="text-[12px] text-[var(--color-fg-muted)]">
+                                {item.nodeName}
+                              </span>
+                            </Td>
+                            <Td>
+                              <Badge tone={badge.tone}>{badge.label}</Badge>
+                            </Td>
+                            <Td>
+                              <Switch
+                                checked={item.enabled}
+                                disabled={pending === 'toggle'}
+                                label={item.enabled ? '点击停用' : '点击启用'}
+                                onChange={(next) => onPatch(item, { enabled: next, applyImmediately: true })}
+                              />
+                            </Td>
+                            <Td>
+                              <span className="block max-w-[150px] truncate font-mono text-[11px] text-[var(--color-fg-muted)]" title={server}>
+                                {server}
+                              </span>
+                            </Td>
+                            <Td align="right" mono>{summary ? summary.proxyCount : '--'}</Td>
+                            <Td>
+                              <span className="block max-w-[120px] truncate font-mono text-[11px] text-[var(--color-fg-muted)]" title={ports}>
+                                {ports}
+                              </span>
+                            </Td>
+                            <Td>
+                              <span className="block max-w-[120px] truncate text-[11px] text-[var(--color-fg-muted)]" title={types}>
+                                {types}
+                              </span>
+                            </Td>
+                            <Td>
+                              <span className="block max-w-[150px] truncate font-mono text-[11px] text-[var(--color-fg-muted)]">
+                                {stat?.containerName || stat?.service || '--'}
+                              </span>
+                            </Td>
+                            <Td align="right" mono>{stat?.cpuPercent || '--'}</Td>
+                            <Td align="right" mono>{stat?.memUsage || '--'}</Td>
+                            <Td align="right" mono>{stat ? stat.restartCount : '--'}</Td>
+                            <Td>
+                              <span className="block max-w-[210px] truncate font-mono text-[11px] text-[var(--color-fg-muted)]" title={item.configPath}>
+                                {item.configPath || '--'}
+                              </span>
+                            </Td>
+                            <Td align="right">
+                              <div className="flex items-center justify-end gap-1">
+                                {isRunning ? (
+                                  <IconAction
+                                    onClick={() => onAction(item, 'stop')}
+                                    disabled={!!pending}
+                                    label="停止"
+                                  >
+                                    <Pause size={13} />
+                                  </IconAction>
+                                ) : (
+                                  <IconAction
+                                    onClick={() => onAction(item, 'start')}
+                                    disabled={!!pending || !item.enabled}
+                                    label={item.enabled ? '启动' : '已停用，无法启动'}
+                                    primary
+                                  >
+                                    <Play size={13} />
+                                  </IconAction>
+                                )}
+                                <IconAction
+                                  onClick={() => onAction(item, 'restart')}
+                                  disabled={!!pending || !item.enabled}
+                                  label={item.enabled ? '重启' : '已停用，无法重启'}
+                                >
+                                  <RotateCcw size={13} />
+                                </IconAction>
+                                <RowMenu
+                                  onOpen={() => {
+                                    onSelect(item);
+                                    onPage('detail');
+                                  }}
+                                  onConfig={() => {
+                                    onSelect(item);
+                                    onPage('config');
+                                  }}
+                                  onDelete={() => onDelete(item)}
+                                  deleting={pending === 'delete'}
+                                />
+                              </div>
+                            </Td>
+                          </tr>
+                        );
+                      })}
+                      {visibleInstances.length === 0 && (
+                        <tr>
+                          <td colSpan={14} className="px-4 py-10 text-center text-[12px] text-[var(--color-fg-muted)]">
+                            当前筛选条件下没有匹配的实例
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               )}
-            </tbody>
-          </table>
-        </div>
+
+              <div className="m-3 rounded-lg border border-[var(--color-warning)]/25 bg-[var(--color-warning-soft)] p-3 text-[12px] leading-5 text-[var(--color-warning)]">
+                节点安装、密钥轮换和 Agent 升级在节点管理中执行；实例启动、停止、重启和配置编辑只作用于当前实例。
+              </div>
+            </>
+          )}
+        </section>
       </section>
     </main>
   );
@@ -310,271 +687,38 @@ function instanceKey(item: InstanceRef): string {
   return `${item.nodeId}:${item.name}`;
 }
 
-function Th({
-  children,
-  align = 'left'
-}: {
-  children: React.ReactNode;
-  align?: 'left' | 'right';
-}) {
-  return (
-    <th
-      className={`px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-muted)] ${
-        align === 'right' ? 'text-right' : 'text-left'
-      }`}
-    >
-      {children}
-    </th>
-  );
+function formatLastSeen(value: string | null): string {
+  if (!value) return '未连接';
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  const diff = Date.now() - timestamp;
+  if (diff < 0) return '刚刚';
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return `${seconds} 秒前`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  return `${days} 天前`;
 }
 
-function Td({
-  children,
-  align = 'left',
-  mono = false
-}: {
-  children: React.ReactNode;
-  align?: 'left' | 'right';
-  mono?: boolean;
-}) {
-  return (
-    <td
-      className={`px-4 py-2.5 text-[13px] text-[var(--color-fg)] ${
-        align === 'right' ? 'text-right' : 'text-left'
-      } ${mono ? 'font-mono tabular-nums text-[12px] text-[var(--color-fg-muted)]' : ''}`}
-    >
-      {children}
-    </td>
-  );
+function formatServer(summary: InstanceSummary | null | undefined): string {
+  if (!summary?.serverAddr) return '--';
+  return summary.serverPort ? `${summary.serverAddr}:${summary.serverPort}` : summary.serverAddr;
 }
 
-function IconAction({
-  children,
-  onClick,
-  disabled,
-  label,
-  tone
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  disabled?: boolean;
-  label: string;
-  tone: 'default' | 'primary';
-}) {
-  const base =
-    'grid place-items-center w-7 h-7 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]';
-  const toneCls =
-    tone === 'primary'
-      ? 'text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]'
-      : 'text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)]';
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={label}
-      aria-label={label}
-      className={`${base} ${toneCls}`}
-    >
-      {children}
-    </button>
-  );
+function formatPorts(summary: InstanceSummary | null | undefined): string {
+  if (!summary?.remotePorts?.length) return '--';
+  return summary.remotePorts.join(', ');
 }
 
-function Switch({
-  checked,
-  onChange,
-  disabled,
-  label
-}: {
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  disabled?: boolean;
-  label: string;
-}) {
-  return (
-    <button
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex w-9 h-5 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)] ${
-        checked ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-border)]'
-      }`}
-    >
-      <span
-        className={`absolute top-0.5 inline-block w-4 h-4 rounded-full bg-white shadow transition-transform ${
-          checked ? 'translate-x-[18px]' : 'translate-x-0.5'
-        }`}
-      />
-    </button>
-  );
-}
-
-function RowMenu({
-  onLog,
-  onConfig,
-  onDelete,
-  deleting
-}: {
-  onLog: () => void;
-  onConfig: () => void;
-  onDelete: () => void;
-  deleting: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
-  const btnRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function handleClick(event: MouseEvent) {
-      const target = event.target as Node;
-      if (btnRef.current?.contains(target)) return;
-      if (menuRef.current?.contains(target)) return;
-      setOpen(false);
-    }
-    function handleEsc(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        setOpen(false);
-        btnRef.current?.focus();
-      }
-    }
-    function handleScroll() {
-      setOpen(false);
-    }
-    document.addEventListener('mousedown', handleClick);
-    document.addEventListener('keydown', handleEsc);
-    window.addEventListener('scroll', handleScroll, true);
-    window.addEventListener('resize', handleScroll);
-    return () => {
-      document.removeEventListener('mousedown', handleClick);
-      document.removeEventListener('keydown', handleEsc);
-      window.removeEventListener('scroll', handleScroll, true);
-      window.removeEventListener('resize', handleScroll);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open || !menuRef.current) return;
-    const first = menuRef.current.querySelector<HTMLButtonElement>('[role="menuitem"]');
-    first?.focus();
-  }, [open]);
-
-  function handleMenuKey(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (!menuRef.current) return;
-    const items = Array.from(
-      menuRef.current.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')
-    );
-    if (items.length === 0) return;
-    const current = items.indexOf(document.activeElement as HTMLButtonElement);
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      items[(current + 1 + items.length) % items.length].focus();
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      items[(current - 1 + items.length) % items.length].focus();
-    } else if (event.key === 'Home') {
-      event.preventDefault();
-      items[0].focus();
-    } else if (event.key === 'End') {
-      event.preventDefault();
-      items[items.length - 1].focus();
-    } else if (event.key === 'Tab') {
-      setOpen(false);
-    }
-  }
-
-  function toggle() {
-    if (open) {
-      setOpen(false);
-      return;
-    }
-    const rect = btnRef.current?.getBoundingClientRect();
-    if (rect) {
-      setPos({
-        top: rect.bottom + 4,
-        right: window.innerWidth - rect.right
-      });
-    }
-    setOpen(true);
-  }
-
-  return (
-    <>
-      <button
-        ref={btnRef}
-        onClick={toggle}
-        title="更多操作"
-        aria-label="更多操作"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className="grid place-items-center w-7 h-7 rounded-md text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
-      >
-        <MoreHorizontal size={14} />
-      </button>
-      {open && pos && (
-        <div
-          ref={menuRef}
-          role="menu"
-          aria-label="更多操作菜单"
-          onKeyDown={handleMenuKey}
-          style={{ position: 'fixed', top: pos.top, right: pos.right }}
-          className="min-w-[140px] py-1 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md shadow-lg z-50"
-        >
-          <MenuItem
-            onClick={() => {
-              setOpen(false);
-              onLog();
-            }}
-          >
-            查看日志
-          </MenuItem>
-          <MenuItem
-            onClick={() => {
-              setOpen(false);
-              onConfig();
-            }}
-          >
-            编辑配置
-          </MenuItem>
-          <div className="my-1 border-t border-[var(--color-border)]" />
-          <MenuItem
-            onClick={() => {
-              setOpen(false);
-              onDelete();
-            }}
-            danger
-          >
-            <Trash2 size={12} />
-            {deleting ? '删除中…' : '删除实例'}
-          </MenuItem>
-        </div>
-      )}
-    </>
-  );
-}
-
-function MenuItem({
-  children,
-  onClick,
-  danger
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  danger?: boolean;
-}) {
-  return (
-    <button
-      role="menuitem"
-      onClick={onClick}
-      className={`flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-left hover:bg-[var(--color-surface-muted)] focus-visible:outline-none focus-visible:bg-[var(--color-surface-muted)] ${
-        danger ? 'text-[var(--color-danger)]' : 'text-[var(--color-fg)]'
-      }`}
-    >
-      {children}
-    </button>
-  );
+function formatTypes(summary: InstanceSummary | null | undefined): string {
+  if (!summary?.proxyTypes) return '--';
+  const entries = Object.entries(summary.proxyTypes);
+  if (!entries.length) return '--';
+  return entries
+    .sort((a, b) => b[1] - a[1])
+    .map(([type, count]) => `${type} ${count}`)
+    .join(', ');
 }

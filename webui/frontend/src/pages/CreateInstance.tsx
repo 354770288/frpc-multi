@@ -3,10 +3,16 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  FileCode2,
+  Network,
   Plus,
+  Rocket,
+  Server,
+  Settings2,
   XCircle
 } from 'lucide-react';
 import { api, nodesApi } from '../lib/api';
+import { shortNodeUuid } from '../lib/format';
 import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
 import { Input, Textarea } from '../components/ui/Input';
@@ -31,17 +37,28 @@ export function CreateInstance({
   toast,
   instances,
   nodes,
+  initialNodeId,
   onCreated,
+  onManageNodes,
   onCancel
 }: {
   toast: (kind: ToastKind, text: string) => void;
   instances: InstanceRef[];
   nodes: Node[];
+  initialNodeId?: number;
   onCreated: (name: string, nodeId: number) => void;
+  onManageNodes: () => void;
   onCancel: () => void;
 }) {
   const defaultName = useMemo(() => nextClientName(instances), [instances]);
   const initialConfigText = useMemo(() => serializeFrpcConfig(emptyFrpcConfig()), []);
+  const resolvedInitialNodeId = useMemo(
+    () =>
+      initialNodeId && nodes.some((node) => node.id === initialNodeId)
+        ? initialNodeId
+        : nodes.find((node) => node.online || node.status === 'online')?.id || nodes[0]?.id || 0,
+    [initialNodeId, nodes]
+  );
 
   const [name, setName] = useState(defaultName);
   const [nameDirty, setNameDirty] = useState(false);
@@ -52,7 +69,8 @@ export function CreateInstance({
   const [configText, setConfigText] = useState(initialConfigText);
   const [mode, setMode] = useState<EditorMode>('structured');
   const [submitting, setSubmitting] = useState(false);
-  const [nodeId, setNodeId] = useState<number>(nodes[0]?.id || 0);
+  const [nodeId, setNodeId] = useState<number>(resolvedInitialNodeId);
+  const [nodeDirty, setNodeDirty] = useState(false);
 
   // Re-sync the suggested name once the instance list arrives (the user
   // hasn't typed yet — let the default catch up to the real instances).
@@ -61,11 +79,28 @@ export function CreateInstance({
   }, [instances, nameDirty]);
 
   useEffect(() => {
-    if (!nodeId && nodes[0]) setNodeId(nodes[0].id);
-  }, [nodes, nodeId]);
+    if (!nodeDirty) {
+      setNodeId(resolvedInitialNodeId);
+      return;
+    }
+    if (nodeId && !nodes.some((node) => node.id === nodeId)) {
+      setNodeId(resolvedInitialNodeId);
+      setNodeDirty(false);
+    }
+  }, [nodeDirty, nodeId, nodes, resolvedInitialNodeId]);
 
   const structured = useMemo(() => parseFrpcConfig(configText), [configText]);
   const structuredErrors = useMemo(() => validateFrpcDraft(structured), [structured]);
+  const selectedNode = useMemo(
+    () => nodes.find((node) => node.id === nodeId) || null,
+    [nodeId, nodes]
+  );
+  const remotePorts = useMemo(() => {
+    const ports = structured.proxies
+      .map((proxy) => proxy.remotePort.trim())
+      .filter(Boolean);
+    return Array.from(new Set(ports));
+  }, [structured.proxies]);
 
   function updateStructured(patch: Partial<FrpcConfigDraft>) {
     const next = { ...structured, ...patch };
@@ -84,8 +119,39 @@ export function CreateInstance({
         : null
       : '只能包含小写字母、数字和短横线，长度 3-40，且不能以短横线开头或结尾';
   const nodeError = nodes.length > 0 && !nodeId ? '请选择节点' : null;
+  const validationCount = structuredErrors.length + (nameError ? 1 : 0) + (nodeError ? 1 : 0);
 
   const canSubmit = !submitting && !nodeError && !nameError && structuredErrors.length === 0;
+
+  if (nodes.length === 0) {
+    return (
+      <main className="px-6 py-6 max-w-[1600px]">
+        <button
+          onClick={onCancel}
+          className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] rounded-sm"
+        >
+          <ArrowLeft size={13} />
+          返回节点工作台
+        </button>
+
+        <section className="rounded-lg border border-dashed border-[var(--color-border-strong)] bg-[var(--color-surface)] p-8 text-center">
+          <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
+            还没有可用节点
+          </h2>
+          <p className="mx-auto mt-2 max-w-[520px] text-[12px] leading-6 text-[var(--color-fg-muted)]">
+            创建实例前需要先添加 Agent 节点。节点接入后，回到工作台选择节点再创建实例，创建页会自动预选该节点。
+          </p>
+          <div className="mt-5 flex flex-wrap justify-center gap-2">
+            <Button variant="primary" onClick={onManageNodes}>
+              <Plus size={13} />
+              添加节点
+            </Button>
+            <Button onClick={onCancel}>返回节点工作台</Button>
+          </div>
+        </section>
+      </main>
+    );
+  }
 
   async function create() {
     if (nameError) {
@@ -134,18 +200,23 @@ export function CreateInstance({
         className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] rounded-sm"
       >
         <ArrowLeft size={13} />
-        返回总览
+        返回节点工作台
       </button>
 
-      <div className="mb-2 flex items-center gap-3 flex-wrap">
-        <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
-          创建 frpc 实例
-        </h2>
-        {structuredErrors.length === 0 && !nameError ? (
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
+            创建 frpc 实例
+          </h2>
+          <p className="mt-1 text-[12px] text-[var(--color-fg-muted)]">
+            依次确认目标节点、frps 连接、代理规则和启动行为。
+          </p>
+        </div>
+        {validationCount === 0 ? (
           <Badge tone="success">校验通过</Badge>
         ) : (
           <Badge tone="warning">
-            {structuredErrors.length + (nameError ? 1 : 0)} 项待完善
+            {validationCount} 项待完善
           </Badge>
         )}
       </div>
@@ -159,31 +230,55 @@ export function CreateInstance({
         </TabButton>
         <span className="ml-auto text-[11px] text-[var(--color-fg-muted)] pb-2">
           {mode === 'structured'
-            ? '常用字段表单，会按当前内容生成 frpc.toml'
-            : '直接编辑生成的 TOML，回到结构化页时会按 TOML 内容重新解析'}
+            ? '按常用字段生成 frpc.toml，适合标准配置'
+            : '高级模式；摘要和校验会按当前 TOML 重新解析'}
         </span>
       </div>
 
-      <section className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4">
+      {mode === 'raw' && (
+        <div className="mb-4 rounded-lg border border-[var(--color-warning)]/25 bg-[var(--color-warning-soft)] p-3 text-[12px] leading-5 text-[var(--color-warning)]">
+          原始 TOML 模式适合高级配置。切回结构化模式后，只会保留本页面识别的 server/auth/proxies 常用字段。
+        </div>
+      )}
+
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex flex-col gap-4">
           {mode === 'structured' ? (
             <>
-              <Panel title="实例">
+              <Panel title={<SectionTitle icon={<Server size={14} />} title="1. 基本信息" />}>
                 <div className="flex flex-col gap-4">
                   <Field label="节点" hint="实例会创建到选中的 Agent 节点">
                     <select
                       value={nodeId}
-                      onChange={(event) => setNodeId(Number(event.target.value))}
+                      onChange={(event) => {
+                        setNodeId(Number(event.target.value));
+                        setNodeDirty(true);
+                      }}
                       className="w-full h-9 px-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] focus:ring-2 focus:ring-[var(--color-accent)]/15"
                     >
-                      <option value={0}>{nodes.length ? '请选择节点' : '本机'}</option>
+                      <option value={0}>请选择节点</option>
                       {nodes.map((node) => (
                         <option key={node.id} value={node.id}>
-                          {node.name}
+                          {node.name} ({nodeLabel(node)})
                         </option>
                       ))}
                     </select>
                   </Field>
+                  {selectedNode && (
+                    <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-muted)] p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[12px] font-semibold text-[var(--color-fg)]">
+                          {selectedNode.name}
+                        </span>
+                        <Badge tone={nodeIsOnline(selectedNode) ? 'success' : 'danger'}>
+                          {nodeLabel(selectedNode)}
+                        </Badge>
+                      </div>
+                      <div className="mt-1 font-mono text-[11px] text-[var(--color-fg-muted)]">
+                        uuid {shortNodeUuid(selectedNode.uuid, 8)} · {selectedNode.lastSeenAt ? `最近 ${formatLastSeen(selectedNode.lastSeenAt)}` : '未连接'}
+                      </div>
+                    </div>
+                  )}
                   {nodeError && <ErrorLine>{nodeError}</ErrorLine>}
                   <Field
                     label="实例名"
@@ -221,7 +316,7 @@ export function CreateInstance({
                 </div>
               </Panel>
 
-              <Panel title="连接 frps">
+              <Panel title={<SectionTitle icon={<Network size={14} />} title="2. frps 连接" />}>
                 <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_140px] gap-4">
                   <Field label="服务器地址" hint="必填，frps 主机名或 IP">
                     <Input
@@ -256,7 +351,7 @@ export function CreateInstance({
                 </div>
               </Panel>
 
-              <Panel title="代理">
+              <Panel title={<SectionTitle icon={<FileCode2 size={14} />} title="3. 代理规则" />}>
                 <ProxyList
                   proxies={structured.proxies}
                   onChange={updateProxies}
@@ -267,10 +362,10 @@ export function CreateInstance({
             </>
           ) : (
             <Panel
-              title="frpc.toml"
+              title={<SectionTitle icon={<FileCode2 size={14} />} title="原始 TOML" />}
               actions={
                 <span className="text-[11px] text-[var(--color-fg-muted)]">
-                  自动生成；可直接编辑
+                  高级模式
                 </span>
               }
             >
@@ -283,7 +378,7 @@ export function CreateInstance({
             </Panel>
           )}
 
-          <Panel title="选项">
+          <Panel title={<SectionTitle icon={<Settings2 size={14} />} title="4. 启动选项" />}>
             <div className="flex flex-col gap-2">
               <Toggle
                 checked={enabled}
@@ -300,16 +395,46 @@ export function CreateInstance({
               />
             </div>
           </Panel>
-
-          <div className="flex justify-end">
-            <Button variant="primary" onClick={create} disabled={!canSubmit}>
-              <Plus size={13} />
-              {submitting ? '创建中…' : '创建实例'}
-            </Button>
-          </div>
         </div>
 
-        <aside className="flex flex-col gap-4">
+        <aside className="flex flex-col gap-4 lg:sticky lg:top-20 lg:self-start">
+          <Panel title={<SectionTitle icon={<Rocket size={14} />} title="创建摘要" />}>
+            <div className="flex flex-col gap-3 text-[12px]">
+              <SummaryRow label="目标节点">
+                <span className="font-medium text-[var(--color-fg)]">
+                  {selectedNode ? selectedNode.name : '未选择'}
+                </span>
+                {selectedNode && (
+                  <Badge tone={nodeIsOnline(selectedNode) ? 'success' : 'danger'}>
+                    {nodeLabel(selectedNode)}
+                  </Badge>
+                )}
+              </SummaryRow>
+              <SummaryRow label="frps">
+                <span className="font-mono text-[11px] text-[var(--color-fg)]">
+                  {structured.serverAddr.trim() || '未填写'}:{structured.serverPort.trim() || '7000'}
+                </span>
+              </SummaryRow>
+              <SummaryRow label="代理数量">
+                <span className="font-mono text-[var(--color-fg)]">{structured.proxies.length}</span>
+              </SummaryRow>
+              <SummaryRow label="远端端口">
+                <span className="font-mono text-[11px] text-[var(--color-fg)]">
+                  {remotePorts.length ? remotePorts.join(', ') : '无'}
+                </span>
+              </SummaryRow>
+              <SummaryRow label="将执行">
+                <span className="text-right text-[var(--color-fg)]">
+                  {enabled
+                    ? startAfterCreate
+                      ? '写入配置并启动实例'
+                      : '写入配置，暂不启动'
+                    : '仅保存配置，不启用实例'}
+                </span>
+              </SummaryRow>
+            </div>
+          </Panel>
+
           <Panel title="校验结果">
             <div role="status" aria-live="polite">
               {structuredErrors.length === 0 && !nameError && !nodeError ? (
@@ -355,6 +480,11 @@ export function CreateInstance({
               {enabled && startAfterCreate && <ChecklistItem>docker compose up -d 启动该实例</ChecklistItem>}
             </ul>
           </Panel>
+
+          <Button variant="primary" onClick={create} disabled={!canSubmit || submitting} className="w-full">
+            <Plus size={13} />
+            {submitting ? '创建中…' : '创建实例'}
+          </Button>
         </aside>
       </section>
     </main>
@@ -369,6 +499,56 @@ function nextClientName(instances: InstanceRef[]): string {
   }
   const next = numbers.length === 0 ? 1 : Math.max(...numbers) + 1;
   return `client-${String(next).padStart(3, '0')}`;
+}
+
+function SectionTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span className="text-[var(--color-accent)]">{icon}</span>
+      {title}
+    </span>
+  );
+}
+
+function SummaryRow({
+  label,
+  children
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 border-b border-[var(--color-border)] pb-2 last:border-b-0 last:pb-0">
+      <span className="shrink-0 text-[var(--color-fg-muted)]">{label}</span>
+      <span className="flex min-w-0 flex-wrap justify-end gap-1.5 text-right">{children}</span>
+    </div>
+  );
+}
+
+function nodeIsOnline(node: Node): boolean {
+  return node.online || node.status === 'online';
+}
+
+function nodeLabel(node: Node): string {
+  if (nodeIsOnline(node)) return '在线';
+  if (node.status === 'pending') return '待接入';
+  if (node.status === 'offline') return '离线';
+  if (node.status === 'error') return '异常';
+  return '未知';
+}
+
+function formatLastSeen(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  const diff = Date.now() - timestamp;
+  if (diff < 0) return '刚刚';
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return `${seconds} 秒前`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.floor(hours / 24)} 天前`;
 }
 
 function TabButton({

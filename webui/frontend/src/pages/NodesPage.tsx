@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  CheckCircle2,
-  ClipboardCopy,
   KeyRound,
   Plus,
   RefreshCw,
@@ -11,27 +9,48 @@ import {
   XCircle
 } from 'lucide-react';
 import { nodesApi } from '../lib/api';
+import { bytesToHuman, shortNodeUuid } from '../lib/format';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
 import { Input } from '../components/ui/Input';
 import { Panel } from '../components/ui/Panel';
-import type { Node, NodeInstall, ToastKind } from '../lib/types';
+import {
+  ConfirmNodeAction,
+  ConnectionGuidePanel,
+  InstallPanel,
+  NodeHealthSummary,
+  OfflineHint,
+  StatusBadge,
+  type NodeConfirmAction
+} from './nodes/NodeParts';
+import type { Node, NodeInstall, NodeInstanceHealth, SystemInfo, ToastKind } from '../lib/types';
+
+type ConfirmState = {
+  action: NodeConfirmAction;
+  node: Node;
+};
+
+type NodeSystemSnapshot = Record<number, { info: SystemInfo | null; error: string | null }>;
 
 export function NodesPage({
   toast,
-  onChanged
+  onChanged,
+  nodeHealthById = {},
+  nodeSystems = {}
 }: {
   toast: (kind: ToastKind, text: string) => void;
   onChanged?: () => void;
+  nodeHealthById?: Record<number, NodeInstanceHealth>;
+  nodeSystems?: NodeSystemSnapshot;
 }) {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [pending, setPending] = useState<Record<number, string>>({});
-  // 当前展示安装命令的节点（新建或点"安装命令"后填充）。
   const [install, setInstall] = useState<{ node: Node; info: NodeInstall } | null>(null);
+  const [confirming, setConfirming] = useState<ConfirmState | null>(null);
 
   async function loadNodes() {
     setLoading(true);
@@ -56,6 +75,11 @@ export function NodesPage({
     if (!name.trim()) return '请填写节点名称';
     return '';
   }, [name]);
+
+  const offlineCount = useMemo(
+    () => nodes.filter((node) => !(node.online || node.status === 'online')).length,
+    [nodes]
+  );
 
   async function createNode() {
     if (formError) {
@@ -94,13 +118,13 @@ export function NodesPage({
   }
 
   async function rotateSecret(node: Node) {
-    if (!window.confirm(`轮换 ${node.name} 的密钥？旧 Agent 需用新命令重新部署才能再次连上。`)) return;
     setPending((prev) => ({ ...prev, [node.id]: 'rotate' }));
     try {
       const updated = await nodesApi.rotateSecret(node.id);
       setInstall({ node: updated, info: updated.install });
       toast('success', `${node.name} 密钥已轮换`);
       await loadNodes();
+      onChanged?.();
     } catch (err) {
       toast('error', err instanceof Error ? err.message : '轮换密钥失败');
     } finally {
@@ -113,14 +137,6 @@ export function NodesPage({
   }
 
   async function upgradeAgent(node: Node) {
-    if (
-      !window.confirm(
-        `确认升级节点「${node.name}」的 Agent？\n\n` +
-          `面板会让该 Agent 拉取当前镜像标签的最新版本，并用 docker run 模式重建 Agent 容器。\n` +
-          `升级过程中节点会短暂离线，稍后应自动重新上线。`
-      )
-    )
-      return;
     setPending((prev) => ({ ...prev, [node.id]: 'upgrade' }));
     try {
       const result = await nodesApi.upgradeAgent(node.id);
@@ -144,17 +160,6 @@ export function NodesPage({
   }
 
   async function deleteNode(node: Node) {
-    if (
-      !window.confirm(
-        `确认删除节点「${node.name}」？\n\n` +
-          `⚠️ 该节点下的所有 frpc 实例将一并被删除：\n` +
-          `· 停止并移除所有实例容器\n` +
-          `· 删除所有实例配置目录\n` +
-          `· 卸载并移除该节点的 Agent 容器\n\n` +
-          `此操作不可撤销，请谨慎选择。`
-      )
-    )
-      return;
     setPending((prev) => ({ ...prev, [node.id]: 'delete' }));
     try {
       const result = await nodesApi.delete(node.id);
@@ -177,6 +182,19 @@ export function NodesPage({
     }
   }
 
+  function confirmAction() {
+    if (!confirming) return;
+    const { action, node } = confirming;
+    setConfirming(null);
+    if (action === 'rotate') {
+      rotateSecret(node);
+    } else if (action === 'upgrade') {
+      upgradeAgent(node);
+    } else {
+      deleteNode(node);
+    }
+  }
+
   return (
     <main className="px-6 py-6 max-w-[1600px]">
       <div className="mb-6 flex items-center gap-3">
@@ -188,15 +206,17 @@ export function NodesPage({
         </Button>
       </div>
 
-      <section className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-4">
+      <section className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] gap-4">
         <div className="flex flex-col gap-4">
           <Panel title="节点列表" bodyClassName="p-0">
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="w-full min-w-[980px]">
                 <thead>
                   <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface-muted)]">
                     <Th>名称</Th>
                     <Th>状态</Th>
+                    <Th>实例健康</Th>
+                    <Th>系统摘要</Th>
                     <Th>UUID</Th>
                     <Th>最近在线</Th>
                     <Th align="right">操作</Th>
@@ -210,13 +230,20 @@ export function NodesPage({
                     >
                       <Td>
                         <span className="text-[13px] font-medium text-[var(--color-fg)]">{node.name}</span>
+                        <OfflineHint node={node} />
                       </Td>
                       <Td>
                         <StatusBadge node={node} />
                       </Td>
                       <Td>
+                        <NodeHealthSummary health={nodeHealthById[node.id]} />
+                      </Td>
+                      <Td>
+                        <NodeSystemSummary node={node} snapshot={nodeSystems[node.id]} />
+                      </Td>
+                      <Td>
                         <span className="font-mono text-[11px] text-[var(--color-fg-muted)]">
-                          {node.uuid.slice(0, 12)}…
+                          {shortNodeUuid(node.uuid)}
                         </span>
                       </Td>
                       <Td>
@@ -232,7 +259,7 @@ export function NodesPage({
                           </Button>
                           <Button
                             size="sm"
-                            onClick={() => rotateSecret(node)}
+                            onClick={() => setConfirming({ action: 'rotate', node })}
                             disabled={!!pending[node.id]}
                           >
                             <KeyRound size={13} />
@@ -240,8 +267,9 @@ export function NodesPage({
                           </Button>
                           <Button
                             size="sm"
-                            onClick={() => upgradeAgent(node)}
+                            onClick={() => setConfirming({ action: 'upgrade', node })}
                             disabled={!!pending[node.id] || !node.online}
+                            title={node.online ? undefined : '离线节点需先接入 Agent，才能发起升级'}
                           >
                             <UploadCloud size={13} />
                             升级 Agent
@@ -249,7 +277,7 @@ export function NodesPage({
                           <Button
                             size="sm"
                             variant="danger"
-                            onClick={() => deleteNode(node)}
+                            onClick={() => setConfirming({ action: 'delete', node })}
                             disabled={!!pending[node.id]}
                           >
                             <Trash2 size={13} />
@@ -261,7 +289,7 @@ export function NodesPage({
                   ))}
                   {!nodes.length && (
                     <tr>
-                      <td colSpan={5} className="px-4 py-10 text-center text-[12px] text-[var(--color-fg-muted)]">
+                      <td colSpan={7} className="px-4 py-10 text-center text-[12px] text-[var(--color-fg-muted)]">
                         {loading ? '加载中…' : '暂无节点，先在右侧创建一个'}
                       </td>
                     </tr>
@@ -270,7 +298,9 @@ export function NodesPage({
               </table>
             </div>
           </Panel>
+        </div>
 
+        <aside className="flex flex-col gap-4 xl:sticky xl:top-20 xl:self-start">
           {install && (
             <InstallPanel
               nodeName={install.node.name}
@@ -279,160 +309,120 @@ export function NodesPage({
               toast={toast}
             />
           )}
-        </div>
 
-        <Panel title="新增节点">
-          <div className="flex flex-col gap-4">
-            <p className="text-[12px] leading-relaxed text-[var(--color-fg-muted)]">
-              创建节点后会生成一条一键安装命令。在目标机器上运行它，Agent 会主动连回主控并自动上线，
-              目标机无需公网或开放任何入站端口。
-            </p>
-            <Field label="节点名称">
-              <Input
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="vps-hk-01"
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') createNode();
-                }}
-              />
-            </Field>
-            {formError && (
-              <div className="flex items-start gap-2 rounded-md bg-[var(--color-warning-soft)] p-2 text-[12px] text-[var(--color-warning)]">
-                <XCircle size={13} className="mt-0.5 shrink-0" />
-                <span>{formError}</span>
-              </div>
-            )}
-            <Button variant="primary" onClick={createNode} disabled={saving || !!formError}>
-              <Plus size={13} />
-              {saving ? '创建中…' : '创建节点'}
-            </Button>
-          </div>
-        </Panel>
+          <ConnectionGuidePanel offlineCount={offlineCount} />
+
+          <Panel title="新增节点">
+            <div className="flex flex-col gap-4">
+              <p className="text-[12px] leading-relaxed text-[var(--color-fg-muted)]">
+                创建节点后会生成一条一键安装命令。在目标机器上运行它，Agent 会主动连回主控并自动上线。
+              </p>
+              <Field label="节点名称">
+                <Input
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder="vps-hk-01"
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') createNode();
+                  }}
+                />
+              </Field>
+              {formError && (
+                <div className="flex items-start gap-2 rounded-md bg-[var(--color-warning-soft)] p-2 text-[12px] text-[var(--color-warning)]">
+                  <XCircle size={13} className="mt-0.5 shrink-0" />
+                  <span>{formError}</span>
+                </div>
+              )}
+              <Button variant="primary" onClick={createNode} disabled={saving || !!formError}>
+                <Plus size={13} />
+                {saving ? '创建中…' : '创建节点'}
+              </Button>
+            </div>
+          </Panel>
+        </aside>
       </section>
+
+      {confirming && (
+        <ConfirmNodeAction
+          action={confirming.action}
+          node={confirming.node}
+          health={nodeHealthById[confirming.node.id]}
+          onCancel={() => setConfirming(null)}
+          onConfirm={confirmAction}
+        />
+      )}
     </main>
   );
 }
 
-function InstallPanel({
-  nodeName,
-  info,
-  onClose,
-  toast
+function NodeSystemSummary({
+  node,
+  snapshot
 }: {
-  nodeName: string;
-  info: NodeInstall;
-  onClose: () => void;
-  toast: (kind: ToastKind, text: string) => void;
+  node: Node;
+  snapshot?: { info: SystemInfo | null; error: string | null };
 }) {
-  async function copy(text: string, label: string) {
-    // navigator.clipboard 仅在安全上下文（HTTPS / localhost）可用。
-    // 裸 HTTP（如 http://VPS_IP:8081）下它是 undefined，需降级到 execCommand。
-    if (navigator.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(text);
-        toast('success', `${label}已复制`);
-        return;
-      } catch {
-        // 落到下面的降级方案
-      }
-    }
-    try {
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.focus();
-      textarea.select();
-      const ok = document.execCommand('copy');
-      document.body.removeChild(textarea);
-      if (ok) {
-        toast('success', `${label}已复制`);
-      } else {
-        toast('error', '复制失败，请手动选择文本复制');
-      }
-    } catch {
-      toast('error', '复制失败，请手动选择文本复制');
-    }
+  const online = node.online || node.status === 'online';
+  if (!online) {
+    return <span className="text-[12px] text-[var(--color-fg-muted)]">Agent 未在线</span>;
   }
-
+  if (!snapshot) {
+    return <span className="text-[12px] text-[var(--color-fg-muted)]">加载中...</span>;
+  }
+  if (snapshot.error || !snapshot.info) {
+    return (
+      <span className="text-[12px] text-[var(--color-danger)]">
+        系统信息不可达{snapshot.error ? `：${snapshot.error}` : ''}
+      </span>
+    );
+  }
+  const info = snapshot.info;
+  const diskRatio = info.disk.total > 0 ? (info.disk.used / info.disk.total) * 100 : null;
   return (
-    <Panel title={`安装命令 · ${nodeName}`}>
-      <div className="flex flex-col gap-3">
-        {!info.serverConfigured && (
-          <div className="flex items-start gap-2 rounded-md bg-[var(--color-warning-soft)] p-2 text-[12px] text-[var(--color-warning)]">
-            <XCircle size={13} className="mt-0.5 shrink-0" />
-            <span>
-              主控未配置对外可达地址（CONSOLE_PUBLIC_HOST），命令里的 <code>{info.server}</code> 需手动替换为
-              Agent 能访问到的主控地址。
-            </span>
-          </div>
-        )}
-        <p className="text-[12px] text-[var(--color-fg-muted)]">
-          在目标机器上以 root（或有 docker 权限的用户）运行：
-        </p>
-        <div className="relative">
-          <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-[var(--color-border)] bg-[var(--color-surface-muted)] p-3 pr-10 font-mono text-[11px] leading-relaxed text-[var(--color-fg)]">
-            {info.installCommand}
-          </pre>
-          <button
-            type="button"
-            onClick={() => copy(info.installCommand, '安装命令')}
-            className="absolute right-2 top-2 rounded p-1.5 text-[var(--color-fg-muted)] hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"
-            title="复制"
-          >
-            <ClipboardCopy size={14} />
-          </button>
-        </div>
-        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[11px]">
-          <span className="text-[var(--color-fg-muted)]">主控地址</span>
-          <span className="font-mono text-[var(--color-fg)]">{info.server}</span>
-          <span className="text-[var(--color-fg-muted)]">UUID</span>
-          <span className="font-mono text-[var(--color-fg)]">{info.uuid}</span>
-          <span className="text-[var(--color-fg-muted)]">TLS</span>
-          <span className="font-mono text-[var(--color-fg)]">{info.tls ? 'wss（已启用）' : 'ws（未启用）'}</span>
-          <span className="text-[var(--color-fg-muted)]">镜像</span>
-          <span className="font-mono text-[var(--color-fg)]">{info.image}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" onClick={() => copy(info.installCommand, '安装命令')}>
-            <ClipboardCopy size={13} />
-            复制命令
-          </Button>
-          <Button size="sm" variant="ghost" onClick={onClose}>
-            关闭
-          </Button>
-        </div>
-        <p className="text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
-          密钥仅在创建/轮换时展示一次。如需重新查看可点节点行的"安装命令"，但出于安全考虑请妥善保管。
-        </p>
+    <div className="min-w-[240px] space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <SystemChip label="Agent" value="在线" tone="success" />
+        <SystemChip label="Docker" value={info.dockerVersion || '未连接'} />
       </div>
-    </Panel>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <SystemChip label="frpc" value={info.frpVersion || info.frpImage || '未配置'} />
+        <SystemChip
+          label="磁盘"
+          value={
+            diskRatio === null
+              ? '不可用'
+              : `${diskRatio.toFixed(1)}% · ${bytesToHuman(info.disk.used)} / ${bytesToHuman(info.disk.total)}`
+          }
+          tone={diskRatio !== null && diskRatio >= 90 ? 'danger' : diskRatio !== null && diskRatio >= 75 ? 'warning' : 'muted'}
+        />
+      </div>
+    </div>
   );
 }
 
-function StatusBadge({ node }: { node: Node }) {
-  if (node.online || node.status === 'online') {
-    return (
-      <Badge tone="success">
-        <CheckCircle2 size={12} />
-        在线
-      </Badge>
-    );
-  }
-  if (node.status === 'pending') {
-    return <Badge tone="muted">待连接</Badge>;
-  }
-  if (node.status === 'offline' || node.status === 'error') {
-    return (
-      <Badge tone="danger">
-        <XCircle size={12} />
-        离线
-      </Badge>
-    );
-  }
-  return <Badge tone="muted">未知</Badge>;
+function SystemChip({
+  label,
+  value,
+  tone = 'muted'
+}: {
+  label: string;
+  value: string;
+  tone?: 'success' | 'warning' | 'danger' | 'muted';
+}) {
+  const toneClass =
+    tone === 'success'
+      ? 'bg-[var(--color-success-soft)] text-[var(--color-success)]'
+      : tone === 'warning'
+        ? 'bg-[var(--color-warning-soft)] text-[var(--color-warning)]'
+        : tone === 'danger'
+          ? 'bg-[var(--color-danger-soft)] text-[var(--color-danger)]'
+          : 'bg-[var(--color-surface-muted)] text-[var(--color-fg-muted)]';
+  return (
+    <span className={`inline-flex h-6 max-w-[240px] items-center gap-1 rounded-md px-2 text-[11px] ${toneClass}`}>
+      <span>{label}</span>
+      <span className="truncate font-mono text-[10px] tabular-nums">{value}</span>
+    </span>
+  );
 }
 
 function Th({ children, align = 'left' }: { children: React.ReactNode; align?: 'left' | 'right' }) {

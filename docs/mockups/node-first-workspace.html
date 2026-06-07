@@ -1,0 +1,1343 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>frpc-multi 节点优先工作台草稿</title>
+    <style>
+      :root {
+        --bg: #f5f7fb;
+        --paper: #ffffff;
+        --paper-soft: #f8fafc;
+        --line: #e2e8f0;
+        --line-strong: #cbd5e1;
+        --text: #102033;
+        --muted: #65758b;
+        --subtle: #97a6b7;
+        --nav: #111827;
+        --nav-soft: #1f2937;
+        --blue: #2f6df6;
+        --blue-soft: #eef5ff;
+        --green: #16803c;
+        --green-soft: #edfbf1;
+        --amber: #b7791f;
+        --amber-soft: #fff7e8;
+        --red: #c2413a;
+        --red-soft: #fff0ef;
+        --teal: #0f766e;
+        --teal-soft: #e9fbf7;
+        --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+        --shadow-md: 0 18px 42px rgba(15, 23, 42, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--text);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(245, 247, 251, 0.96)),
+          linear-gradient(135deg, #f5f8ff 0%, #eff9f5 52%, #f8f5ef 100%);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+        letter-spacing: 0;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        cursor: default;
+      }
+
+      .icon {
+        width: 16px;
+        height: 16px;
+        stroke: currentColor;
+        stroke-width: 2;
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex: 0 0 auto;
+      }
+
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .app {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 248px minmax(0, 1fr);
+      }
+
+      .sidebar {
+        background: var(--nav);
+        color: #cbd5e1;
+        padding: 18px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      .brand {
+        height: 46px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 10px;
+      }
+
+      .brand-badge {
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #2f6df6, #10b981);
+        color: #fff;
+        font-weight: 760;
+        box-shadow: 0 12px 28px rgba(47, 109, 246, 0.28);
+      }
+
+      .brand strong {
+        display: block;
+        color: #fff;
+        font-size: 14px;
+      }
+
+      .brand span {
+        display: block;
+        margin-top: 2px;
+        color: #94a3b8;
+        font-size: 11px;
+      }
+
+      .nav {
+        display: grid;
+        gap: 6px;
+      }
+
+      .nav button {
+        width: 100%;
+        height: 42px;
+        border: 0;
+        border-radius: 8px;
+        padding: 0 12px;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        background: transparent;
+        color: #aebbd0;
+        font-size: 13px;
+      }
+
+      .nav button.active {
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+      }
+
+      .nav .count {
+        margin-left: auto;
+        height: 20px;
+        min-width: 22px;
+        padding: 0 6px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255, 255, 255, 0.09);
+        color: #dbeafe;
+        font-size: 11px;
+      }
+
+      .sidebar-summary {
+        margin-top: auto;
+        border-radius: 8px;
+        padding: 14px;
+        background: rgba(255, 255, 255, 0.055);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+      }
+
+      .sidebar-summary h3 {
+        margin: 0 0 12px;
+        color: #fff;
+        font-size: 12px;
+      }
+
+      .summary-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 7px 0;
+        color: #cbd5e1;
+        font-size: 12px;
+      }
+
+      .summary-row + .summary-row {
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .summary-row strong {
+        color: #fff;
+      }
+
+      .main {
+        min-width: 0;
+        padding: 22px 28px 28px;
+      }
+
+      .topbar {
+        height: 44px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+
+      .crumb {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .top-search {
+        margin-left: auto;
+        width: min(420px, 36vw);
+        height: 40px;
+        border: 1px solid rgba(203, 213, 225, 0.75);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.72);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        box-shadow: var(--shadow-sm);
+        backdrop-filter: blur(14px);
+      }
+
+      .top-search input {
+        width: 100%;
+        min-width: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--text);
+      }
+
+      .kbd {
+        height: 22px;
+        min-width: 34px;
+        border-radius: 6px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: #eef2f7;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .avatar {
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        border-radius: 999px;
+        background: #111827;
+        color: #fff;
+        font-weight: 700;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 480px;
+        gap: 18px;
+        margin-bottom: 20px;
+      }
+
+      .hero-card,
+      .metric,
+      .panel,
+      .node-card,
+      .notice {
+        border: 1px solid rgba(203, 213, 225, 0.72);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.84);
+        box-shadow: var(--shadow-sm);
+        backdrop-filter: blur(14px);
+      }
+
+      .hero-card {
+        padding: 24px;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .hero-card::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(120deg, rgba(47, 109, 246, 0.09), transparent 42%),
+          linear-gradient(250deg, rgba(15, 118, 110, 0.1), transparent 48%);
+        pointer-events: none;
+      }
+
+      .hero-card > * {
+        position: relative;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 28px;
+        padding: 0 10px;
+        border-radius: 999px;
+        background: var(--blue-soft);
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      h1 {
+        margin: 16px 0 8px;
+        max-width: 660px;
+        font-size: 30px;
+        line-height: 1.2;
+      }
+
+      .lead {
+        margin: 0;
+        max-width: 720px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.7;
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 22px;
+      }
+
+      .btn {
+        height: 40px;
+        border-radius: 8px;
+        padding: 0 14px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        border: 1px solid transparent;
+        background: var(--paper);
+        color: var(--text);
+        font-weight: 650;
+        box-shadow: var(--shadow-sm);
+        white-space: nowrap;
+      }
+
+      .btn.primary {
+        background: var(--blue);
+        color: #fff;
+        box-shadow: 0 12px 28px rgba(47, 109, 246, 0.2);
+      }
+
+      .btn.soft {
+        background: rgba(255, 255, 255, 0.72);
+        border-color: rgba(203, 213, 225, 0.82);
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .metric {
+        padding: 15px;
+        min-height: 106px;
+      }
+
+      .metric header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: 13px;
+        font-size: 25px;
+        letter-spacing: 0;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .metric small {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+      }
+
+      .tone-blue {
+        color: var(--blue);
+      }
+
+      .tone-green {
+        color: var(--green);
+      }
+
+      .tone-amber {
+        color: var(--amber);
+      }
+
+      .tone-red {
+        color: var(--red);
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: 360px minmax(0, 1fr);
+        gap: 18px;
+        align-items: start;
+      }
+
+      .panel {
+        overflow: hidden;
+      }
+
+      .panel-head {
+        padding: 18px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        border-bottom: 1px solid rgba(226, 232, 240, 0.82);
+      }
+
+      .panel-title {
+        min-width: 0;
+      }
+
+      .panel-title h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+
+      .panel-title p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .node-toolbar,
+      .instance-toolbar {
+        padding: 14px 18px;
+        display: grid;
+        gap: 10px;
+        border-bottom: 1px solid rgba(226, 232, 240, 0.82);
+      }
+
+      .instance-toolbar {
+        grid-template-columns: minmax(260px, 1fr) repeat(3, minmax(130px, 150px));
+      }
+
+      .field {
+        height: 40px;
+        border: 1px solid rgba(203, 213, 225, 0.82);
+        border-radius: 8px;
+        background: rgba(248, 250, 252, 0.86);
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 0 12px;
+      }
+
+      .field input,
+      .field select {
+        width: 100%;
+        min-width: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--text);
+      }
+
+      .node-list {
+        padding: 14px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .node-card {
+        padding: 15px;
+        background: #fff;
+        transition:
+          border-color 0.16s ease,
+          box-shadow 0.16s ease;
+      }
+
+      .node-card.active {
+        border-color: rgba(47, 109, 246, 0.34);
+        box-shadow: var(--shadow-md);
+      }
+
+      .node-top {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+      }
+
+      .node-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        background: var(--blue-soft);
+        color: var(--blue);
+        flex: 0 0 auto;
+      }
+
+      .node-icon.green {
+        background: var(--teal-soft);
+        color: var(--teal);
+      }
+
+      .node-icon.red {
+        background: var(--red-soft);
+        color: var(--red);
+      }
+
+      .node-name {
+        min-width: 0;
+        flex: 1;
+      }
+
+      .node-name h3 {
+        margin: 0;
+        font-size: 14px;
+      }
+
+      .node-name p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .badge {
+        height: 25px;
+        border-radius: 999px;
+        padding: 0 9px;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12px;
+        font-weight: 650;
+        white-space: nowrap;
+      }
+
+      .badge.green {
+        background: var(--green-soft);
+        color: var(--green);
+      }
+
+      .badge.amber {
+        background: var(--amber-soft);
+        color: var(--amber);
+      }
+
+      .badge.red {
+        background: var(--red-soft);
+        color: var(--red);
+      }
+
+      .badge.gray {
+        background: #eef2f7;
+        color: var(--muted);
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--subtle);
+        flex: 0 0 auto;
+      }
+
+      .dot.green {
+        background: #22c55e;
+      }
+
+      .dot.amber {
+        background: #f59e0b;
+      }
+
+      .dot.red {
+        background: #ef4444;
+      }
+
+      .node-metrics {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      .node-metric {
+        border-radius: 8px;
+        background: var(--paper-soft);
+        padding: 9px;
+      }
+
+      .node-metric span {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .node-metric strong {
+        font-size: 13px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .node-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      .node-actions .btn {
+        height: 34px;
+        padding: 0 11px;
+        font-size: 12px;
+      }
+
+      .selected-node {
+        padding: 18px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 18px;
+        align-items: start;
+        border-bottom: 1px solid rgba(226, 232, 240, 0.82);
+        background:
+          linear-gradient(120deg, rgba(47, 109, 246, 0.08), transparent 38%),
+          #fff;
+      }
+
+      .selected-node h2 {
+        margin: 0 0 6px;
+        font-size: 19px;
+      }
+
+      .selected-node p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .selected-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-end;
+      }
+
+      .selected-actions .btn {
+        height: 36px;
+        font-size: 12px;
+      }
+
+      .mini-stats {
+        margin-top: 14px;
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .mini-stat {
+        border-radius: 8px;
+        background: rgba(248, 250, 252, 0.9);
+        padding: 10px;
+      }
+
+      .mini-stat span {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .mini-stat strong {
+        font-size: 13px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .table-wrap {
+        overflow: auto;
+      }
+
+      table {
+        width: 100%;
+        min-width: 1060px;
+        border-collapse: collapse;
+      }
+
+      thead tr {
+        background: rgba(248, 250, 252, 0.86);
+        border-top: 1px solid rgba(226, 232, 240, 0.82);
+        border-bottom: 1px solid rgba(226, 232, 240, 0.82);
+      }
+
+      th {
+        height: 42px;
+        padding: 0 14px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        text-align: left;
+      }
+
+      td {
+        height: 66px;
+        padding: 0 14px;
+        border-bottom: 1px solid rgba(226, 232, 240, 0.82);
+        vertical-align: middle;
+        font-size: 13px;
+      }
+
+      tbody tr.selected {
+        background: #f8fbff;
+        box-shadow: inset 3px 0 0 var(--blue);
+      }
+
+      .instance-main {
+        display: grid;
+        gap: 4px;
+      }
+
+      .instance-main strong {
+        font-size: 13px;
+      }
+
+      .instance-main span {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .chips {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .chip {
+        height: 24px;
+        border-radius: 999px;
+        padding: 0 8px;
+        display: inline-flex;
+        align-items: center;
+        background: #f1f5f9;
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .switch {
+        width: 40px;
+        height: 22px;
+        border-radius: 999px;
+        background: var(--blue);
+        position: relative;
+        display: inline-block;
+      }
+
+      .switch::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        right: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        background: #fff;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.18);
+      }
+
+      .switch.off {
+        background: #cbd5e1;
+      }
+
+      .switch.off::after {
+        right: 21px;
+      }
+
+      .row-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 7px;
+      }
+
+      .icon-btn {
+        width: 34px;
+        height: 34px;
+        border: 1px solid rgba(203, 213, 225, 0.82);
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        background: #fff;
+        color: var(--muted);
+      }
+
+      .icon-btn.primary-action {
+        color: var(--blue);
+        background: var(--blue-soft);
+        border-color: rgba(47, 109, 246, 0.18);
+      }
+
+      .notice {
+        margin: 14px 18px 18px;
+        padding: 12px;
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        background: var(--amber-soft);
+        color: #8a5a18;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      @media (max-width: 1280px) {
+        .app {
+          grid-template-columns: 82px minmax(0, 1fr);
+        }
+
+        .brand div:last-child,
+        .nav span:not(.count),
+        .sidebar-summary {
+          display: none;
+        }
+
+        .brand {
+          justify-content: center;
+          padding: 0;
+        }
+
+        .nav button {
+          justify-content: center;
+        }
+
+        .hero,
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 860px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          display: none;
+        }
+
+        .main {
+          padding: 16px;
+        }
+
+        .top-search {
+          display: none;
+        }
+
+        h1 {
+          font-size: 24px;
+        }
+
+        .metrics,
+        .instance-toolbar,
+        .mini-stats {
+          grid-template-columns: 1fr;
+        }
+
+        .selected-node {
+          grid-template-columns: 1fr;
+        }
+
+        .selected-actions {
+          justify-content: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <symbol id="icon-home" viewBox="0 0 24 24">
+        <path d="m3 11 9-8 9 8" />
+        <path d="M5 10v10h14V10" />
+      </symbol>
+      <symbol id="icon-box" viewBox="0 0 24 24">
+        <path d="M21 8 12 3 3 8l9 5 9-5Z" />
+        <path d="M3 8v8l9 5 9-5V8" />
+        <path d="M12 13v8" />
+      </symbol>
+      <symbol id="icon-node" viewBox="0 0 24 24">
+        <circle cx="6" cy="12" r="3" />
+        <circle cx="18" cy="6" r="3" />
+        <circle cx="18" cy="18" r="3" />
+        <path d="m8.6 10.5 6.8-3" />
+        <path d="m8.6 13.5 6.8 3" />
+      </symbol>
+      <symbol id="icon-log" viewBox="0 0 24 24">
+        <path d="M8 6h13" />
+        <path d="M8 12h13" />
+        <path d="M8 18h13" />
+        <path d="M3 6h.01" />
+        <path d="M3 12h.01" />
+        <path d="M3 18h.01" />
+      </symbol>
+      <symbol id="icon-settings" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3.5" />
+        <path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14.2 3h-4.4l-.4 2.7a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 2 1.2l.4 2.7h4.4l.4-2.7a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2Z" />
+      </symbol>
+      <symbol id="icon-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="7" />
+        <path d="m20 20-3.5-3.5" />
+      </symbol>
+      <symbol id="icon-plus" viewBox="0 0 24 24">
+        <path d="M12 5v14" />
+        <path d="M5 12h14" />
+      </symbol>
+      <symbol id="icon-play" viewBox="0 0 24 24">
+        <path d="M8 5v14l11-7-11-7Z" />
+      </symbol>
+      <symbol id="icon-stop" viewBox="0 0 24 24">
+        <rect x="7" y="7" width="10" height="10" rx="1" />
+      </symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24">
+        <path d="M21 12a9 9 0 0 1-15.2 6.5" />
+        <path d="M3 12A9 9 0 0 1 18.2 5.5" />
+        <path d="M18 2v4h-4" />
+        <path d="M6 22v-4h4" />
+      </symbol>
+      <symbol id="icon-code" viewBox="0 0 24 24">
+        <path d="m8 9-4 3 4 3" />
+        <path d="m16 9 4 3-4 3" />
+        <path d="m14 4-4 16" />
+      </symbol>
+      <symbol id="icon-terminal" viewBox="0 0 24 24">
+        <path d="m4 7 5 5-5 5" />
+        <path d="M12 19h8" />
+      </symbol>
+      <symbol id="icon-key" viewBox="0 0 24 24">
+        <circle cx="7.5" cy="14.5" r="4.5" />
+        <path d="M11 11 21 1" />
+        <path d="m16 6 2 2" />
+        <path d="m19 3 2 2" />
+      </symbol>
+      <symbol id="icon-upload" viewBox="0 0 24 24">
+        <path d="M12 16V4" />
+        <path d="m7 9 5-5 5 5" />
+        <path d="M20 16v4H4v-4" />
+      </symbol>
+      <symbol id="icon-alert" viewBox="0 0 24 24">
+        <path d="M12 3 2 21h20L12 3Z" />
+        <path d="M12 9v5" />
+        <path d="M12 17h.01" />
+      </symbol>
+    </svg>
+
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-badge">F</div>
+          <div>
+            <strong>frpc 多实例</strong>
+            <span>Console 运维控制台</span>
+          </div>
+        </div>
+
+        <nav class="nav" aria-label="主导航">
+          <button>
+            <svg class="icon"><use href="#icon-home" /></svg>
+            <span>仪表盘</span>
+          </button>
+          <button class="active">
+            <svg class="icon"><use href="#icon-node" /></svg>
+            <span>节点工作台</span>
+            <span class="count">4</span>
+          </button>
+          <button>
+            <svg class="icon"><use href="#icon-box" /></svg>
+            <span>全部实例</span>
+            <span class="count">15</span>
+          </button>
+          <button>
+            <svg class="icon"><use href="#icon-log" /></svg>
+            <span>审计</span>
+          </button>
+          <button>
+            <svg class="icon"><use href="#icon-settings" /></svg>
+            <span>系统</span>
+          </button>
+        </nav>
+
+        <section class="sidebar-summary">
+          <h3>全局状态</h3>
+          <div class="summary-row"><span>在线节点</span><strong>3 / 4</strong></div>
+          <div class="summary-row"><span>运行实例</span><strong>12 / 15</strong></div>
+          <div class="summary-row"><span>异常实例</span><strong style="color: #fecaca">2</strong></div>
+          <div class="summary-row"><span>最近失败</span><strong>1</strong></div>
+        </section>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <span class="crumb">Console / 节点工作台</span>
+          <div class="top-search">
+            <svg class="icon"><use href="#icon-search" /></svg>
+            <input placeholder="搜索节点、实例、端口、域名" />
+            <span class="kbd">⌘K</span>
+          </div>
+          <div class="avatar">A</div>
+        </header>
+
+        <section class="hero">
+          <div class="hero-card">
+            <span class="eyebrow"><i class="dot green"></i>按节点管理实例 · 当前选中 home-nas</span>
+            <h1>先定位节点，再管理该节点下的 frpc 实例</h1>
+            <p class="lead">
+              每台 Agent 节点承载一组实例。日常操作从节点开始：先确认节点在线、资源和 Agent 状态，
+              再在右侧列表里启动、停止、查看日志或编辑对应实例配置。
+            </p>
+            <div class="hero-actions">
+              <button class="btn primary"><svg class="icon"><use href="#icon-plus" /></svg>新增节点</button>
+              <button class="btn soft"><svg class="icon"><use href="#icon-plus" /></svg>创建实例</button>
+              <button class="btn soft"><svg class="icon"><use href="#icon-refresh" /></svg>刷新状态</button>
+            </div>
+          </div>
+
+          <div class="metrics">
+            <article class="metric">
+              <header><span>在线节点</span><svg class="icon tone-green"><use href="#icon-node" /></svg></header>
+              <strong class="tone-green">3 / 4</strong>
+              <small>office-lan 已离线 2 小时</small>
+            </article>
+            <article class="metric">
+              <header><span>home-nas 实例</span><svg class="icon tone-blue"><use href="#icon-box" /></svg></header>
+              <strong class="tone-blue">8</strong>
+              <small>7 运行中，1 重启中</small>
+            </article>
+            <article class="metric">
+              <header><span>节点磁盘</span><svg class="icon tone-amber"><use href="#icon-upload" /></svg></header>
+              <strong class="tone-amber">61%</strong>
+              <small>182GiB / 298GiB</small>
+            </article>
+            <article class="metric">
+              <header><span>异常实例</span><svg class="icon tone-red"><use href="#icon-alert" /></svg></header>
+              <strong class="tone-red">2</strong>
+              <small>1 个节点离线，1 个重启中</small>
+            </article>
+          </div>
+        </section>
+
+        <section class="workspace">
+          <section class="panel">
+            <div class="panel-head">
+              <div class="panel-title">
+                <h2>节点</h2>
+                <p>先选择 Agent 节点，再查看节点下实例。</p>
+              </div>
+            </div>
+            <div class="node-toolbar">
+              <label class="field">
+                <svg class="icon"><use href="#icon-search" /></svg>
+                <input placeholder="搜索节点名称" />
+              </label>
+            </div>
+            <div class="node-list">
+              <article class="node-card active">
+                <div class="node-top">
+                  <div class="node-icon"><svg class="icon"><use href="#icon-node" /></svg></div>
+                  <div class="node-name">
+                    <h3>home-nas</h3>
+                    <p class="mono">uuid 74af2d91... · 最近在线 12 秒前</p>
+                  </div>
+                  <span class="badge green"><i class="dot green"></i>在线</span>
+                </div>
+                <div class="node-metrics">
+                  <div class="node-metric"><span>实例</span><strong>8</strong></div>
+                  <div class="node-metric"><span>运行</span><strong>7</strong></div>
+                  <div class="node-metric"><span>异常</span><strong>1</strong></div>
+                </div>
+                <div class="node-actions">
+                  <button class="btn soft"><svg class="icon"><use href="#icon-terminal" /></svg>安装命令</button>
+                  <button class="btn soft"><svg class="icon"><use href="#icon-upload" /></svg>升级</button>
+                </div>
+              </article>
+
+              <article class="node-card">
+                <div class="node-top">
+                  <div class="node-icon green"><svg class="icon"><use href="#icon-node" /></svg></div>
+                  <div class="node-name">
+                    <h3>vps-hk-01</h3>
+                    <p class="mono">uuid 19c0aa63... · 最近在线 28 秒前</p>
+                  </div>
+                  <span class="badge green"><i class="dot green"></i>在线</span>
+                </div>
+                <div class="node-metrics">
+                  <div class="node-metric"><span>实例</span><strong>4</strong></div>
+                  <div class="node-metric"><span>运行</span><strong>4</strong></div>
+                  <div class="node-metric"><span>异常</span><strong>0</strong></div>
+                </div>
+              </article>
+
+              <article class="node-card">
+                <div class="node-top">
+                  <div class="node-icon green"><svg class="icon"><use href="#icon-node" /></svg></div>
+                  <div class="node-name">
+                    <h3>vps-sg-02</h3>
+                    <p class="mono">uuid ae912b11... · 最近在线 1 分钟前</p>
+                  </div>
+                  <span class="badge green"><i class="dot green"></i>在线</span>
+                </div>
+                <div class="node-metrics">
+                  <div class="node-metric"><span>实例</span><strong>2</strong></div>
+                  <div class="node-metric"><span>运行</span><strong>1</strong></div>
+                  <div class="node-metric"><span>异常</span><strong>0</strong></div>
+                </div>
+              </article>
+
+              <article class="node-card">
+                <div class="node-top">
+                  <div class="node-icon red"><svg class="icon"><use href="#icon-alert" /></svg></div>
+                  <div class="node-name">
+                    <h3>office-lan</h3>
+                    <p class="mono">uuid c8d2af90... · 最近在线 2 小时前</p>
+                  </div>
+                  <span class="badge red"><i class="dot red"></i>离线</span>
+                </div>
+                <div class="node-metrics">
+                  <div class="node-metric"><span>实例</span><strong>1</strong></div>
+                  <div class="node-metric"><span>运行</span><strong>--</strong></div>
+                  <div class="node-metric"><span>异常</span><strong>1</strong></div>
+                </div>
+                <div class="node-actions">
+                  <button class="btn soft"><svg class="icon"><use href="#icon-key" /></svg>轮换密钥</button>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="selected-node">
+              <div>
+                <h2>home-nas</h2>
+                <p>
+                  Agent 在线，Docker 已连接。该节点承载 NAS、相册、下载和内网 SSH 等实例。
+                  下面列表只展示当前节点下的实例，避免跨节点实例过多时难以定位。
+                </p>
+                <div class="mini-stats">
+                  <div class="mini-stat"><span>Docker</span><strong>27.3.1</strong></div>
+                  <div class="mini-stat"><span>frpc 镜像</span><strong>v0.68.1</strong></div>
+                  <div class="mini-stat"><span>磁盘</span><strong>61%</strong></div>
+                  <div class="mini-stat"><span>CPU</span><strong>42%</strong></div>
+                  <div class="mini-stat"><span>内存</span><strong>1.2GiB</strong></div>
+                </div>
+              </div>
+              <div class="selected-actions">
+                <button class="btn soft"><svg class="icon"><use href="#icon-terminal" /></svg>安装命令</button>
+                <button class="btn soft"><svg class="icon"><use href="#icon-key" /></svg>轮换密钥</button>
+                <button class="btn soft"><svg class="icon"><use href="#icon-upload" /></svg>升级 Agent</button>
+                <button class="btn primary"><svg class="icon"><use href="#icon-plus" /></svg>在此节点创建实例</button>
+              </div>
+            </div>
+
+            <div class="panel-head">
+              <div class="panel-title">
+                <h2>home-nas 下的实例</h2>
+                <p>实例数量多时仍使用列表展示，操作按钮固定在行尾。</p>
+              </div>
+            </div>
+
+            <div class="instance-toolbar">
+              <label class="field">
+                <svg class="icon"><use href="#icon-search" /></svg>
+                <input value="nas" aria-label="搜索实例" />
+              </label>
+              <label class="field">
+                <select aria-label="状态">
+                  <option>全部状态</option>
+                  <option>运行中</option>
+                  <option>异常</option>
+                  <option>已停止</option>
+                </select>
+              </label>
+              <label class="field">
+                <select aria-label="启用状态">
+                  <option>启用状态</option>
+                  <option>已启用</option>
+                  <option>已停用</option>
+                </select>
+              </label>
+              <label class="field">
+                <select aria-label="代理类型">
+                  <option>代理类型</option>
+                  <option>tcp</option>
+                  <option>http</option>
+                  <option>https</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>实例</th>
+                    <th>状态</th>
+                    <th>启用</th>
+                    <th>frps</th>
+                    <th>代理</th>
+                    <th>远端端口 / 域名</th>
+                    <th>CPU</th>
+                    <th>内存</th>
+                    <th>重启</th>
+                    <th style="text-align: right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="selected">
+                    <td>
+                      <div class="instance-main">
+                        <strong>家里 NAS</strong>
+                        <span class="mono">client-001 · SSH + 下载服务</span>
+                      </div>
+                    </td>
+                    <td><span class="badge green"><i class="dot green"></i>运行中</span></td>
+                    <td><span class="switch"></span></td>
+                    <td class="mono">frps.example.com:7000</td>
+                    <td><span class="chip">tcp · 2</span> <span class="chip">http · 1</span></td>
+                    <td>
+                      <div class="chips mono">
+                        <span class="chip">6001</span>
+                        <span class="chip">6002</span>
+                        <span class="chip">nas.example.com</span>
+                      </div>
+                    </td>
+                    <td class="mono">4.8%</td>
+                    <td class="mono">46MiB</td>
+                    <td class="mono">0</td>
+                    <td>
+                      <div class="row-actions">
+                        <button class="icon-btn" title="停止"><svg class="icon"><use href="#icon-stop" /></svg></button>
+                        <button class="icon-btn" title="重启"><svg class="icon"><use href="#icon-refresh" /></svg></button>
+                        <button class="icon-btn primary-action" title="日志"><svg class="icon"><use href="#icon-terminal" /></svg></button>
+                        <button class="icon-btn" title="配置"><svg class="icon"><use href="#icon-code" /></svg></button>
+                      </div>
+                    </td>
+                  </tr>
+
+                  <tr>
+                    <td>
+                      <div class="instance-main">
+                        <strong>相册服务</strong>
+                        <span class="mono">photo-web · https 自定义域名</span>
+                      </div>
+                    </td>
+                    <td><span class="badge amber"><i class="dot amber"></i>重启中</span></td>
+                    <td><span class="switch"></span></td>
+                    <td class="mono">frps.example.com:7000</td>
+                    <td><span class="chip">https · 1</span></td>
+                    <td><span class="chip mono">photos.example.com</span></td>
+                    <td class="mono">--</td>
+                    <td class="mono">--</td>
+                    <td class="mono">3</td>
+                    <td>
+                      <div class="row-actions">
+                        <button class="icon-btn primary-action" title="启动"><svg class="icon"><use href="#icon-play" /></svg></button>
+                        <button class="icon-btn" title="日志"><svg class="icon"><use href="#icon-terminal" /></svg></button>
+                        <button class="icon-btn" title="配置"><svg class="icon"><use href="#icon-code" /></svg></button>
+                      </div>
+                    </td>
+                  </tr>
+
+                  <tr>
+                    <td>
+                      <div class="instance-main">
+                        <strong>下载面板</strong>
+                        <span class="mono">aria2-web · 内网 Web 管理</span>
+                      </div>
+                    </td>
+                    <td><span class="badge green"><i class="dot green"></i>运行中</span></td>
+                    <td><span class="switch"></span></td>
+                    <td class="mono">frps.example.com:7000</td>
+                    <td><span class="chip">http · 1</span></td>
+                    <td><span class="chip mono">download.example.com</span></td>
+                    <td class="mono">2.1%</td>
+                    <td class="mono">39MiB</td>
+                    <td class="mono">0</td>
+                    <td>
+                      <div class="row-actions">
+                        <button class="icon-btn" title="停止"><svg class="icon"><use href="#icon-stop" /></svg></button>
+                        <button class="icon-btn" title="重启"><svg class="icon"><use href="#icon-refresh" /></svg></button>
+                        <button class="icon-btn" title="日志"><svg class="icon"><use href="#icon-terminal" /></svg></button>
+                        <button class="icon-btn" title="配置"><svg class="icon"><use href="#icon-code" /></svg></button>
+                      </div>
+                    </td>
+                  </tr>
+
+                  <tr>
+                    <td>
+                      <div class="instance-main">
+                        <strong>备用 UDP</strong>
+                        <span class="mono">backup-udp · 保留配置未启用</span>
+                      </div>
+                    </td>
+                    <td><span class="badge gray"><i class="dot"></i>已停用</span></td>
+                    <td><span class="switch off"></span></td>
+                    <td class="mono">frps.example.com:7000</td>
+                    <td><span class="chip">udp · 1</span></td>
+                    <td><span class="chip mono">7001</span></td>
+                    <td class="mono">--</td>
+                    <td class="mono">--</td>
+                    <td class="mono">0</td>
+                    <td>
+                      <div class="row-actions">
+                        <button class="icon-btn primary-action" title="启动"><svg class="icon"><use href="#icon-play" /></svg></button>
+                        <button class="icon-btn" title="配置"><svg class="icon"><use href="#icon-code" /></svg></button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <section class="notice">
+              <svg class="icon"><use href="#icon-alert" /></svg>
+              <span>
+                当前列表只展示选中节点的实例。需要跨节点搜索时，可以使用顶部全局搜索或进入“全部实例”视图。
+              </span>
+            </section>
+          </section>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

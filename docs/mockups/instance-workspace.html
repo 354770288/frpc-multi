@@ -1,0 +1,1308 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>frpc-multi 实例工作台草稿</title>
+    <style>
+      :root {
+        --bg: #f5f7fa;
+        --surface: #ffffff;
+        --surface-muted: #f8fafc;
+        --border: #e2e8f0;
+        --border-strong: #cbd5e1;
+        --text: #111827;
+        --muted: #64748b;
+        --subtle: #94a3b8;
+        --blue: #2563eb;
+        --blue-hover: #1d4ed8;
+        --blue-soft: #eff6ff;
+        --blue-panel: #f7fbff;
+        --green: #15803d;
+        --green-soft: #ecfdf5;
+        --green-panel: #f5fcf8;
+        --orange: #b45309;
+        --orange-soft: #fff7ed;
+        --orange-panel: #fffaf2;
+        --red: #b91c1c;
+        --red-soft: #fef2f2;
+        --red-panel: #fff7f7;
+        --purple: #6d5bd0;
+        --purple-soft: #f4f2ff;
+        --nav: #0f172a;
+        --nav-active: #1e293b;
+        --nav-text: #cbd5e1;
+        --shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(245, 247, 250, 0.96)),
+          linear-gradient(135deg, #f5f8ff 0%, #f3faf6 54%, #fbf7ef 100%);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+        font-size: 13px;
+        letter-spacing: 0;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      .app {
+        display: flex;
+        min-height: 100vh;
+      }
+
+      .sidebar {
+        width: 232px;
+        flex: 0 0 232px;
+        background: var(--nav);
+        color: var(--nav-text);
+        display: flex;
+        flex-direction: column;
+      }
+
+      .brand {
+        height: 64px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 20px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .brand-mark {
+        width: 26px;
+        height: 26px;
+        display: grid;
+        place-items: center;
+        border-radius: 7px;
+        background: #2563eb;
+        color: #fff;
+        font-weight: 800;
+      }
+
+      .brand-name {
+        color: #fff;
+        font-weight: 650;
+        white-space: nowrap;
+      }
+
+      .nav {
+        padding: 14px 10px;
+        display: grid;
+        gap: 4px;
+      }
+
+      .nav button {
+        width: 100%;
+        height: 36px;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--nav-text);
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        padding: 0 12px;
+        text-align: left;
+        cursor: default;
+      }
+
+      .nav button.active {
+        background: var(--nav-active);
+        color: #fff;
+      }
+
+      .nav-icon {
+        width: 17px;
+        text-align: center;
+        opacity: 0.95;
+      }
+
+      .sidebar-card {
+        margin: auto 12px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 8px;
+        padding: 12px;
+        color: #94a3b8;
+        font-size: 11px;
+        line-height: 1.7;
+      }
+
+      .sidebar-card h4 {
+        margin: 0 0 8px;
+        color: #64748b;
+        font-size: 10px;
+        text-transform: uppercase;
+      }
+
+      .sidebar-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .mono {
+        font-family:
+          "JetBrains Mono", "SFMono-Regular", Consolas, ui-monospace, monospace;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .shell {
+        min-width: 0;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .topbar {
+        height: 56px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 22px;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .icon-btn {
+        width: 32px;
+        height: 32px;
+        border: 1px solid transparent;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted);
+        display: grid;
+        place-items: center;
+      }
+
+      .page-title {
+        font-size: 14px;
+        font-weight: 650;
+      }
+
+      .command {
+        margin-left: auto;
+        width: min(360px, 34vw);
+        height: 34px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 11px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface-muted);
+        color: var(--muted);
+      }
+
+      .command input {
+        flex: 1;
+        min-width: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--text);
+      }
+
+      .primary {
+        height: 34px;
+        border: 0;
+        border-radius: 7px;
+        padding: 0 12px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        background: var(--blue);
+        color: #fff;
+        font-weight: 600;
+      }
+
+      .ghost,
+      .default {
+        height: 32px;
+        border-radius: 7px;
+        padding: 0 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: var(--surface);
+        color: var(--text);
+      }
+
+      .default {
+        border: 1px solid var(--border);
+      }
+
+      .ghost {
+        border: 1px solid transparent;
+        color: var(--muted);
+      }
+
+      .avatar {
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        background: var(--blue);
+        color: #fff;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      main {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        gap: 18px;
+        padding: 20px 24px 26px;
+      }
+
+      .content {
+        min-width: 0;
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        margin-bottom: 16px;
+        padding: 16px;
+        border: 1px solid rgba(37, 99, 235, 0.16);
+        border-left: 4px solid var(--blue);
+        border-radius: 8px;
+        background:
+          linear-gradient(120deg, rgba(239, 246, 255, 0.95), rgba(255, 255, 255, 0.82) 58%),
+          var(--surface);
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+      }
+
+      .header h1 {
+        margin: 0 0 6px;
+        font-size: 22px;
+        line-height: 1.2;
+        font-weight: 720;
+      }
+
+      .header p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .health-strip {
+        margin-left: auto;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(112px, 1fr));
+        gap: 10px;
+      }
+
+      .health {
+        border: 1px solid var(--border);
+        background: var(--surface);
+        border-radius: 8px;
+        padding: 10px 12px;
+        position: relative;
+        overflow: hidden;
+        box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+      }
+
+      .health::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 4px;
+        background: var(--blue);
+      }
+
+      .health.running {
+        background: var(--green-panel);
+        border-color: rgba(21, 128, 61, 0.18);
+      }
+
+      .health.running::before {
+        background: var(--green);
+      }
+
+      .health.danger {
+        background: var(--red-panel);
+        border-color: rgba(185, 28, 28, 0.2);
+      }
+
+      .health.danger::before {
+        background: var(--red);
+      }
+
+      .health.nodes {
+        background: var(--blue-panel);
+        border-color: rgba(37, 99, 235, 0.18);
+      }
+
+      .health.cpu {
+        background: var(--purple-soft);
+        border-color: rgba(109, 91, 208, 0.18);
+      }
+
+      .health.cpu::before {
+        background: var(--purple);
+      }
+
+      .health label {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        margin-bottom: 5px;
+      }
+
+      .health strong {
+        font-size: 18px;
+        letter-spacing: 0;
+      }
+
+      .panel {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+        overflow: hidden;
+        box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+      }
+
+      .data-panel {
+        border-color: rgba(37, 99, 235, 0.18);
+      }
+
+      .panel + .panel {
+        margin-top: 14px;
+      }
+
+      .module-heading {
+        padding: 13px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid var(--border);
+        background:
+          linear-gradient(90deg, rgba(239, 246, 255, 0.95), rgba(255, 255, 255, 0.78)),
+          var(--surface);
+      }
+
+      .module-heading h2 {
+        margin: 0;
+        font-size: 14px;
+      }
+
+      .module-heading p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .module-note {
+        height: 24px;
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 0 9px;
+        background: #fff;
+        color: var(--muted);
+        border: 1px solid rgba(37, 99, 235, 0.16);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .section-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 22px;
+        margin-bottom: 6px;
+        border-radius: 999px;
+        padding: 0 8px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0;
+      }
+
+      .section-chip.blue {
+        background: var(--blue-soft);
+        color: var(--blue);
+      }
+
+      .section-chip.green {
+        background: var(--green-soft);
+        color: var(--green);
+      }
+
+      .section-chip.orange {
+        background: var(--orange-soft);
+        color: var(--orange);
+      }
+
+      .section-chip.red {
+        background: var(--red-soft);
+        color: var(--red);
+      }
+
+      .toolbar {
+        padding: 14px;
+        display: grid;
+        grid-template-columns: minmax(260px, 1fr) repeat(4, minmax(120px, 150px)) auto;
+        gap: 10px;
+        border-bottom: 1px solid var(--border);
+        background: var(--blue-panel);
+      }
+
+      .search,
+      .select-wrap {
+        height: 34px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--surface-muted);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 10px;
+      }
+
+      .search input,
+      .select-wrap select {
+        width: 100%;
+        min-width: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--text);
+      }
+
+      .tabs {
+        display: flex;
+        gap: 6px;
+        padding: 10px 14px 0;
+        background: #fff;
+      }
+
+      .tab {
+        height: 30px;
+        border: 1px solid var(--border);
+        border-bottom: 0;
+        border-radius: 7px 7px 0 0;
+        background: var(--surface-muted);
+        color: var(--muted);
+        padding: 0 12px;
+      }
+
+      .tab.active {
+        border-color: rgba(37, 99, 235, 0.24);
+        background: var(--blue-soft);
+        color: var(--blue);
+        font-weight: 650;
+        box-shadow: 0 1px 0 var(--blue-soft);
+      }
+
+      .table-wrap {
+        overflow: auto;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 1180px;
+      }
+
+      thead tr {
+        background: #f3f7fb;
+        border-top: 1px solid var(--border);
+        border-bottom: 1px solid var(--border);
+      }
+
+      th {
+        height: 36px;
+        padding: 0 12px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 650;
+        text-align: left;
+      }
+
+      td {
+        height: 58px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: middle;
+      }
+
+      tbody tr.selected {
+        background: #f4f8ff;
+        box-shadow: inset 3px 0 0 var(--blue);
+      }
+
+      .instance-name {
+        display: grid;
+        gap: 3px;
+      }
+
+      .instance-name strong {
+        font-size: 13px;
+      }
+
+      .instance-name span {
+        max-width: 210px;
+        color: var(--muted);
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .node-cell {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: var(--subtle);
+      }
+
+      .dot.green {
+        background: var(--green);
+      }
+
+      .dot.orange {
+        background: var(--orange);
+      }
+
+      .dot.red {
+        background: var(--red);
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 23px;
+        border-radius: 999px;
+        padding: 0 8px;
+        font-size: 11px;
+        font-weight: 650;
+        white-space: nowrap;
+      }
+
+      .badge.green {
+        background: var(--green-soft);
+        color: var(--green);
+        box-shadow: inset 0 0 0 1px rgba(21, 128, 61, 0.16);
+      }
+
+      .badge.orange {
+        background: var(--orange-soft);
+        color: var(--orange);
+        box-shadow: inset 0 0 0 1px rgba(180, 83, 9, 0.18);
+      }
+
+      .badge.red {
+        background: var(--red-soft);
+        color: var(--red);
+        box-shadow: inset 0 0 0 1px rgba(185, 28, 28, 0.16);
+      }
+
+      .badge.gray {
+        background: var(--surface-muted);
+        color: var(--muted);
+        box-shadow: inset 0 0 0 1px var(--border);
+      }
+
+      .switch {
+        position: relative;
+        width: 36px;
+        height: 20px;
+        border-radius: 999px;
+        background: var(--blue);
+        display: inline-block;
+      }
+
+      .switch::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        background: #fff;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.18);
+      }
+
+      .switch.off {
+        background: var(--border-strong);
+      }
+
+      .switch.off::after {
+        right: 18px;
+      }
+
+      .ports {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+      }
+
+      .chip {
+        height: 22px;
+        display: inline-flex;
+        align-items: center;
+        border-radius: 6px;
+        padding: 0 7px;
+        border: 1px solid var(--border);
+        background: var(--surface-muted);
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 5px;
+      }
+
+      .action-btn {
+        width: 29px;
+        height: 29px;
+        border: 1px solid transparent;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted);
+        display: grid;
+        place-items: center;
+      }
+
+      .action-btn.primary-action {
+        color: var(--blue);
+        background: var(--blue-soft);
+      }
+
+      .action-btn.danger {
+        color: var(--red);
+      }
+
+      .drawer {
+        position: sticky;
+        top: 76px;
+        height: calc(100vh - 96px);
+        align-self: start;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .drawer-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+        box-shadow: 0 1px 0 rgba(15, 23, 42, 0.02);
+      }
+
+      .detail-panel {
+        border-color: rgba(21, 128, 61, 0.18);
+      }
+
+      .drawer-head {
+        padding: 15px;
+        border-bottom: 1px solid var(--border);
+        background:
+          linear-gradient(90deg, rgba(236, 253, 245, 0.9), rgba(255, 255, 255, 0.78)),
+          var(--surface);
+      }
+
+      .drawer-title {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+
+      .drawer-title h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+
+      .drawer-title p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .drawer-body {
+        padding: 15px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .mini-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+      }
+
+      .mini-stat {
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--surface-muted);
+        padding: 10px;
+      }
+
+      .mini-stat:nth-child(1) {
+        background: var(--blue-panel);
+        border-color: rgba(37, 99, 235, 0.16);
+      }
+
+      .mini-stat:nth-child(2) {
+        background: var(--purple-soft);
+        border-color: rgba(109, 91, 208, 0.14);
+      }
+
+      .mini-stat:nth-child(3) {
+        background: var(--orange-panel);
+        border-color: rgba(180, 83, 9, 0.16);
+      }
+
+      .mini-stat:nth-child(4) {
+        background: var(--green-panel);
+        border-color: rgba(21, 128, 61, 0.16);
+      }
+
+      .mini-stat label {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        margin-bottom: 5px;
+      }
+
+      .mini-stat strong {
+        font-size: 14px;
+      }
+
+      .section-title {
+        margin: 0 0 8px;
+        font-size: 12px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .section-title::before {
+        content: "";
+        width: 3px;
+        height: 13px;
+        border-radius: 999px;
+        background: var(--blue);
+      }
+
+      .kv {
+        display: grid;
+        gap: 7px;
+      }
+
+      .kv-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .kv-row strong {
+        color: var(--text);
+        font-weight: 600;
+        text-align: right;
+        word-break: break-all;
+      }
+
+      .terminal {
+        margin: 0;
+        height: 168px;
+        overflow: hidden;
+        border-radius: 8px;
+        background: #0b1220;
+        color: #cbd5e1;
+        padding: 11px;
+        font-size: 11px;
+        line-height: 1.6;
+      }
+
+      .warning-box {
+        border: 1px solid rgba(180, 83, 9, 0.24);
+        background: var(--orange-soft);
+        color: var(--orange);
+        border-radius: 8px;
+        padding: 10px;
+        line-height: 1.5;
+      }
+
+      .danger-zone {
+        border: 1px solid rgba(185, 28, 28, 0.22);
+        border-radius: 8px;
+        background: var(--red-soft);
+        padding: 12px;
+        border-left: 4px solid var(--red);
+      }
+
+      .danger-zone h3 {
+        margin: 0 0 6px;
+        color: var(--red);
+        font-size: 12px;
+      }
+
+      .danger-zone p {
+        margin: 0 0 10px;
+        color: #7f1d1d;
+        font-size: 11px;
+        line-height: 1.5;
+      }
+
+      .danger-btn {
+        height: 30px;
+        border: 1px solid rgba(185, 28, 28, 0.35);
+        border-radius: 7px;
+        background: #fff;
+        color: var(--red);
+        padding: 0 10px;
+        font-weight: 650;
+      }
+
+      @media (max-width: 1180px) {
+        .sidebar {
+          width: 70px;
+          flex-basis: 70px;
+        }
+
+        .brand-name,
+        .nav-label,
+        .sidebar-card {
+          display: none;
+        }
+
+        .brand {
+          justify-content: center;
+          padding: 0;
+        }
+
+        .nav button {
+          justify-content: center;
+          padding: 0;
+        }
+
+        main {
+          grid-template-columns: 1fr;
+        }
+
+        .drawer {
+          position: static;
+          height: auto;
+        }
+
+        .health-strip {
+          grid-template-columns: repeat(2, minmax(120px, 1fr));
+        }
+      }
+
+      @media (max-width: 820px) {
+        .topbar {
+          padding: 0 12px;
+        }
+
+        .command {
+          display: none;
+        }
+
+        main {
+          padding: 14px;
+        }
+
+        .header {
+          display: block;
+        }
+
+        .health-strip {
+          margin: 14px 0 0;
+        }
+
+        .toolbar {
+          grid-template-columns: 1fr;
+        }
+
+        .tabs {
+          overflow-x: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">F</div>
+          <div class="brand-name">frpc 多实例管理</div>
+        </div>
+        <nav class="nav" aria-label="主导航">
+          <button><span class="nav-icon">⌂</span><span class="nav-label">仪表盘</span></button>
+          <button class="active"><span class="nav-icon">▦</span><span class="nav-label">实例</span></button>
+          <button><span class="nav-icon">◎</span><span class="nav-label">节点</span></button>
+          <button><span class="nav-icon">☷</span><span class="nav-label">审计</span></button>
+          <button><span class="nav-icon">⚙</span><span class="nav-label">系统</span></button>
+        </nav>
+        <div class="sidebar-card">
+          <h4>系统信息</h4>
+          <div class="sidebar-row"><span>面板</span><strong class="mono">0.2.0</strong></div>
+          <div class="sidebar-row"><span>在线节点</span><strong class="mono">3/4</strong></div>
+          <div class="sidebar-row"><span>角色</span><strong class="mono">console</strong></div>
+          <div class="sidebar-row"><span>端口</span><strong class="mono">8081</strong></div>
+        </div>
+      </aside>
+
+      <div class="shell">
+        <header class="topbar">
+          <button class="icon-btn" aria-label="收起侧边栏">☰</button>
+          <div class="page-title">实例工作台</div>
+          <div class="command">
+            <span>⌕</span>
+            <input value="" placeholder="搜索实例、节点、远端端口" />
+            <span class="mono">⌘K</span>
+          </div>
+          <button class="primary">＋ 创建实例</button>
+          <button class="ghost">刷新</button>
+          <div class="avatar">A</div>
+        </header>
+
+        <main>
+          <section class="content">
+            <div class="header">
+              <div>
+                <span class="section-chip blue">全局概览</span>
+                <h1>实例工作台</h1>
+                <p>跨节点管理 frpc 实例，快速查看状态、日志、配置和运行操作。</p>
+              </div>
+              <div class="health-strip">
+                <div class="health running">
+                  <label>运行中</label>
+                  <strong class="mono">12 / 15</strong>
+                </div>
+                <div class="health danger">
+                  <label>异常</label>
+                  <strong class="mono" style="color: var(--red)">2</strong>
+                </div>
+                <div class="health nodes">
+                  <label>在线节点</label>
+                  <strong class="mono">3 / 4</strong>
+                </div>
+                <div class="health cpu">
+                  <label>平均 CPU</label>
+                  <strong class="mono">18.6%</strong>
+                </div>
+              </div>
+            </div>
+
+            <section class="panel data-panel">
+              <div class="module-heading">
+                <div>
+                  <span class="section-chip blue">实例列表</span>
+                  <h2>跨节点实例</h2>
+                  <p>筛选、定位和执行实例操作。异常和离线状态会在列表中突出显示。</p>
+                </div>
+                <span class="module-note">当前筛选：nas · 5 条匹配</span>
+              </div>
+              <div class="toolbar">
+                <div class="search">
+                  <span>⌕</span>
+                  <input value="nas" aria-label="搜索实例" />
+                </div>
+                <div class="select-wrap">
+                  <select aria-label="节点">
+                    <option>全部节点</option>
+                    <option>vps-hk-01</option>
+                    <option>home-nas</option>
+                  </select>
+                </div>
+                <div class="select-wrap">
+                  <select aria-label="状态">
+                    <option>全部状态</option>
+                    <option>运行中</option>
+                    <option>异常</option>
+                    <option>已停止</option>
+                  </select>
+                </div>
+                <div class="select-wrap">
+                  <select aria-label="启用">
+                    <option>启用状态</option>
+                    <option>已启用</option>
+                    <option>已停用</option>
+                  </select>
+                </div>
+                <div class="select-wrap">
+                  <select aria-label="代理类型">
+                    <option>代理类型</option>
+                    <option>tcp</option>
+                    <option>http</option>
+                    <option>udp</option>
+                  </select>
+                </div>
+                <button class="default">清除筛选</button>
+              </div>
+
+              <div class="tabs">
+                <button class="tab active">全部 15</button>
+                <button class="tab">运行中 12</button>
+                <button class="tab">异常 2</button>
+                <button class="tab">已停止 1</button>
+                <button class="tab">已停用 1</button>
+              </div>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>实例</th>
+                      <th>节点</th>
+                      <th>状态</th>
+                      <th>启用</th>
+                      <th>frps</th>
+                      <th>代理</th>
+                      <th>远端端口</th>
+                      <th>CPU</th>
+                      <th>内存</th>
+                      <th>重启</th>
+                      <th style="text-align: right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="selected">
+                      <td>
+                        <div class="instance-name">
+                          <strong>家里 NAS</strong>
+                          <span class="mono">client-001 · SSH + 下载服务</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div class="node-cell"><span class="dot green"></span>home-nas</div>
+                      </td>
+                      <td><span class="badge green"><span class="dot green"></span>运行中</span></td>
+                      <td><span class="switch" aria-label="已启用"></span></td>
+                      <td class="mono">frps.example.com:7000</td>
+                      <td><span class="chip">tcp · 2</span> <span class="chip">http · 1</span></td>
+                      <td>
+                        <div class="ports mono"><span class="chip">6001</span><span class="chip">6002</span><span class="chip">nas</span></div>
+                      </td>
+                      <td class="mono">4.8%</td>
+                      <td class="mono">46MiB</td>
+                      <td class="mono">0</td>
+                      <td>
+                        <div class="actions">
+                          <button class="action-btn" title="停止">■</button>
+                          <button class="action-btn" title="重启">↻</button>
+                          <button class="action-btn primary-action" title="日志">▤</button>
+                          <button class="action-btn" title="配置">⌘</button>
+                          <button class="action-btn" title="更多">⋯</button>
+                        </div>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td>
+                        <div class="instance-name">
+                          <strong>办公 SSH</strong>
+                          <span class="mono">office-ssh · 公司内网跳板</span>
+                        </div>
+                      </td>
+                      <td><div class="node-cell"><span class="dot green"></span>vps-hk-01</div></td>
+                      <td><span class="badge green"><span class="dot green"></span>运行中</span></td>
+                      <td><span class="switch"></span></td>
+                      <td class="mono">hk-frps.example.net:7000</td>
+                      <td><span class="chip">tcp · 1</span></td>
+                      <td><div class="ports mono"><span class="chip">6222</span></div></td>
+                      <td class="mono">1.2%</td>
+                      <td class="mono">31MiB</td>
+                      <td class="mono">0</td>
+                      <td>
+                        <div class="actions">
+                          <button class="action-btn" title="停止">■</button>
+                          <button class="action-btn" title="重启">↻</button>
+                          <button class="action-btn" title="日志">▤</button>
+                          <button class="action-btn" title="配置">⌘</button>
+                          <button class="action-btn" title="更多">⋯</button>
+                        </div>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td>
+                        <div class="instance-name">
+                          <strong>相册服务</strong>
+                          <span class="mono">photo-web · https 自定义域名</span>
+                        </div>
+                      </td>
+                      <td><div class="node-cell"><span class="dot green"></span>home-nas</div></td>
+                      <td><span class="badge orange"><span class="dot orange"></span>重启中</span></td>
+                      <td><span class="switch"></span></td>
+                      <td class="mono">frps.example.com:7000</td>
+                      <td><span class="chip">https · 1</span></td>
+                      <td><div class="ports mono"><span class="chip">photos.example.com</span></div></td>
+                      <td class="mono">—</td>
+                      <td class="mono">—</td>
+                      <td class="mono">3</td>
+                      <td>
+                        <div class="actions">
+                          <button class="action-btn primary-action" title="启动">▶</button>
+                          <button class="action-btn" title="重启">↻</button>
+                          <button class="action-btn" title="日志">▤</button>
+                          <button class="action-btn" title="配置">⌘</button>
+                          <button class="action-btn" title="更多">⋯</button>
+                        </div>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td>
+                        <div class="instance-name">
+                          <strong>数据库隧道</strong>
+                          <span class="mono">db-tunnel · 临时排查使用</span>
+                        </div>
+                      </td>
+                      <td><div class="node-cell"><span class="dot red"></span>office-lan</div></td>
+                      <td><span class="badge red"><span class="dot red"></span>节点离线</span></td>
+                      <td><span class="switch"></span></td>
+                      <td class="mono">frps.example.com:7000</td>
+                      <td><span class="chip">tcp · 1</span></td>
+                      <td><div class="ports mono"><span class="chip">6543</span></div></td>
+                      <td class="mono">—</td>
+                      <td class="mono">—</td>
+                      <td class="mono">—</td>
+                      <td>
+                        <div class="actions">
+                          <button class="action-btn" title="日志">▤</button>
+                          <button class="action-btn" title="配置">⌘</button>
+                          <button class="action-btn danger" title="删除">⌫</button>
+                          <button class="action-btn" title="更多">⋯</button>
+                        </div>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td>
+                        <div class="instance-name">
+                          <strong>备用 UDP</strong>
+                          <span class="mono">backup-udp · 保留配置未启用</span>
+                        </div>
+                      </td>
+                      <td><div class="node-cell"><span class="dot green"></span>vps-sg-02</div></td>
+                      <td><span class="badge gray"><span class="dot"></span>已停用</span></td>
+                      <td><span class="switch off"></span></td>
+                      <td class="mono">sg-frps.example.net:7000</td>
+                      <td><span class="chip">udp · 1</span></td>
+                      <td><div class="ports mono"><span class="chip">7001</span></div></td>
+                      <td class="mono">—</td>
+                      <td class="mono">—</td>
+                      <td class="mono">0</td>
+                      <td>
+                        <div class="actions">
+                          <button class="action-btn primary-action" title="启动">▶</button>
+                          <button class="action-btn" title="配置">⌘</button>
+                          <button class="action-btn" title="更多">⋯</button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <aside class="drawer" aria-label="快速详情">
+            <section class="drawer-card detail-panel">
+              <div class="drawer-head">
+                <div class="drawer-title">
+                  <div>
+                    <span class="section-chip green">快速详情</span>
+                    <h2>家里 NAS</h2>
+                    <p class="mono">home-nas / client-001</p>
+                  </div>
+                  <span class="badge green"><span class="dot green"></span>运行中</span>
+                </div>
+                <p style="margin: 0; color: var(--muted); font-size: 12px">SSH、文件下载和 NAS Web 面板穿透。</p>
+              </div>
+              <div class="drawer-body">
+                <div class="mini-grid">
+                  <div class="mini-stat"><label>CPU</label><strong class="mono">4.8%</strong></div>
+                  <div class="mini-stat"><label>内存</label><strong class="mono">46MiB</strong></div>
+                  <div class="mini-stat"><label>重启</label><strong class="mono">0</strong></div>
+                  <div class="mini-stat"><label>代理</label><strong class="mono">3</strong></div>
+                </div>
+
+                <div>
+                  <h3 class="section-title">配置摘要</h3>
+                  <div class="kv">
+                    <div class="kv-row"><span>服务端</span><strong class="mono">frps.example.com:7000</strong></div>
+                    <div class="kv-row"><span>认证方式</span><strong>token</strong></div>
+                    <div class="kv-row"><span>配置路径</span><strong class="mono">instances/client-001/frpc.toml</strong></div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 class="section-title">远端端口</h3>
+                  <div class="ports mono">
+                    <span class="chip">tcp :6001 → 127.0.0.1:22</span>
+                    <span class="chip">tcp :6002 → 127.0.0.1:8080</span>
+                    <span class="chip">http nas.example.com</span>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 class="section-title">最近日志</h3>
+                  <pre class="terminal">2026-05-31 14:08:12 [I] login to server success
+2026-05-31 14:08:12 [I] proxy added: ssh-nas
+2026-05-31 14:08:12 [I] proxy added: web-nas
+2026-05-31 14:10:43 [I] tcp proxy listen port: 6001
+2026-05-31 14:16:02 [I] health check passed</pre>
+                </div>
+
+                <div class="warning-box">
+                  结构化编辑只覆盖常用代理字段。若该实例使用高级 frpc 字段，请在 TOML 模式中确认后再保存。
+                </div>
+
+                <div style="display: flex; gap: 8px">
+                  <button class="primary" style="flex: 1">打开详情</button>
+                  <button class="default" style="flex: 1">编辑配置</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="danger-zone">
+              <h3>危险操作预览</h3>
+              <p>删除实例会停止容器并删除该实例目录。正式交互应使用确认弹窗，并要求输入实例名。</p>
+              <button class="danger-btn">删除 client-001</button>
+            </section>
+          </aside>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

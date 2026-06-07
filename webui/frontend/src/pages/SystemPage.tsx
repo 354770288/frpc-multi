@@ -1,12 +1,26 @@
 import React, { useEffect, useState } from 'react';
-import { Key, ShieldCheck } from 'lucide-react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  HardDrive,
+  Key,
+  MonitorCog,
+  RefreshCw,
+  Server,
+  ShieldCheck,
+  WifiOff,
+  XCircle
+} from 'lucide-react';
 import { api, nodesApi } from '../lib/api';
-import { bytesToHuman } from '../lib/format';
+import { bytesToHuman, shortNodeUuid } from '../lib/format';
+import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Field } from '../components/ui/Field';
 import { Input } from '../components/ui/Input';
 import { Panel } from '../components/ui/Panel';
 import type { AuthMe, AuthState, ConsoleInfo, Node, SystemInfo, ToastKind } from '../lib/types';
+
+type SystemTab = 'console' | 'nodes' | 'security';
 
 function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return '已过期';
@@ -50,6 +64,8 @@ export function SystemPage({
   const [submitting, setSubmitting] = useState(false);
   const [tokenTtlSeconds, setTokenTtlSeconds] = useState<number | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const [tab, setTab] = useState<SystemTab>('console');
+  const [nodeSystemRefreshKey, setNodeSystemRefreshKey] = useState(0);
 
   useEffect(() => {
     if (system?.username) {
@@ -120,15 +136,44 @@ export function SystemPage({
     auth.expiresAt > 0
       ? `${formatTimestamp(auth.expiresAt)}（剩余 ${formatDuration(remainingSeconds)}）`
       : undefined;
+  const onlineCount = nodes.filter((node) => node.online || node.status === 'online').length;
+  const offlineCount = nodes.length - onlineCount;
 
   return (
     <main className="px-6 py-6 max-w-[1600px]">
-      <h2 className="mb-6 text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
-        系统设置
-      </h2>
+      <div className="mb-5 flex flex-wrap items-center gap-3">
+        <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
+          系统设置
+        </h2>
+        <Badge tone="muted">{system?.role || 'console'}</Badge>
+        <Badge tone={offlineCount > 0 ? 'warning' : 'success'}>
+          {onlineCount} / {nodes.length} 节点在线
+        </Badge>
+        {tab === 'nodes' && (
+          <Button
+            className="ml-auto"
+            onClick={() => setNodeSystemRefreshKey((value) => value + 1)}
+          >
+            <RefreshCw size={13} />
+            刷新节点系统
+          </Button>
+        )}
+      </div>
 
-      <section className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-4">
-        <Panel title="主控系统信息">
+      <div className="mb-4 flex gap-1.5 overflow-x-auto border-b border-[var(--color-border)]">
+        <TabButton active={tab === 'console'} onClick={() => setTab('console')} icon={<MonitorCog size={13} />}>
+          Console 信息
+        </TabButton>
+        <TabButton active={tab === 'nodes'} onClick={() => setTab('nodes')} icon={<Server size={13} />}>
+          节点系统
+        </TabButton>
+        <TabButton active={tab === 'security'} onClick={() => setTab('security')} icon={<Key size={13} />}>
+          账号安全
+        </TabButton>
+      </div>
+
+      {tab === 'console' && (
+        <Panel title="Console 信息">
           <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-[12px]">
             <InfoItem label="面板版本" value={system?.version} mono />
             <InfoItem label="角色" value={system?.role} mono />
@@ -144,8 +189,41 @@ export function SystemPage({
             <InfoItem label="本次会话到期" value={sessionExpiresText} />
           </dl>
         </Panel>
+      )}
 
-        <aside>
+      {tab === 'nodes' && (
+        <section className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <Metric label="节点总数" value={nodes.length} />
+            <Metric label="在线节点" value={onlineCount} tone="success" />
+            <Metric label="离线/待连接" value={offlineCount} tone={offlineCount ? 'warning' : 'muted'} />
+          </div>
+          {nodes.length > 0 ? (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {nodes.map((node) => (
+                <NodeSystemCard key={node.id} node={node} refreshKey={nodeSystemRefreshKey} />
+              ))}
+            </div>
+          ) : (
+            <Panel title="节点系统">
+              <div className="flex items-start gap-2 rounded-md border border-dashed border-[var(--color-border-strong)] bg-[var(--color-surface-muted)] p-4 text-[12px] text-[var(--color-fg-muted)]">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <span>还没有节点。添加 Agent 节点后，这里会展示每个节点的 Docker、frpc、磁盘和项目目录信息。</span>
+              </div>
+            </Panel>
+          )}
+        </section>
+      )}
+
+      {tab === 'security' && (
+        <section className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_420px] gap-4">
+          <Panel title="登录态">
+            <dl className="grid grid-cols-1 gap-y-4 text-[12px]">
+              <InfoItem label="当前登录" value={auth.username || system?.username} />
+              <InfoItem label="登录有效期" value={tokenTtlText} />
+              <InfoItem label="本次会话到期" value={sessionExpiresText} />
+            </dl>
+          </Panel>
           <Panel
             title={
               <span className="inline-flex items-center gap-1.5">
@@ -206,29 +284,17 @@ export function SystemPage({
               </p>
             </form>
           </Panel>
-        </aside>
-      </section>
-
-      {nodes.length > 0 && (
-        <section className="mt-4">
-          <h3 className="mb-3 text-[14px] font-semibold tracking-tight text-[var(--color-fg)]">
-            节点系统信息
-          </h3>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {nodes.map((node) => (
-              <NodeSystemCard key={node.id} node={node} />
-            ))}
-          </div>
         </section>
       )}
     </main>
   );
 }
 
-function NodeSystemCard({ node }: { node: Node }) {
+function NodeSystemCard({ node, refreshKey }: { node: Node; refreshKey: number }) {
   const [info, setInfo] = useState<SystemInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const online = node.online || node.status === 'online';
 
   useEffect(() => {
     let cancelled = false;
@@ -248,7 +314,7 @@ function NodeSystemCard({ node }: { node: Node }) {
     return () => {
       cancelled = true;
     };
-  }, [node.id]);
+  }, [node.id, refreshKey]);
 
   const diskRatio = info && info.disk.total > 0 ? (info.disk.used / info.disk.total) * 100 : 0;
 
@@ -258,34 +324,117 @@ function NodeSystemCard({ node }: { node: Node }) {
         <span className="inline-flex items-center gap-2">
           {node.name}
           <span className="font-mono text-[11px] font-normal text-[var(--color-fg-muted)]">
-            {node.uuid.slice(0, 12)}…
+            {shortNodeUuid(node.uuid)}
           </span>
+          {online ? (
+            <Badge tone="success">
+              <CheckCircle2 size={12} />
+              在线
+            </Badge>
+          ) : (
+            <Badge tone="danger">
+              <WifiOff size={12} />
+              离线
+            </Badge>
+          )}
         </span>
       }
     >
       {loading ? (
-        <p className="text-[12px] text-[var(--color-fg-muted)]">加载中…</p>
+        <p className="text-[12px] text-[var(--color-fg-muted)]">加载中...</p>
       ) : error ? (
-        <p className="text-[12px] text-[var(--color-danger)]">节点不可达：{error}</p>
+        <div className="flex items-start gap-2 rounded-md border border-[var(--color-danger)]/25 bg-[var(--color-danger-soft)] p-3 text-[12px] leading-5 text-[var(--color-danger)]">
+          <XCircle size={14} className="mt-0.5 shrink-0" />
+          <span>节点系统信息不可达：{error}</span>
+        </div>
       ) : info ? (
-        <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-[12px]">
-          <InfoItem label="Docker 版本" value={info.dockerVersion || '未连接'} mono />
-          <InfoItem label="frpc 镜像" value={info.frpImage} mono />
-          <InfoItem label="frpc 版本" value={info.frpVersion} mono />
-          <InfoItem label="项目目录" value={info.projectDir} mono />
-          <InfoItem
-            label="磁盘占用"
-            value={
-              info.disk && info.disk.total > 0
-                ? `${diskRatio.toFixed(1)}%（${bytesToHuman(info.disk.used)} / ${bytesToHuman(info.disk.total)}）`
-                : undefined
-            }
-          />
-        </dl>
+        <div className="flex flex-col gap-4">
+          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-[12px]">
+            <InfoItem label="Docker 版本" value={info.dockerVersion || '未连接'} mono />
+            <InfoItem label="frpc 镜像" value={info.frpImage} mono />
+            <InfoItem label="frpc 版本" value={info.frpVersion} mono />
+            <InfoItem label="项目目录" value={info.projectDir} mono />
+          </dl>
+          <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-muted)] p-3">
+            <div className="mb-2 flex items-center gap-2 text-[12px] font-medium text-[var(--color-fg)]">
+              <HardDrive size={13} />
+              磁盘占用
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-white">
+              <div
+                className={`h-full rounded-full ${
+                  diskRatio >= 90
+                    ? 'bg-[var(--color-danger)]'
+                    : diskRatio >= 75
+                      ? 'bg-[var(--color-warning)]'
+                      : 'bg-[var(--color-success)]'
+                }`}
+                style={{ width: `${Math.min(100, diskRatio).toFixed(1)}%` }}
+              />
+            </div>
+            <div className="mt-2 text-[11px] text-[var(--color-fg-muted)]">
+              {info.disk && info.disk.total > 0
+                ? `${diskRatio.toFixed(1)}% (${bytesToHuman(info.disk.used)} / ${bytesToHuman(info.disk.total)})`
+                : '磁盘信息不可用'}
+            </div>
+          </div>
+        </div>
       ) : (
-        <p className="text-[12px] text-[var(--color-fg-muted)]">—</p>
+        <p className="text-[12px] text-[var(--color-fg-muted)]">-</p>
       )}
     </Panel>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  tone = 'muted'
+}: {
+  label: string;
+  value: number;
+  tone?: 'success' | 'warning' | 'muted';
+}) {
+  const toneClass =
+    tone === 'success'
+      ? 'text-[var(--color-success)]'
+      : tone === 'warning'
+        ? 'text-[var(--color-warning)]'
+        : 'text-[var(--color-fg)]';
+  return (
+    <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+      <div className="text-[11px] text-[var(--color-fg-muted)]">{label}</div>
+      <div className={`mt-1 font-mono text-[22px] font-semibold tabular-nums ${toneClass}`}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  icon,
+  children
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex h-9 shrink-0 items-center gap-1.5 border-b-2 px-3 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] ${
+        active
+          ? 'border-[var(--color-accent)] text-[var(--color-fg)]'
+          : 'border-transparent text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]'
+      }`}
+    >
+      {icon}
+      {children}
+    </button>
   );
 }
 

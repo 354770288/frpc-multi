@@ -93,7 +93,14 @@ export type AuthMe = {
   tokenTtlSeconds: number;
 };
 
-export type Page = 'overview' | 'nodes' | 'audit' | 'detail' | 'config' | 'create' | 'system';
+export type Page =
+  | 'overview'
+  | 'nodes'
+  | 'audit'
+  | 'detail'
+  | 'config'
+  | 'create'
+  | 'system';
 
 export type AuthState = {
   token: string;
@@ -152,6 +159,14 @@ export type NodeSummary = {
   running: number;
   stopped: number;
   errorCount: number;
+};
+
+export type NodeInstanceHealth = {
+  total: number;
+  running: number;
+  stopped: number;
+  error: number;
+  disabled: number;
 };
 
 export type AuditLog = {

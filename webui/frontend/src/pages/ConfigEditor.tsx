@@ -29,6 +29,24 @@ export function ConfigEditor({
   instance: InstanceRef | null;
   toast: (kind: ToastKind, text: string) => void;
 }) {
+  return (
+    <main className="px-6 py-6 max-w-[1600px]">
+      <ConfigEditorPanel instance={instance} toast={toast} />
+    </main>
+  );
+}
+
+export function ConfigEditorPanel({
+  instance,
+  toast,
+  embedded = false,
+  onSaved
+}: {
+  instance: InstanceRef | null;
+  toast: (kind: ToastKind, text: string) => void;
+  embedded?: boolean;
+  onSaved?: () => void;
+}) {
   const [configText, setConfigText] = useState('');
   const [originalText, setOriginalText] = useState('');
   const [validation, setValidation] = useState<ValidationData | null>(null);
@@ -111,6 +129,7 @@ export function ConfigEditor({
       }
       setOriginalText(configText);
       toast('success', restartAfterSave ? '已保存并重启容器' : '已保存');
+      onSaved?.();
     } catch (err) {
       toast('error', err instanceof Error ? err.message : '保存失败');
     } finally {
@@ -133,9 +152,9 @@ export function ConfigEditor({
 
   if (!instance)
     return (
-      <main className="px-6 py-6">
-        <h2 className="text-[18px] font-semibold text-[var(--color-fg)]">请选择需要编辑的实例</h2>
-      </main>
+      <Panel title="配置">
+        <p className="text-[12px] text-[var(--color-fg-muted)]">请选择需要编辑的实例</p>
+      </Panel>
     );
 
   const errors = validation?.errors || [];
@@ -171,9 +190,9 @@ export function ConfigEditor({
   );
 
   return (
-    <main className="px-6 py-6 max-w-[1600px]">
+    <>
       <div className="mb-4 flex items-center gap-3 flex-wrap">
-        <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
+        <h2 className={`${embedded ? 'text-[15px]' : 'text-[18px]'} font-semibold tracking-tight text-[var(--color-fg)]`}>
           编辑配置
         </h2>
         <span className="text-[12px] text-[var(--color-fg-muted)] font-mono">
@@ -203,7 +222,7 @@ export function ConfigEditor({
               value={configText}
               onChange={(event) => setConfigText(event.target.value)}
               spellCheck={false}
-              className="min-h-[520px]"
+              className={embedded ? 'min-h-[420px]' : 'min-h-[520px]'}
             />
           </Panel>
         ) : (
@@ -263,7 +282,7 @@ export function ConfigEditor({
           )}
         </aside>
       </section>
-    </main>
+    </>
   );
 }
 

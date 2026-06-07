@@ -1,0 +1,1289 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>frpc-multi 节点优先工作台 V2</title>
+    <style>
+      :root {
+        --page: #eef3f8;
+        --white: #ffffff;
+        --ink: #101827;
+        --muted: #667085;
+        --soft: #98a2b3;
+        --line: #d9e2ec;
+        --nav: #111827;
+        --nav2: #1f2937;
+        --blue: #2563eb;
+        --blue-50: #eef6ff;
+        --blue-100: #dbeafe;
+        --violet: #6d5bd0;
+        --violet-50: #f4f2ff;
+        --green: #15803d;
+        --green-50: #ecfdf5;
+        --orange: #b45309;
+        --orange-50: #fff7ed;
+        --red: #b91c1c;
+        --red-50: #fef2f2;
+        --shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(238, 243, 248, 0.96)),
+          linear-gradient(135deg, #eef5ff 0%, #f2f9f5 54%, #fbf5ed 100%);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+        font-size: 13px;
+        letter-spacing: 0;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        cursor: default;
+      }
+
+      .mono {
+        font-family: "JetBrains Mono", SFMono-Regular, Consolas, ui-monospace, monospace;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .app {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 232px minmax(0, 1fr);
+      }
+
+      .sidebar {
+        background: var(--nav);
+        color: #cbd5e1;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .brand {
+        height: 64px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 20px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .brand-mark {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(135deg, var(--blue), #10b981);
+        color: #fff;
+        font-weight: 800;
+      }
+
+      .brand-name {
+        color: #fff;
+        font-weight: 700;
+      }
+
+      .nav {
+        padding: 14px 10px;
+        display: grid;
+        gap: 4px;
+      }
+
+      .nav button {
+        width: 100%;
+        height: 38px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: #cbd5e1;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        padding: 0 12px;
+        text-align: left;
+      }
+
+      .nav button.active {
+        background: var(--nav2);
+        color: #fff;
+      }
+
+      .nav-icon {
+        width: 17px;
+        text-align: center;
+      }
+
+      .sidebar-card {
+        margin: auto 12px 12px;
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        background: rgba(255, 255, 255, 0.03);
+        font-size: 11px;
+        color: #94a3b8;
+      }
+
+      .sidebar-card h4 {
+        margin: 0 0 8px;
+        color: #64748b;
+        font-size: 10px;
+        text-transform: uppercase;
+      }
+
+      .sidebar-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        line-height: 1.8;
+      }
+
+      .shell {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .topbar {
+        height: 56px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 22px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.92);
+        backdrop-filter: blur(14px);
+      }
+
+      .page-title {
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .top-search {
+        margin-left: auto;
+        width: min(390px, 34vw);
+        height: 34px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 11px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #f8fafc;
+        color: var(--muted);
+      }
+
+      .top-search input {
+        width: 100%;
+        min-width: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--ink);
+      }
+
+      .btn {
+        height: 34px;
+        border-radius: 8px;
+        padding: 0 12px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        border: 1px solid var(--line);
+        background: var(--white);
+        color: var(--ink);
+        font-weight: 650;
+        white-space: nowrap;
+      }
+
+      .btn.primary {
+        border-color: var(--blue);
+        background: var(--blue);
+        color: #fff;
+      }
+
+      .btn.danger {
+        border-color: rgba(185, 28, 28, 0.34);
+        color: var(--red);
+      }
+
+      .avatar {
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        background: var(--blue);
+        color: #fff;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      main {
+        min-width: 0;
+        padding: 20px 24px 26px;
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 520px;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      .flow-card {
+        border-radius: 8px;
+        border: 1px solid rgba(37, 99, 235, 0.2);
+        border-left: 5px solid var(--blue);
+        background:
+          linear-gradient(120deg, rgba(238, 246, 255, 0.98), rgba(255, 255, 255, 0.86) 58%),
+          var(--white);
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+        padding: 16px;
+      }
+
+      .flow-card h1 {
+        margin: 0 0 6px;
+        font-size: 22px;
+      }
+
+      .flow-card p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .step {
+        border-radius: 8px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .step strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .step span {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .step.node {
+        background: var(--violet-50);
+        border-color: rgba(109, 91, 208, 0.22);
+      }
+
+      .step.instance {
+        background: var(--blue-50);
+        border-color: rgba(37, 99, 235, 0.22);
+      }
+
+      .step.detail {
+        background: var(--green-50);
+        border-color: rgba(21, 128, 61, 0.22);
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .metric {
+        position: relative;
+        overflow: hidden;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: var(--white);
+        padding: 12px;
+      }
+
+      .metric::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 5px;
+        background: var(--blue);
+      }
+
+      .metric.green {
+        background: var(--green-50);
+      }
+
+      .metric.green::before {
+        background: var(--green);
+      }
+
+      .metric.orange {
+        background: var(--orange-50);
+      }
+
+      .metric.orange::before {
+        background: var(--orange);
+      }
+
+      .metric.red {
+        background: var(--red-50);
+      }
+
+      .metric.red::before {
+        background: var(--red);
+      }
+
+      .metric label {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        margin-bottom: 6px;
+      }
+
+      .metric strong {
+        font-size: 18px;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: 330px minmax(0, 1fr) 330px;
+        gap: 16px;
+        align-items: start;
+      }
+
+      .column {
+        min-width: 0;
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--white);
+        border: 1px solid var(--line);
+        box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+      }
+
+      .column.node {
+        border-color: rgba(109, 91, 208, 0.28);
+      }
+
+      .column.instance {
+        border-color: rgba(37, 99, 235, 0.24);
+      }
+
+      .column.detail {
+        border-color: rgba(21, 128, 61, 0.24);
+      }
+
+      .column.danger {
+        border-color: rgba(185, 28, 28, 0.24);
+      }
+
+      .column-head {
+        min-height: 70px;
+        padding: 13px 14px;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .column.node .column-head {
+        background: linear-gradient(90deg, var(--violet-50), #fff);
+      }
+
+      .column.instance .column-head {
+        background: linear-gradient(90deg, var(--blue-50), #fff);
+      }
+
+      .column.detail .column-head {
+        background: linear-gradient(90deg, var(--green-50), #fff);
+      }
+
+      .column.danger .column-head {
+        background: linear-gradient(90deg, var(--red-50), #fff);
+      }
+
+      .label {
+        display: inline-flex;
+        align-items: center;
+        height: 22px;
+        margin-bottom: 6px;
+        border-radius: 999px;
+        padding: 0 8px;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .label.node {
+        background: var(--violet-50);
+        color: var(--violet);
+      }
+
+      .label.instance {
+        background: var(--blue-50);
+        color: var(--blue);
+      }
+
+      .label.detail {
+        background: var(--green-50);
+        color: var(--green);
+      }
+
+      .label.danger {
+        background: var(--red-50);
+        color: var(--red);
+      }
+
+      .column-head h2 {
+        margin: 0;
+        font-size: 14px;
+      }
+
+      .column-head p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .pill {
+        height: 24px;
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 0 9px;
+        background: #fff;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .toolbar {
+        padding: 12px 14px;
+        display: grid;
+        gap: 10px;
+        border-bottom: 1px solid var(--line);
+        background: #f8fafc;
+      }
+
+      .instance .toolbar {
+        grid-template-columns: minmax(220px, 1fr) repeat(3, 140px);
+        background: var(--blue-50);
+      }
+
+      .field {
+        height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 10px;
+      }
+
+      .field input,
+      .field select {
+        width: 100%;
+        min-width: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--ink);
+      }
+
+      .node-list {
+        padding: 12px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .node-card {
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .node-card.active {
+        border-color: rgba(109, 91, 208, 0.38);
+        background: #fbfaff;
+        box-shadow: inset 4px 0 0 var(--violet);
+      }
+
+      .node-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .node-name strong {
+        display: block;
+        margin-bottom: 3px;
+      }
+
+      .node-name span {
+        display: block;
+        max-width: 190px;
+        color: var(--muted);
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .node-stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 7px;
+        margin-top: 10px;
+      }
+
+      .node-stat {
+        border-radius: 8px;
+        background: #f8fafc;
+        padding: 8px;
+      }
+
+      .node-stat label {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .node-stat strong {
+        font-size: 12px;
+      }
+
+      .node-actions {
+        display: flex;
+        gap: 7px;
+        margin-top: 10px;
+      }
+
+      .node-actions .btn {
+        height: 30px;
+        padding: 0 9px;
+        font-size: 11px;
+      }
+
+      .badge {
+        height: 23px;
+        border-radius: 999px;
+        padding: 0 8px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .badge.green {
+        background: var(--green-50);
+        color: var(--green);
+      }
+
+      .badge.orange {
+        background: var(--orange-50);
+        color: var(--orange);
+      }
+
+      .badge.red {
+        background: var(--red-50);
+        color: var(--red);
+      }
+
+      .badge.gray {
+        background: #f2f4f7;
+        color: var(--muted);
+      }
+
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: var(--soft);
+      }
+
+      .dot.green {
+        background: var(--green);
+      }
+
+      .dot.orange {
+        background: var(--orange);
+      }
+
+      .dot.red {
+        background: var(--red);
+      }
+
+      .node-context {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--line);
+        background: #fff;
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .context-cell {
+        border-radius: 8px;
+        padding: 8px;
+        background: #f8fafc;
+        border: 1px solid var(--line);
+      }
+
+      .context-cell label {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .context-cell strong {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+      }
+
+      .tabs {
+        padding: 10px 14px 0;
+        display: flex;
+        gap: 6px;
+        background: #fff;
+      }
+
+      .tab {
+        height: 30px;
+        border: 1px solid var(--line);
+        border-bottom: 0;
+        border-radius: 7px 7px 0 0;
+        background: #f8fafc;
+        color: var(--muted);
+        padding: 0 12px;
+      }
+
+      .tab.active {
+        border-color: rgba(37, 99, 235, 0.25);
+        background: var(--blue-50);
+        color: var(--blue);
+        font-weight: 700;
+      }
+
+      .table-wrap {
+        overflow: auto;
+      }
+
+      table {
+        width: 100%;
+        min-width: 1040px;
+        border-collapse: collapse;
+      }
+
+      thead tr {
+        height: 36px;
+        background: #f3f7fb;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+
+      th {
+        padding: 0 12px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        text-align: left;
+      }
+
+      td {
+        height: 58px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: middle;
+      }
+
+      tbody tr.selected {
+        background: #f4f8ff;
+        box-shadow: inset 4px 0 0 var(--blue);
+      }
+
+      .instance-name strong {
+        display: block;
+        margin-bottom: 3px;
+        font-size: 13px;
+      }
+
+      .instance-name span {
+        display: block;
+        max-width: 210px;
+        color: var(--muted);
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .switch {
+        position: relative;
+        width: 36px;
+        height: 20px;
+        border-radius: 999px;
+        background: var(--blue);
+        display: inline-block;
+      }
+
+      .switch::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        background: #fff;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.18);
+      }
+
+      .switch.off {
+        background: var(--line);
+      }
+
+      .switch.off::after {
+        right: 18px;
+      }
+
+      .chips {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+      }
+
+      .chip {
+        height: 22px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #f8fafc;
+        color: var(--muted);
+        padding: 0 7px;
+        display: inline-flex;
+        align-items: center;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .row-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 5px;
+      }
+
+      .action {
+        width: 29px;
+        height: 29px;
+        border: 1px solid transparent;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted);
+        display: grid;
+        place-items: center;
+      }
+
+      .action.primary {
+        background: var(--blue-50);
+        color: var(--blue);
+      }
+
+      .detail-body {
+        padding: 14px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .mini-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .mini {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        background: #f8fafc;
+      }
+
+      .mini:nth-child(1) {
+        background: var(--blue-50);
+      }
+
+      .mini:nth-child(2) {
+        background: #f4f2ff;
+      }
+
+      .mini:nth-child(3) {
+        background: var(--orange-50);
+      }
+
+      .mini:nth-child(4) {
+        background: var(--green-50);
+      }
+
+      .mini label {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .mini strong {
+        font-size: 14px;
+      }
+
+      .section-title {
+        margin: 0 0 8px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .section-title::before {
+        content: "";
+        width: 3px;
+        height: 13px;
+        border-radius: 999px;
+        background: var(--blue);
+      }
+
+      .kv {
+        display: grid;
+        gap: 7px;
+      }
+
+      .kv-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .kv-row strong {
+        color: var(--ink);
+        font-weight: 650;
+        text-align: right;
+        word-break: break-all;
+      }
+
+      .terminal {
+        margin: 0;
+        height: 150px;
+        overflow: hidden;
+        border-radius: 8px;
+        background: #0b1220;
+        color: #cbd5e1;
+        padding: 11px;
+        font-size: 11px;
+        line-height: 1.6;
+      }
+
+      .warning {
+        border-radius: 8px;
+        padding: 10px;
+        border: 1px solid rgba(180, 83, 9, 0.24);
+        background: var(--orange-50);
+        color: var(--orange);
+        line-height: 1.5;
+      }
+
+      .danger-box {
+        margin-top: 12px;
+        border: 1px solid rgba(185, 28, 28, 0.24);
+        border-left: 5px solid var(--red);
+        border-radius: 8px;
+        background: var(--red-50);
+        padding: 12px;
+      }
+
+      .danger-box h3 {
+        margin: 0 0 6px;
+        color: var(--red);
+        font-size: 12px;
+      }
+
+      .danger-box p {
+        margin: 0 0 10px;
+        color: #7f1d1d;
+        font-size: 11px;
+        line-height: 1.5;
+      }
+
+      @media (max-width: 1360px) {
+        .workspace {
+          grid-template-columns: 330px minmax(0, 1fr);
+        }
+
+        .column.detail {
+          grid-column: 1 / -1;
+        }
+      }
+
+      @media (max-width: 1120px) {
+        .app {
+          grid-template-columns: 70px minmax(0, 1fr);
+        }
+
+        .brand-name,
+        .nav-label,
+        .sidebar-card {
+          display: none;
+        }
+
+        .brand {
+          justify-content: center;
+          padding: 0;
+        }
+
+        .nav button {
+          justify-content: center;
+          padding: 0;
+        }
+
+        .flow,
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">F</div>
+          <div class="brand-name">frpc 多实例管理</div>
+        </div>
+        <nav class="nav" aria-label="主导航">
+          <button><span class="nav-icon">⌂</span><span class="nav-label">仪表盘</span></button>
+          <button class="active"><span class="nav-icon">◎</span><span class="nav-label">节点工作台</span></button>
+          <button><span class="nav-icon">▦</span><span class="nav-label">全部实例</span></button>
+          <button><span class="nav-icon">☷</span><span class="nav-label">审计</span></button>
+          <button><span class="nav-icon">⚙</span><span class="nav-label">系统</span></button>
+        </nav>
+        <div class="sidebar-card">
+          <h4>全局状态</h4>
+          <div class="sidebar-row"><span>在线节点</span><strong class="mono">3/4</strong></div>
+          <div class="sidebar-row"><span>运行实例</span><strong class="mono">12/15</strong></div>
+          <div class="sidebar-row"><span>异常实例</span><strong class="mono">2</strong></div>
+          <div class="sidebar-row"><span>面板端口</span><strong class="mono">8081</strong></div>
+        </div>
+      </aside>
+
+      <div class="shell">
+        <header class="topbar">
+          <button class="btn" style="width: 32px; padding: 0" aria-label="收起侧边栏">☰</button>
+          <div class="page-title">节点工作台</div>
+          <div class="top-search">
+            <span>⌕</span>
+            <input placeholder="搜索节点、实例、端口、域名" />
+            <span class="mono">⌘K</span>
+          </div>
+          <button class="btn primary">＋ 创建实例</button>
+          <button class="btn">新增节点</button>
+          <button class="btn">刷新</button>
+          <div class="avatar">A</div>
+        </header>
+
+        <main>
+          <section class="flow">
+            <div class="flow-card">
+              <span class="label instance">操作主线</span>
+              <h1>先选节点，再看该节点下的实例</h1>
+              <p>页面主轴固定为三栏：左侧节点、中间实例列表、右侧当前实例详情。这样不会在大量实例里先迷路。</p>
+              <div class="steps">
+                <div class="step node"><strong>1. 选择节点</strong><span>确认 Agent 在线和节点资源</span></div>
+                <div class="step instance"><strong>2. 筛选实例</strong><span>只看当前节点下的实例列表</span></div>
+                <div class="step detail"><strong>3. 操作详情</strong><span>日志、配置、启停和风险动作</span></div>
+              </div>
+            </div>
+            <div class="metrics">
+              <div class="metric"><label>在线节点</label><strong class="mono">3 / 4</strong></div>
+              <div class="metric green"><label>home-nas 实例</label><strong class="mono">8</strong></div>
+              <div class="metric orange"><label>节点磁盘</label><strong class="mono">61%</strong></div>
+              <div class="metric red"><label>异常实例</label><strong class="mono">2</strong></div>
+            </div>
+          </section>
+
+          <section class="workspace">
+            <section class="column node">
+              <div class="column-head">
+                <div>
+                  <span class="label node">节点</span>
+                  <h2>Agent 节点</h2>
+                  <p>第一步：选择要管理的机器。</p>
+                </div>
+                <span class="pill">3 在线</span>
+              </div>
+              <div class="toolbar">
+                <label class="field">
+                  <span>⌕</span>
+                  <input placeholder="搜索节点名称" />
+                </label>
+              </div>
+              <div class="node-list">
+                <article class="node-card active">
+                  <div class="node-top">
+                    <div class="node-name">
+                      <strong>home-nas</strong>
+                      <span class="mono">uuid 74af2d91... · 12 秒前</span>
+                    </div>
+                    <span class="badge green"><span class="dot green"></span>在线</span>
+                  </div>
+                  <div class="node-stats">
+                    <div class="node-stat"><label>实例</label><strong class="mono">8</strong></div>
+                    <div class="node-stat"><label>运行</label><strong class="mono">7</strong></div>
+                    <div class="node-stat"><label>异常</label><strong class="mono">1</strong></div>
+                  </div>
+                  <div class="node-actions">
+                    <button class="btn">安装命令</button>
+                    <button class="btn">升级</button>
+                  </div>
+                </article>
+
+                <article class="node-card">
+                  <div class="node-top">
+                    <div class="node-name">
+                      <strong>vps-hk-01</strong>
+                      <span class="mono">uuid 19c0aa63... · 28 秒前</span>
+                    </div>
+                    <span class="badge green"><span class="dot green"></span>在线</span>
+                  </div>
+                  <div class="node-stats">
+                    <div class="node-stat"><label>实例</label><strong class="mono">4</strong></div>
+                    <div class="node-stat"><label>运行</label><strong class="mono">4</strong></div>
+                    <div class="node-stat"><label>异常</label><strong class="mono">0</strong></div>
+                  </div>
+                </article>
+
+                <article class="node-card">
+                  <div class="node-top">
+                    <div class="node-name">
+                      <strong>vps-sg-02</strong>
+                      <span class="mono">uuid ae912b11... · 1 分钟前</span>
+                    </div>
+                    <span class="badge green"><span class="dot green"></span>在线</span>
+                  </div>
+                  <div class="node-stats">
+                    <div class="node-stat"><label>实例</label><strong class="mono">2</strong></div>
+                    <div class="node-stat"><label>运行</label><strong class="mono">1</strong></div>
+                    <div class="node-stat"><label>异常</label><strong class="mono">0</strong></div>
+                  </div>
+                </article>
+
+                <article class="node-card">
+                  <div class="node-top">
+                    <div class="node-name">
+                      <strong>office-lan</strong>
+                      <span class="mono">uuid c8d2af90... · 2 小时前</span>
+                    </div>
+                    <span class="badge red"><span class="dot red"></span>离线</span>
+                  </div>
+                  <div class="node-stats">
+                    <div class="node-stat"><label>实例</label><strong class="mono">1</strong></div>
+                    <div class="node-stat"><label>运行</label><strong class="mono">--</strong></div>
+                    <div class="node-stat"><label>异常</label><strong class="mono">1</strong></div>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section class="column instance">
+              <div class="column-head">
+                <div>
+                  <span class="label instance">实例列表</span>
+                  <h2>home-nas 下的实例</h2>
+                  <p>第二步：只在当前节点范围内筛选和操作。</p>
+                </div>
+                <span class="pill">8 实例 · 7 运行</span>
+              </div>
+              <div class="node-context">
+                <div class="context-cell"><label>Docker</label><strong class="mono">27.3.1</strong></div>
+                <div class="context-cell"><label>frpc</label><strong class="mono">v0.68.1</strong></div>
+                <div class="context-cell"><label>磁盘</label><strong class="mono">61%</strong></div>
+                <div class="context-cell"><label>CPU</label><strong class="mono">42%</strong></div>
+                <div class="context-cell"><label>内存</label><strong class="mono">1.2GiB</strong></div>
+              </div>
+              <div class="toolbar">
+                <label class="field">
+                  <span>⌕</span>
+                  <input value="nas" />
+                </label>
+                <label class="field">
+                  <select><option>全部状态</option><option>运行中</option><option>异常</option></select>
+                </label>
+                <label class="field">
+                  <select><option>启用状态</option><option>已启用</option><option>已停用</option></select>
+                </label>
+                <label class="field">
+                  <select><option>代理类型</option><option>tcp</option><option>http</option></select>
+                </label>
+              </div>
+              <div class="tabs">
+                <button class="tab active">全部 8</button>
+                <button class="tab">运行中 7</button>
+                <button class="tab">异常 1</button>
+                <button class="tab">已停用 1</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>实例</th>
+                      <th>状态</th>
+                      <th>启用</th>
+                      <th>frps</th>
+                      <th>代理</th>
+                      <th>端口 / 域名</th>
+                      <th>CPU</th>
+                      <th>内存</th>
+                      <th>重启</th>
+                      <th style="text-align: right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="selected">
+                      <td>
+                        <div class="instance-name">
+                          <strong>家里 NAS</strong>
+                          <span class="mono">client-001 · SSH + 下载服务</span>
+                        </div>
+                      </td>
+                      <td><span class="badge green"><span class="dot green"></span>运行中</span></td>
+                      <td><span class="switch"></span></td>
+                      <td class="mono">frps.example.com:7000</td>
+                      <td><span class="chip">tcp · 2</span> <span class="chip">http · 1</span></td>
+                      <td><div class="chips mono"><span class="chip">6001</span><span class="chip">6002</span><span class="chip">nas.example.com</span></div></td>
+                      <td class="mono">4.8%</td>
+                      <td class="mono">46MiB</td>
+                      <td class="mono">0</td>
+                      <td><div class="row-actions"><button class="action">■</button><button class="action">↻</button><button class="action primary">▤</button><button class="action">⌘</button></div></td>
+                    </tr>
+                    <tr>
+                      <td><div class="instance-name"><strong>相册服务</strong><span class="mono">photo-web · https 自定义域名</span></div></td>
+                      <td><span class="badge orange"><span class="dot orange"></span>重启中</span></td>
+                      <td><span class="switch"></span></td>
+                      <td class="mono">frps.example.com:7000</td>
+                      <td><span class="chip">https · 1</span></td>
+                      <td><span class="chip mono">photos.example.com</span></td>
+                      <td class="mono">--</td>
+                      <td class="mono">--</td>
+                      <td class="mono">3</td>
+                      <td><div class="row-actions"><button class="action primary">▶</button><button class="action">▤</button><button class="action">⌘</button></div></td>
+                    </tr>
+                    <tr>
+                      <td><div class="instance-name"><strong>下载面板</strong><span class="mono">aria2-web · 内网 Web 管理</span></div></td>
+                      <td><span class="badge green"><span class="dot green"></span>运行中</span></td>
+                      <td><span class="switch"></span></td>
+                      <td class="mono">frps.example.com:7000</td>
+                      <td><span class="chip">http · 1</span></td>
+                      <td><span class="chip mono">download.example.com</span></td>
+                      <td class="mono">2.1%</td>
+                      <td class="mono">39MiB</td>
+                      <td class="mono">0</td>
+                      <td><div class="row-actions"><button class="action">■</button><button class="action">↻</button><button class="action">▤</button><button class="action">⌘</button></div></td>
+                    </tr>
+                    <tr>
+                      <td><div class="instance-name"><strong>备用 UDP</strong><span class="mono">backup-udp · 保留配置未启用</span></div></td>
+                      <td><span class="badge gray"><span class="dot"></span>已停用</span></td>
+                      <td><span class="switch off"></span></td>
+                      <td class="mono">frps.example.com:7000</td>
+                      <td><span class="chip">udp · 1</span></td>
+                      <td><span class="chip mono">7001</span></td>
+                      <td class="mono">--</td>
+                      <td class="mono">--</td>
+                      <td class="mono">0</td>
+                      <td><div class="row-actions"><button class="action primary">▶</button><button class="action">⌘</button></div></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <aside>
+              <section class="column detail">
+                <div class="column-head">
+                  <div>
+                    <span class="label detail">实例详情</span>
+                    <h2>家里 NAS</h2>
+                    <p class="mono">home-nas / client-001</p>
+                  </div>
+                  <span class="badge green"><span class="dot green"></span>运行中</span>
+                </div>
+                <div class="detail-body">
+                  <div class="mini-grid">
+                    <div class="mini"><label>CPU</label><strong class="mono">4.8%</strong></div>
+                    <div class="mini"><label>内存</label><strong class="mono">46MiB</strong></div>
+                    <div class="mini"><label>重启</label><strong class="mono">0</strong></div>
+                    <div class="mini"><label>代理</label><strong class="mono">3</strong></div>
+                  </div>
+                  <div>
+                    <h3 class="section-title">配置摘要</h3>
+                    <div class="kv">
+                      <div class="kv-row"><span>服务端</span><strong class="mono">frps.example.com:7000</strong></div>
+                      <div class="kv-row"><span>认证方式</span><strong>token</strong></div>
+                      <div class="kv-row"><span>配置路径</span><strong class="mono">instances/client-001/frpc.toml</strong></div>
+                    </div>
+                  </div>
+                  <div>
+                    <h3 class="section-title">最近日志</h3>
+                    <pre class="terminal">14:08:12 [I] login to server success
+14:08:12 [I] proxy added: ssh-nas
+14:10:43 [I] tcp proxy listen port: 6001
+14:16:02 [I] health check passed</pre>
+                  </div>
+                  <div class="warning">结构化编辑只覆盖常用代理字段。高级字段请在 TOML 模式中确认后保存。</div>
+                  <div style="display: flex; gap: 8px">
+                    <button class="btn primary" style="flex: 1">打开详情</button>
+                    <button class="btn" style="flex: 1">编辑配置</button>
+                  </div>
+                </div>
+              </section>
+              <section class="danger-box">
+                <span class="label danger">危险操作</span>
+                <h3>删除 client-001</h3>
+                <p>会停止容器并删除实例目录。正式交互应要求输入实例名确认。</p>
+                <button class="btn danger">删除实例</button>
+              </section>
+            </aside>
+          </section>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

@@ -40,6 +40,12 @@ export function bytesToHuman(bytes: number): string {
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[index]}`;
 }
 
+export function shortNodeUuid(value: string | null | undefined, length = 12): string {
+  const normalized = (value || '').trim();
+  if (!normalized) return '未注册';
+  return normalized.length > length ? `${normalized.slice(0, length)}...` : normalized;
+}
+
 export function actionLabel(verb: string): string {
   switch (verb) {
     case 'start':
