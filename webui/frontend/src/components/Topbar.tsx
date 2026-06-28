@@ -84,7 +84,7 @@ export function Topbar({
         className="min-w-0 sm:min-w-[236px] flex items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
         aria-label="返回节点工作台"
       >
-        <div className="grid place-items-center w-[34px] h-[34px] rounded-lg bg-gradient-to-br from-[var(--color-accent)] to-[var(--color-success)] text-white text-[14px] font-black shadow-sm">
+        <div className="grid place-items-center w-[34px] h-[34px] rounded-lg bg-[var(--color-accent)] text-white text-[14px] font-black">
           F
         </div>
         <div className="min-w-0">

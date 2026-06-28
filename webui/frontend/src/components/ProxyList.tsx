@@ -7,8 +7,8 @@ import {
   Trash2,
   XCircle
 } from 'lucide-react';
-import { Button } from './ui/Button';
-import { Input } from './ui/Input';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
 import { PROXY_TYPES, createEmptyProxy, validateProxy, type ProxyDraft } from '../lib/proxyToml';
 import type { ToastKind } from '../lib/types';
 
@@ -49,7 +49,7 @@ export function ProxyList({
         <div className="text-[12px] text-[var(--color-fg-muted)]">
           共 {proxies.length} 条代理
         </div>
-        <Button variant="primary" size="sm" onClick={addProxy}>
+        <Button variant="default" size="sm" onClick={addProxy}>
           <Plus size={12} />
           新增代理
         </Button>
@@ -232,13 +232,13 @@ function ProxyRow({
                 <Button size="sm" onClick={onCancelDelete}>
                   取消
                 </Button>
-                <Button size="sm" variant="danger" onClick={onConfirmDelete}>
+                <Button size="sm" variant="destructive" onClick={onConfirmDelete}>
                   <Trash2 size={12} />
                   确认删除
                 </Button>
               </>
             ) : (
-              <Button size="sm" variant="danger" onClick={onAskDelete}>
+              <Button size="sm" variant="destructive" onClick={onAskDelete}>
                 <Trash2 size={12} />
                 删除该代理
               </Button>

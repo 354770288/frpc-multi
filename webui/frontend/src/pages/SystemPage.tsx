@@ -13,10 +13,10 @@ import {
 } from 'lucide-react';
 import { api, nodesApi } from '../lib/api';
 import { bytesToHuman, shortNodeUuid } from '../lib/format';
-import { Badge } from '../components/ui/Badge';
-import { Button } from '../components/ui/Button';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
 import { Field } from '../components/ui/Field';
-import { Input } from '../components/ui/Input';
+import { Input } from '../components/ui/input';
 import { Panel } from '../components/ui/Panel';
 import type { AuthMe, AuthState, ConsoleInfo, Node, SystemInfo, ToastKind } from '../lib/types';
 
@@ -271,7 +271,7 @@ export function SystemPage({
                   autoComplete="new-password"
                 />
               </Field>
-              <Button variant="primary" type="submit" disabled={submitting} className="mt-1">
+              <Button variant="default" type="submit" disabled={submitting} className="mt-1">
                 <ShieldCheck size={13} />
                 {submitting ? '提交中…' : '保存修改'}
               </Button>

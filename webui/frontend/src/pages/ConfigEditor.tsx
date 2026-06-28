@@ -7,10 +7,10 @@ import {
   XCircle
 } from 'lucide-react';
 import { api, nodesApi } from '../lib/api';
-import { Badge } from '../components/ui/Badge';
-import { Button } from '../components/ui/Button';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
 import { Panel } from '../components/ui/Panel';
-import { Textarea } from '../components/ui/Input';
+import { Textarea } from '@/components/ui/textarea';
 import { ProxyList } from '../components/ProxyList';
 import {
   parseProxies,
@@ -182,7 +182,7 @@ export function ConfigEditorPanel({
         <RotateCcw size={13} />
         重置为默认
       </Button>
-      <Button variant="primary" onClick={save} disabled={!dirty || saving || !!errors.length}>
+      <Button variant="default" onClick={save} disabled={!dirty || saving || !!errors.length}>
         <Save size={13} />
         {saving ? '保存中…' : '保存'}
       </Button>

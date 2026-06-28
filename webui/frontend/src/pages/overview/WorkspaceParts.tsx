@@ -7,7 +7,7 @@ const TONE_STYLES: Record<InstanceTone, string> = {
   success: 'bg-[var(--color-success-soft)] text-[var(--color-success)]',
   warning: 'bg-[var(--color-warning-soft)] text-[var(--color-warning)]',
   danger: 'bg-[var(--color-danger-soft)] text-[var(--color-danger)]',
-  muted: 'bg-slate-100 text-[var(--color-fg-muted)]'
+  muted: 'bg-[var(--color-surface-muted)] text-[var(--color-fg-muted)]'
 };
 
 const TONE_DOT: Record<InstanceTone, string> = {
@@ -30,10 +30,10 @@ export function Metric({
     tone === 'green'
       ? 'before:bg-[var(--color-success)] bg-[var(--color-success-soft)]'
       : tone === 'orange'
-        ? 'before:bg-[var(--color-warning)] bg-orange-50'
+        ? 'before:bg-[var(--color-warning)] bg-[var(--color-warning-soft)]'
         : tone === 'red'
           ? 'before:bg-[var(--color-danger)] bg-[var(--color-danger-soft)]'
-          : 'before:bg-[var(--color-accent)] bg-white';
+          : 'before:bg-[var(--color-accent)] bg-[var(--color-accent-soft)]';
   return (
     <div className={`relative overflow-hidden rounded-lg border border-[var(--color-border)] p-3 shadow-sm before:absolute before:inset-y-0 before:left-0 before:w-1 ${toneClass}`}>
       <div className="text-[11px] text-[var(--color-fg-muted)]">{label}</div>
@@ -59,14 +59,11 @@ export function PanelHead({
   badge: string;
   tone: 'blue' | 'violet';
 }) {
-  const bg =
-    tone === 'violet'
-      ? 'bg-gradient-to-r from-violet-50 to-white'
-      : 'bg-gradient-to-r from-blue-50 to-white';
+  const bg = 'bg-[var(--color-surface-muted)]';
   return (
     <div className={`min-h-[70px] border-b border-[var(--color-border)] px-3.5 py-3 flex items-start justify-between gap-3 ${bg}`}>
       <div>
-        <div className={`mb-1.5 inline-flex h-5 items-center rounded-full px-2 text-[11px] font-bold ${labelClass}`}>
+        <div className={`mb-1.5 inline-flex h-5 items-center rounded-full px-2 text-[11px] font-semibold ${labelClass}`}>
           {label}
         </div>
         <h2 className="text-[14px] font-semibold text-[var(--color-fg)]">{title}</h2>
@@ -107,9 +104,9 @@ export function NodeCard({
       onClick={onClick}
       className={`rounded-lg border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] ${
         active
-          ? 'border-violet-300 bg-violet-50 shadow-[inset_4px_0_0_#6d5bd0]'
+          ? 'border-[var(--color-fg)]/15 bg-[var(--color-accent-soft)] shadow-[inset_4px_0_0_var(--color-accent)]'
           : offline
-            ? 'border-red-100 bg-red-50/40 shadow-[inset_4px_0_0_var(--color-danger)]'
+            ? 'border-[var(--color-danger)]/20 bg-[var(--color-danger-soft)]/60'
             : 'border-[var(--color-border)] bg-white hover:bg-[var(--color-surface-muted)]'
       }`}
     >
@@ -137,7 +134,7 @@ function NodeStatus({ children, tone }: { children: ReactNode; tone: 'green' | '
       ? 'bg-[var(--color-success-soft)] text-[var(--color-success)]'
       : tone === 'red'
         ? 'bg-[var(--color-danger-soft)] text-[var(--color-danger)]'
-        : 'bg-slate-100 text-[var(--color-fg-muted)]';
+        : 'bg-[var(--color-surface-muted)] text-[var(--color-fg-muted)]';
   const dotClass =
     tone === 'green'
       ? 'bg-[var(--color-success)]'
@@ -231,7 +228,7 @@ export function StatusTab({
       onClick={onClick}
       className={`h-8 rounded-t-lg border border-b-0 px-3 text-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] ${
         active
-          ? 'border-blue-200 bg-[var(--color-accent-soft)] font-semibold text-[var(--color-accent)]'
+          ? 'border-[var(--color-border)] bg-[var(--color-accent-soft)] font-semibold text-[var(--color-accent)]'
           : 'border-[var(--color-border)] bg-[var(--color-surface-muted)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]'
       }`}
     >
@@ -308,7 +305,7 @@ export function IconAction({
       aria-label={label}
       className={`grid h-7 w-7 place-items-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] ${
         primary
-          ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] hover:bg-blue-100'
+          ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] hover:bg-[var(--color-surface-muted)]'
           : 'text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)]'
       }`}
     >

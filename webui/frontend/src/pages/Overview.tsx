@@ -277,14 +277,14 @@ export function Overview({
       )}
 
       <section className="grid grid-cols-1 xl:grid-cols-[360px_minmax(0,1fr)] gap-4 items-start">
-        <aside className="rounded-lg border border-purple-200 bg-white shadow-sm overflow-hidden">
+        <aside className="rounded-lg border border-[var(--color-border)] bg-white shadow-sm overflow-hidden">
           <PanelHead
             label="节点"
-            labelClass="bg-violet-50 text-violet-700"
+            labelClass="bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
             title="Agent 节点"
             description="节点卡片固定在左侧，作为第一层操作入口。"
             badge={`${onlineNodes} 在线`}
-            tone="violet"
+            tone="blue"
           />
 
           <div className="border-b border-[var(--color-border)] bg-[var(--color-surface-muted)] p-3">
@@ -362,7 +362,7 @@ export function Overview({
           </div>
         </aside>
 
-        <section className="rounded-lg border border-blue-200 bg-white shadow-sm overflow-hidden">
+        <section className="rounded-lg border border-[var(--color-border)] bg-white shadow-sm overflow-hidden">
           <PanelHead
             label="当前节点"
             labelClass="bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
@@ -376,7 +376,7 @@ export function Overview({
             tone="blue"
           />
 
-          <div className="border-b border-[var(--color-border)] bg-gradient-to-r from-[var(--color-accent-soft)] to-white px-4 py-3">
+          <div className="border-b border-[var(--color-border)] bg-[var(--color-accent-soft)] px-4 py-3">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <h2 className="text-[17px] font-semibold text-[var(--color-fg)]">
@@ -433,7 +433,7 @@ export function Overview({
             </div>
           ) : (
             <>
-              <div className="grid gap-2 border-b border-[var(--color-border)] bg-blue-50/70 p-3 lg:grid-cols-[minmax(240px,1fr)_145px_145px_150px_auto]">
+              <div className="grid gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface-muted)] p-3 lg:grid-cols-[minmax(240px,1fr)_145px_145px_150px_auto]">
                 <label className="flex h-8 items-center gap-2 rounded-lg border border-[var(--color-border)] bg-white px-2.5 text-[12px] text-[var(--color-fg-muted)] focus-within:border-[var(--color-accent)] focus-within:ring-2 focus-within:ring-[var(--color-accent)]/15">
                   <Search size={13} aria-hidden="true" />
                   <input
@@ -521,7 +521,7 @@ export function Overview({
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[1320px] border-collapse">
                     <thead>
-                      <tr className="h-9 border-y border-[var(--color-border)] bg-slate-50">
+                      <tr className="h-9 border-y border-[var(--color-border)] bg-[var(--color-surface-muted)]">
                         <Th>实例</Th>
                         <Th>节点</Th>
                         <Th>状态</Th>
@@ -552,7 +552,7 @@ export function Overview({
                         return (
                           <tr
                             key={key}
-                            className="h-[58px] border-b border-[var(--color-border)] bg-white transition-colors hover:bg-blue-50/45"
+                            className="h-[58px] border-b border-[var(--color-border)] bg-white transition-colors hover:bg-[var(--color-accent-soft)]/40"
                           >
                             <Td>
                               <button

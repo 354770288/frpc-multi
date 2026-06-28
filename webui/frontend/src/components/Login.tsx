@@ -2,9 +2,9 @@ import React, { useState } from 'react';
 import { Boxes, ShieldCheck, AlertCircle } from 'lucide-react';
 import type { AuthState } from '../lib/types';
 import { extractMessage } from '../lib/api';
-import { Button } from './ui/Button';
+import { Button } from './ui/button';
 import { Field } from './ui/Field';
-import { Input } from './ui/Input';
+import { Input } from './ui/input';
 
 export function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) {
   const [username, setUsername] = useState('');
@@ -91,7 +91,7 @@ export function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) 
             </div>
           )}
 
-          <Button variant="primary" type="submit" disabled={loading} className="h-9 mt-1">
+          <Button variant="default" type="submit" disabled={loading} className="h-9 mt-1">
             <ShieldCheck size={13} />
             {loading ? '登录中…' : '登录'}
           </Button>

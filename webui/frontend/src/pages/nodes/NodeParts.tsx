@@ -12,9 +12,9 @@ import {
   X,
   XCircle
 } from 'lucide-react';
-import { Badge } from '../../components/ui/Badge';
-import { Button } from '../../components/ui/Button';
-import { Input } from '../../components/ui/Input';
+import { Badge } from '../../components/ui/badge';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
 import { Panel } from '../../components/ui/Panel';
 import type { Node, NodeInstall, NodeInstanceHealth, ToastKind } from '../../lib/types';
 
@@ -371,7 +371,7 @@ function confirmMeta(action: NodeConfirmAction): {
   icon: ReactNode;
   buttonIcon: ReactNode;
   iconClass: string;
-  variant: 'danger' | 'primary';
+  variant: 'destructive' | 'default';
 } {
   if (action === 'rotate') {
     return {
@@ -382,7 +382,7 @@ function confirmMeta(action: NodeConfirmAction): {
       icon: <KeyRound size={16} />,
       buttonIcon: <KeyRound size={13} />,
       iconClass: 'bg-[var(--color-warning-soft)] text-[var(--color-warning)]',
-      variant: 'primary'
+      variant: 'default'
     };
   }
   if (action === 'upgrade') {
@@ -394,7 +394,7 @@ function confirmMeta(action: NodeConfirmAction): {
       icon: <UploadCloud size={16} />,
       buttonIcon: <UploadCloud size={13} />,
       iconClass: 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]',
-      variant: 'primary'
+      variant: 'default'
     };
   }
   return {
@@ -409,6 +409,6 @@ function confirmMeta(action: NodeConfirmAction): {
     icon: <ShieldAlert size={16} />,
     buttonIcon: <Trash2 size={13} />,
     iconClass: 'bg-[var(--color-danger-soft)] text-[var(--color-danger)]',
-    variant: 'danger'
+    variant: 'destructive'
   };
 }

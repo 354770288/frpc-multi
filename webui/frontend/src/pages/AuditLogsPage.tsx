@@ -11,9 +11,9 @@ import {
   XCircle
 } from 'lucide-react';
 import { auditLogsApi } from '../lib/api';
-import { Badge } from '../components/ui/Badge';
-import { Button } from '../components/ui/Button';
-import { Input } from '../components/ui/Input';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
 import { Panel } from '../components/ui/Panel';
 import type { AuditLog, Node, ToastKind } from '../lib/types';
 

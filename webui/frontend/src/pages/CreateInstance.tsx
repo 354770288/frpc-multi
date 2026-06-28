@@ -13,11 +13,12 @@ import {
 } from 'lucide-react';
 import { api, nodesApi } from '../lib/api';
 import { shortNodeUuid } from '../lib/format';
-import { Button } from '../components/ui/Button';
+import { Button } from '../components/ui/button';
 import { Field } from '../components/ui/Field';
-import { Input, Textarea } from '../components/ui/Input';
+import { Input } from '../components/ui/input'
+import { Textarea } from '../components/ui/textarea';
 import { Panel } from '../components/ui/Panel';
-import { Badge } from '../components/ui/Badge';
+import { Badge } from '../components/ui/badge';
 import { ProxyList } from '../components/ProxyList';
 import {
   emptyFrpcConfig,
@@ -142,7 +143,7 @@ export function CreateInstance({
             创建实例前需要先添加 Agent 节点。节点接入后，回到工作台选择节点再创建实例，创建页会自动预选该节点。
           </p>
           <div className="mt-5 flex flex-wrap justify-center gap-2">
-            <Button variant="primary" onClick={onManageNodes}>
+            <Button variant="default" onClick={onManageNodes}>
               <Plus size={13} />
               添加节点
             </Button>
@@ -481,7 +482,7 @@ export function CreateInstance({
             </ul>
           </Panel>
 
-          <Button variant="primary" onClick={create} disabled={!canSubmit || submitting} className="w-full">
+          <Button variant="default" onClick={create} disabled={!canSubmit || submitting} className="w-full">
             <Plus size={13} />
             {submitting ? '创建中…' : '创建实例'}
           </Button>

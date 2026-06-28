@@ -10,10 +10,10 @@ import {
 } from 'lucide-react';
 import { nodesApi } from '../lib/api';
 import { bytesToHuman, shortNodeUuid } from '../lib/format';
-import { Badge } from '../components/ui/Badge';
-import { Button } from '../components/ui/Button';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
 import { Field } from '../components/ui/Field';
-import { Input } from '../components/ui/Input';
+import { Input } from '../components/ui/input';
 import { Panel } from '../components/ui/Panel';
 import {
   ConfirmNodeAction,
@@ -276,7 +276,7 @@ export function NodesPage({
                           </Button>
                           <Button
                             size="sm"
-                            variant="danger"
+                            variant="destructive"
                             onClick={() => setConfirming({ action: 'delete', node })}
                             disabled={!!pending[node.id]}
                           >
@@ -333,7 +333,7 @@ export function NodesPage({
                   <span>{formError}</span>
                 </div>
               )}
-              <Button variant="primary" onClick={createNode} disabled={saving || !!formError}>
+              <Button variant="default" onClick={createNode} disabled={saving || !!formError}>
                 <Plus size={13} />
                 {saving ? '创建中…' : '创建节点'}
               </Button>

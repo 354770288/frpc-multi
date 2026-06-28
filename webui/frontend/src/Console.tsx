@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ShieldAlert, Trash2 } from 'lucide-react';
 import { Topbar } from './components/Topbar';
 import { ToastStack } from './components/ToastStack';
-import { Button } from './components/ui/Button';
-import { Input } from './components/ui/Input';
+import { Button } from './components/ui/button';
+import { Input } from './components/ui/input';
 import { Overview } from './pages/Overview';
 import { Detail, type DetailTab } from './pages/Detail';
 import { ConfigEditor } from './pages/ConfigEditor';
@@ -519,7 +519,7 @@ function ConfirmInstanceDelete({
         </div>
         <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-[var(--color-border)] bg-[var(--color-surface-muted)] px-4 py-3">
           <Button onClick={onCancel} disabled={pending}>取消</Button>
-          <Button variant="danger" onClick={onConfirm} disabled={!canConfirm}>
+          <Button variant="destructive" onClick={onConfirm} disabled={!canConfirm}>
             <Trash2 size={13} />
             {pending ? '删除中...' : '删除实例'}
           </Button>

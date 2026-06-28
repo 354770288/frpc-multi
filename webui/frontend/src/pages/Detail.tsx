@@ -15,8 +15,8 @@ import {
 import { api, auditLogsApi, nodesApi } from '../lib/api';
 import { instanceStateBadge } from '../lib/format';
 import { parseProxies, splitTomlAtProxies, type ProxyDraft } from '../lib/proxyToml';
-import { Badge } from '../components/ui/Badge';
-import { Button } from '../components/ui/Button';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
 import { Panel } from '../components/ui/Panel';
 import { ConfigEditorPanel } from './ConfigEditor';
 import type { AuditLog, InstanceDetail, InstanceRef, Page, StatsMap, ToastKind } from '../lib/types';
@@ -214,7 +214,7 @@ export function Detail({
       </button>
 
       <section className="mb-4 overflow-hidden rounded-lg border border-[var(--color-border)] bg-white">
-        <div className="grid gap-4 border-b border-[var(--color-border)] bg-gradient-to-r from-[var(--color-accent-soft)] to-white p-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
+        <div className="grid gap-4 border-b border-[var(--color-border)] bg-[var(--color-accent-soft)] p-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <Badge tone={badge.tone} dot>{badge.label}</Badge>
@@ -234,7 +234,7 @@ export function Detail({
           <div className="grid gap-3 sm:grid-cols-2">
             <ActionGroup title="运行操作">
               <Button
-                variant="primary"
+                variant="default"
                 disabled={!!pending || !enabled}
                 onClick={() => onAction(instance, 'start')}
                 title={!enabled ? '实例已停用，请先在节点工作台启用' : undefined}
@@ -253,7 +253,7 @@ export function Detail({
             </ActionGroup>
             <ActionGroup title="高风险操作">
               <Button
-                variant="danger"
+                variant="destructive"
                 disabled={!!pending || !enabled}
                 onClick={() => onAction(instance, 'recreate')}
               >
@@ -395,7 +395,7 @@ function LogsPanel({
             {paused ? '继续' : '暂停'}
           </Button>
           <Button
-            variant={follow ? 'primary' : 'ghost'}
+            variant={follow ? 'default' : 'ghost'}
             onClick={() => onFollowChange(!follow)}
             title={follow ? '关闭新日志定位' : '自动定位到最新日志'}
           >
@@ -457,7 +457,7 @@ function LogsPanel({
       bodyClassName="p-0"
     >
       <pre
-        className="m-0 h-[560px] overflow-auto bg-[#0b1220] px-4 py-3 font-mono text-[12px] leading-[1.65] text-[#cbd5e1] whitespace-pre-wrap"
+        className="m-0 h-[560px] overflow-auto bg-zinc-950 px-4 py-3 font-mono text-[12px] leading-[1.65] text-slate-200 whitespace-pre-wrap"
       >
         {logs.length
           ? (logOrder === 'oldest' ? logs : logs.slice().reverse()).join('\n')
