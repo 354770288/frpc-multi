@@ -3,8 +3,8 @@ import { Boxes, ShieldCheck, AlertCircle } from 'lucide-react';
 import type { AuthState } from '../lib/types';
 import { extractMessage } from '../lib/api';
 import { Button } from './ui/button';
-import { Field } from './ui/Field';
 import { Input } from './ui/input';
+import { Label } from './ui/label';
 
 export function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) {
   const [username, setUsername] = useState('');
@@ -44,25 +44,26 @@ export function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) 
   }
 
   return (
-    <div className="min-h-screen grid place-items-center px-4 py-8 bg-[var(--color-bg)]">
+    <div className="min-h-screen grid place-items-center px-4 py-8 bg-background">
       <div className="w-full max-w-[380px]">
         <div className="flex flex-col items-center gap-3 mb-8">
-          <div className="grid place-items-center w-14 h-14 rounded-xl bg-[var(--color-fg)] text-[var(--color-bg)]">
+          <div className="grid place-items-center w-14 h-14 rounded-xl bg-foreground text-background">
             <Boxes size={28} />
           </div>
           <div className="text-center">
-            <div className="text-[20px] font-semibold tracking-tight text-[var(--color-fg)]">
+            <div className="text-[20px] font-semibold tracking-tight text-foreground">
               frpc 多实例管理
             </div>
-            <div className="mt-1 text-[12px] text-[var(--color-fg-muted)]">WebUI 控制台</div>
+            <div className="mt-1 text-[12px] text-muted-foreground">WebUI 控制台</div>
           </div>
         </div>
 
         <form
           onSubmit={submit}
-          className="flex flex-col gap-4 p-6 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)]"
+          className="flex flex-col gap-4 p-6 rounded-lg border border-border bg-card"
         >
-          <Field label="用户名">
+          <div className="space-y-1.5">
+            <Label className="text-xs">用户名</Label>
             <Input
               autoFocus
               autoComplete="username"
@@ -70,8 +71,9 @@ export function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) 
               onChange={(event) => setUsername(event.target.value)}
               placeholder="请输入用户名"
             />
-          </Field>
-          <Field label="密码">
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">密码</Label>
             <Input
               type="password"
               autoComplete="current-password"
@@ -79,12 +81,12 @@ export function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) 
               onChange={(event) => setPassword(event.target.value)}
               placeholder="请输入密码"
             />
-          </Field>
+          </div>
 
           {error && (
             <div
               role="alert"
-              className="flex items-start gap-2 p-2.5 rounded-md bg-[var(--color-danger-soft)] text-[12px] text-[var(--color-danger)]"
+              className="flex items-start gap-2 p-2.5 rounded-md bg-destructive/10 text-[12px] text-destructive"
             >
               <AlertCircle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
               <span>{error}</span>

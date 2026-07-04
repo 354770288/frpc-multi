@@ -1,11 +1,12 @@
 import type { ReactNode } from 'react';
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from './card';
 
 export function Panel({
   title,
   actions,
   children,
   className = '',
-  bodyClassName = ''
+  bodyClassName = '',
 }: {
   title?: ReactNode;
   actions?: ReactNode;
@@ -14,18 +15,16 @@ export function Panel({
   bodyClassName?: string;
 }) {
   return (
-    <section
-      className={`rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden ${className}`}
-    >
+    <Card className={`gap-0 overflow-hidden ${className}`}>
       {(title || actions) && (
-        <header className="flex items-center gap-3 px-4 py-3 border-b border-[var(--color-border)]">
+        <CardHeader className="flex-row items-center gap-3 border-b px-4 py-3">
           {title && (
-            <h3 className="text-[13px] font-semibold text-[var(--color-fg)]">{title}</h3>
+            <CardTitle className="text-sm">{title}</CardTitle>
           )}
-          {actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}
-        </header>
+          {actions && <CardAction className="ml-auto flex items-center gap-2">{actions}</CardAction>}
+        </CardHeader>
       )}
-      <div className={`p-4 ${bodyClassName}`}>{children}</div>
-    </section>
+      <CardContent className={`p-4 ${bodyClassName}`}>{children}</CardContent>
+    </Card>
   );
 }

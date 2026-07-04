@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { toast } from 'sonner';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -19,7 +21,8 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Panel } from '../components/ui/Panel';
 import { ConfigEditorPanel } from './ConfigEditor';
-import type { AuditLog, InstanceDetail, InstanceRef, Page, StatsMap, ToastKind } from '../lib/types';
+import { useConsole } from '../context/ConsoleContext';
+import type { AuditLog, InstanceDetail, InstanceRef } from '../lib/types';
 
 const TAIL_OPTIONS = [100, 300, 1000] as const;
 type TailOption = (typeof TAIL_OPTIONS)[number];
@@ -38,23 +41,31 @@ const ACTION_LABEL: Record<string, string> = {
   recreate_instance: '重建'
 };
 
-export function Detail({
-  instance,
-  stats,
-  pendingAction,
-  toast,
-  initialTab = 'logs',
-  onPage,
-  onAction
-}: {
-  instance: InstanceRef | null;
-  stats: StatsMap;
-  pendingAction: Record<string, string>;
-  toast: (kind: ToastKind, text: string) => void;
-  initialTab?: DetailTab;
-  onPage: (page: Page) => void;
-  onAction: (instance: InstanceRef, action: string) => void;
-}) {
+function parseDetailTab(value: string | null): DetailTab {
+  return value === 'config' || value === 'proxies' || value === 'audit' ? value : 'logs';
+}
+
+export function Detail() {
+  const {
+    instances,
+    summaryLoaded,
+    summaryError,
+    stats,
+    pendingAction,
+    action,
+    loadSummary
+  } = useConsole();
+  const navigate = useNavigate();
+  const params = useParams<{ nodeId: string; name: string }>();
+  const [searchParams] = useSearchParams();
+  const routeNodeId = Number(params.nodeId);
+  const routeName = params.name ? decodeURIComponent(params.name) : '';
+  const instance = useMemo(
+    () =>
+      instances.find((item) => item.nodeId === routeNodeId && item.name === routeName) || null,
+    [instances, routeName, routeNodeId]
+  );
+  const initialTab = parseDetailTab(searchParams.get('tab'));
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [tab, setTab] = useState<DetailTab>('logs');
@@ -88,11 +99,11 @@ export function Detail({
       setDetail(data);
     } catch (err) {
       setDetail(null);
-      toast('error', err instanceof Error ? err.message : '实例详情加载失败');
+      toast.error(err instanceof Error ? err.message : '实例详情加载失败');
     } finally {
       setDetailLoading(false);
     }
-  }, [instance?.name, instance?.nodeId, toast]);
+  }, [instance?.name, instance?.nodeId]);
 
   const loadAuditLogs = useCallback(async () => {
     if (!instance) return;
@@ -100,11 +111,11 @@ export function Detail({
     try {
       setAuditLogs(await auditLogsApi.list(200));
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '操作记录加载失败');
+      toast.error(err instanceof Error ? err.message : '操作记录加载失败');
     } finally {
       setAuditLoading(false);
     }
-  }, [instance?.name, instance?.nodeId, toast]);
+  }, [instance?.name, instance?.nodeId]);
 
   const loadLogs = useCallback(async () => {
     if (!instance || logsPaused) return;
@@ -184,14 +195,48 @@ export function Detail({
     return auditLogs.filter((log) => auditMatchesInstance(log, instance));
   }, [auditLogs, instance]);
 
-  if (!instance)
+  if (!instance) {
+    const invalidRoute = !Number.isFinite(routeNodeId) || !routeName;
+    const isInitialLoading = !summaryLoaded && !summaryError;
+    const title = summaryError
+      ? '实例列表不可用'
+      : invalidRoute
+        ? '实例路由无效'
+        : isInitialLoading
+          ? '实例详情'
+          : '实例不存在';
+    const message = summaryError
+      ? summaryError
+      : invalidRoute
+        ? '请从节点工作台重新打开实例'
+        : isInitialLoading
+          ? '正在加载实例列表...'
+          : '实例可能已被删除或移动到其他节点';
+
     return (
       <main className="px-6 py-6">
-        <Panel title="实例详情">
-          <p className="text-[12px] text-[var(--color-fg-muted)]">请选择实例</p>
+        <Panel
+          title={title}
+          actions={
+            <div className="flex flex-wrap items-center gap-2">
+              {summaryError && (
+                <Button onClick={loadSummary}>
+                  <RefreshCw size={13} />
+                  重试
+                </Button>
+              )}
+              <Button variant="ghost" onClick={() => navigate('/workspace')}>
+                <ArrowLeft size={13} />
+                返回工作台
+              </Button>
+            </div>
+          }
+        >
+          <p className="text-[12px] text-muted-foreground">{message}</p>
         </Panel>
       </main>
     );
+  }
 
   const stat = stats[key];
   const enabled = detail?.enabled ?? instance.enabled;
@@ -206,25 +251,25 @@ export function Detail({
   return (
     <main className="px-4 sm:px-6 py-5 sm:py-6 max-w-[1720px] mx-auto">
       <button
-        onClick={() => onPage('overview')}
-        className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] rounded-sm"
+        onClick={() => navigate('/workspace')}
+        className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
       >
         <ArrowLeft size={13} />
         返回节点工作台
       </button>
 
-      <section className="mb-4 overflow-hidden rounded-lg border border-[var(--color-border)] bg-white">
-        <div className="grid gap-4 border-b border-[var(--color-border)] bg-[var(--color-accent-soft)] p-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
+      <section className="mb-4 overflow-hidden rounded-lg border border-border bg-card">
+        <div className="grid gap-4 border-b border-border bg-muted/50 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <Badge tone={badge.tone} dot>{badge.label}</Badge>
               {!enabled && <Badge tone="muted">已停用</Badge>}
               {detailLoading && <Badge tone="muted">加载中</Badge>}
             </div>
-            <h1 className="truncate text-[22px] font-semibold tracking-tight text-[var(--color-fg)]">
+            <h1 className="truncate text-[22px] font-semibold tracking-tight text-foreground">
               {displayName}
             </h1>
-            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-[var(--color-fg-muted)]">
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
               <span>节点：{instance.nodeName}</span>
               <span className="font-mono">实例：{name}</span>
               {detail?.description && <span>{detail.description}</span>}
@@ -236,17 +281,17 @@ export function Detail({
               <Button
                 variant="default"
                 disabled={!!pending || !enabled}
-                onClick={() => onAction(instance, 'start')}
+                onClick={() => action(instance, 'start')}
                 title={!enabled ? '实例已停用，请先在节点工作台启用' : undefined}
               >
                 <Play size={13} />
                 {pending === 'start' ? '启动中...' : '启动'}
               </Button>
-              <Button disabled={!!pending} onClick={() => onAction(instance, 'stop')}>
+              <Button disabled={!!pending} onClick={() => action(instance, 'stop')}>
                 <Square size={13} />
                 {pending === 'stop' ? '停止中...' : '停止'}
               </Button>
-              <Button disabled={!!pending || !enabled} onClick={() => onAction(instance, 'restart')}>
+              <Button disabled={!!pending || !enabled} onClick={() => action(instance, 'restart')}>
                 <RefreshCw size={13} />
                 {pending === 'restart' ? '重启中...' : '重启'}
               </Button>
@@ -255,7 +300,7 @@ export function Detail({
               <Button
                 variant="destructive"
                 disabled={!!pending || !enabled}
-                onClick={() => onAction(instance, 'recreate')}
+                onClick={() => action(instance, 'recreate')}
               >
                 <RotateCcw size={13} />
                 {pending === 'recreate' ? '重建中...' : '重新创建容器'}
@@ -274,7 +319,7 @@ export function Detail({
         </div>
       </section>
 
-      <div className="mb-4 flex gap-1.5 overflow-x-auto border-b border-[var(--color-border)]">
+      <div className="mb-4 flex flex-wrap gap-1.5 border-b border-border">
         <TabButton active={tab === 'logs'} onClick={() => setTab('logs')} icon={<TerminalSquare size={13} />}>
           日志
         </TabButton>
@@ -318,7 +363,7 @@ export function Detail({
       )}
 
       {tab === 'config' && (
-        <ConfigEditorPanel instance={instance} toast={toast} embedded onSaved={loadDetail} />
+        <ConfigEditorPanel instance={instance} embedded onSaved={loadDetail} />
       )}
 
       {tab === 'proxies' && <ProxySummaryPanel detail={detail} loading={detailLoading} proxies={proxyDrafts} />}
@@ -376,11 +421,8 @@ function LogsPanel({
       title={
         <span className="inline-flex items-center gap-2">
           日志
-          <span className="text-[11px] font-normal text-[var(--color-fg-muted)]">
-            {paused ? '自动刷新已暂停' : `每 ${LOG_REFRESH_MS / 1000} 秒自动刷新`}
-          </span>
           {loading && (
-            <span className="text-[11px] font-normal text-[var(--color-fg-muted)]">加载中...</span>
+            <span className="text-[11px] font-normal text-muted-foreground">加载中...</span>
           )}
         </span>
       }
@@ -405,7 +447,7 @@ function LogsPanel({
             value={logOrder}
             onChange={(event) => onLogOrderChange(event.target.value as 'newest' | 'oldest')}
             aria-label="日志排序"
-            className="h-8 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[12px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] focus:ring-2 focus:ring-[var(--color-accent)]/15"
+            className="h-8 rounded-md border border-border bg-card px-2 text-[12px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           >
             <option value="newest">最新在上</option>
             <option value="oldest">最新在下</option>
@@ -417,7 +459,7 @@ function LogsPanel({
             value={tail}
             onChange={(event) => onTailChange(Number(event.target.value) as TailOption)}
             aria-label="日志行数"
-            className="h-8 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[12px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] focus:ring-2 focus:ring-[var(--color-accent)]/15"
+            className="h-8 rounded-md border border-border bg-card px-2 text-[12px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           >
             {TAIL_OPTIONS.map((value) => (
               <option key={value} value={value}>
@@ -430,22 +472,22 @@ function LogsPanel({
               event.preventDefault();
               onApplyKeyword();
             }}
-            className="flex h-8 w-[240px] items-center gap-2 rounded-md border border-[var(--color-border)] px-2.5 focus-within:border-[var(--color-accent)] focus-within:ring-2 focus-within:ring-[var(--color-accent)]/15"
+            className="flex h-8 w-[240px] items-center gap-2 rounded-md border border-border px-2.5 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20"
           >
-            <Search size={12} className="text-[var(--color-fg-subtle)]" aria-hidden="true" />
+            <Search size={12} className="text-muted-foreground/70" aria-hidden="true" />
             <input
               value={keywordInput}
               onChange={(event) => onKeywordInputChange(event.target.value)}
               onBlur={onApplyKeyword}
               placeholder="按 Enter 搜索"
               aria-label="按关键字过滤日志"
-              className="min-w-0 flex-1 bg-transparent text-[12px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-subtle)]"
+              className="min-w-0 flex-1 bg-transparent text-[12px] text-foreground outline-none placeholder:text-muted-foreground/70"
             />
             {appliedKeyword && (
               <button
                 type="button"
                 onClick={onClearKeyword}
-                className="text-[11px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
+                className="text-[11px] text-muted-foreground hover:text-foreground"
                 aria-label="清除过滤"
               >
                 清除
@@ -481,7 +523,7 @@ function ProxySummaryPanel({
   if (loading) {
     return (
       <Panel title="代理">
-        <p className="text-[12px] text-[var(--color-fg-muted)]">加载中...</p>
+        <p className="text-[12px] text-muted-foreground">加载中...</p>
       </Panel>
     );
   }
@@ -489,7 +531,7 @@ function ProxySummaryPanel({
   if (!detail) {
     return (
       <Panel title="代理">
-        <p className="text-[12px] text-[var(--color-fg-muted)]">详情不可用，无法展示代理摘要。</p>
+        <p className="text-[12px] text-muted-foreground">详情不可用</p>
       </Panel>
     );
   }
@@ -507,10 +549,32 @@ function ProxySummaryPanel({
           <SummaryItem label="代理数量" value={detail.summary.proxyCount} mono />
         </dl>
 
-        <div className="mt-5 overflow-x-auto rounded-lg border border-[var(--color-border)]">
+        <div className="mt-5 grid gap-3 2xl:hidden">
+          {proxies.map((proxy, index) => (
+            <div key={`${proxy.name || 'proxy'}:${index}`} className="min-w-0 rounded-lg border border-border bg-muted/40 p-3">
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <span className="truncate font-mono text-[12px] text-foreground">
+                  {proxy.name.trim() || '未命名'}
+                </span>
+                <Badge tone="muted">{proxy.type || '--'}</Badge>
+              </div>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <MobileFact label="本地目标" value={formatProxyLocalTarget(proxy)} mono />
+                <MobileFact label="远端" value={formatProxyRemoteTarget(proxy)} mono />
+              </div>
+            </div>
+          ))}
+          {!proxies.length && (
+            <div className="rounded-lg border border-dashed border-input bg-muted p-6 text-center text-[12px] text-muted-foreground">
+              {detail.summary.proxyCount > 0 ? '未能解析代理表格' : '暂无代理'}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-5 hidden rounded-lg border border-border 2xl:block">
           <table className="w-full min-w-[720px]">
             <thead>
-              <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface-muted)]">
+              <tr className="border-b border-border bg-muted">
                 <Th>代理名</Th>
                 <Th>类型</Th>
                 <Th>本地目标</Th>
@@ -521,7 +585,7 @@ function ProxySummaryPanel({
               {proxies.map((proxy, index) => (
                 <tr
                   key={`${proxy.name || 'proxy'}:${index}`}
-                  className="border-b border-[var(--color-border)] last:border-b-0 hover:bg-[var(--color-surface-muted)]"
+                  className="border-b border-border last:border-b-0 hover:bg-muted"
                 >
                   <Td mono>{proxy.name.trim() || '未命名'}</Td>
                   <Td>
@@ -535,22 +599,15 @@ function ProxySummaryPanel({
                 <tr>
                   <td
                     colSpan={4}
-                    className="px-4 py-8 text-center text-[12px] text-[var(--color-fg-muted)]"
+                    className="px-4 py-8 text-center text-[12px] text-muted-foreground"
                   >
-                    {detail.summary.proxyCount > 0
-                      ? '当前配置摘要显示有代理，但常用字段未能解析成表格；可在配置 tab 查看原始 TOML。'
-                      : '当前配置没有代理条目。'}
+                    {detail.summary.proxyCount > 0 ? '未能解析代理表格' : '暂无代理'}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
-        {proxies.length > 0 && (
-          <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-muted)] px-3 py-2 text-[11px] leading-5 text-[var(--color-fg-muted)]">
-            代理表只展示常用字段；高级字段仍以原始 TOML 为准。
-          </div>
-        )}
       </Panel>
 
       <aside className="flex flex-col gap-4">
@@ -585,10 +642,43 @@ function AuditPanel({
       }
       bodyClassName="p-0"
     >
-      <div className="overflow-x-auto">
+      <div>
+        <div className="grid gap-3 p-3 2xl:hidden">
+          {logs.map((log) => (
+            <div key={log.id} className="min-w-0 rounded-lg border border-border bg-card p-3">
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <span className="truncate font-mono text-[11px] text-muted-foreground">
+                  {formatTime(log.createdAt)}
+                </span>
+                {log.success ? (
+                  <Badge tone="success">
+                    <CheckCircle2 size={12} />
+                    成功
+                  </Badge>
+                ) : (
+                  <Badge tone="danger">
+                    <XCircle size={12} />
+                    失败
+                  </Badge>
+                )}
+              </div>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <MobileFact label="操作人" value={log.username || '--'} />
+                <MobileFact label="动作" value={ACTION_LABEL[log.action] || log.action} />
+                <MobileFact label="消息" value={log.message || '--'} />
+              </div>
+            </div>
+          ))}
+          {!logs.length && (
+            <div className="rounded-lg border border-dashed border-input bg-muted p-6 text-center text-[12px] text-muted-foreground">
+              {loading ? '加载中...' : '该实例暂无操作记录'}
+            </div>
+          )}
+        </div>
+        <div className="hidden 2xl:block">
         <table className="w-full min-w-[780px]">
           <thead>
-            <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface-muted)]">
+            <tr className="border-b border-border bg-muted">
               <Th>时间</Th>
               <Th>操作人</Th>
               <Th>动作</Th>
@@ -600,7 +690,7 @@ function AuditPanel({
             {logs.map((log) => (
               <tr
                 key={log.id}
-                className="border-b border-[var(--color-border)] transition-colors last:border-b-0 hover:bg-[var(--color-surface-muted)]"
+                className="border-b border-border transition-colors last:border-b-0 hover:bg-muted"
               >
                 <Td mono>{formatTime(log.createdAt)}</Td>
                 <Td>{log.username || '--'}</Td>
@@ -619,7 +709,7 @@ function AuditPanel({
                   )}
                 </Td>
                 <Td>
-                  <span className="text-[12px] text-[var(--color-fg-muted)]">
+                  <span className="text-[12px] text-muted-foreground">
                     {log.message || '--'}
                   </span>
                 </Td>
@@ -629,7 +719,7 @@ function AuditPanel({
               <tr>
                 <td
                   colSpan={5}
-                  className="px-4 py-10 text-center text-[12px] text-[var(--color-fg-muted)]"
+                  className="px-4 py-10 text-center text-[12px] text-muted-foreground"
                 >
                   {loading ? '加载中...' : '该实例暂无操作记录'}
                 </td>
@@ -637,6 +727,7 @@ function AuditPanel({
             )}
           </tbody>
         </table>
+        </div>
       </div>
     </Panel>
   );
@@ -689,10 +780,34 @@ function formatProxyRemoteTarget(proxy: ProxyDraft): string {
   return parts.length ? parts.join(' · ') : '不可用';
 }
 
+function MobileFact({
+  label,
+  value,
+  mono = false
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="min-w-0 rounded-md bg-muted px-2.5 py-2">
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div
+        className={`mt-0.5 truncate text-[12px] text-foreground ${
+          mono ? 'font-mono tabular-nums text-muted-foreground' : ''
+        }`}
+        title={value}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
 function ActionGroup({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-[var(--color-border)] bg-white p-2.5">
-      <div className="mb-2 text-[11px] font-semibold text-[var(--color-fg-muted)]">{title}</div>
+    <div className="rounded-lg border border-border bg-card p-2.5">
+      <div className="mb-2 text-[11px] font-semibold text-muted-foreground">{title}</div>
       <div className="flex flex-wrap gap-2">{children}</div>
     </div>
   );
@@ -715,14 +830,14 @@ function TabButton({
       onClick={onClick}
       role="tab"
       aria-selected={active}
-      className={`inline-flex h-9 shrink-0 items-center gap-1.5 rounded-t-lg border border-b-0 px-3 text-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] ${
+      className={`inline-flex h-9 max-w-full shrink-0 items-center gap-1.5 overflow-hidden rounded-t-lg border border-b-0 px-3 text-[12px] whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
         active
-          ? 'border-[var(--color-border)] bg-white font-semibold text-[var(--color-accent)]'
-          : 'border-transparent text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-fg)]'
+          ? 'border-border bg-card font-semibold text-primary'
+          : 'border-transparent text-muted-foreground hover:bg-muted hover:text-foreground'
       }`}
     >
-      {icon}
-      {children}
+      <span className="shrink-0">{icon}</span>
+      <span className="min-w-0 truncate">{children}</span>
     </button>
   );
 }
@@ -738,19 +853,19 @@ function ChipGroup({
 }) {
   return (
     <div>
-      <div className="mb-1.5 text-[12px] text-[var(--color-fg-muted)]">{label}</div>
+      <div className="mb-1.5 text-[12px] text-muted-foreground">{label}</div>
       {entries.length === 0 ? (
-        <span className="text-[12px] text-[var(--color-fg-subtle)]">不可用</span>
+        <span className="text-[12px] text-muted-foreground/70">不可用</span>
       ) : (
         <div className="flex flex-wrap gap-1.5">
           {entries.map((entry) => (
             <span
               key={entry.key}
-              className={`inline-flex h-6 items-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface-muted)] px-2 text-[11px] text-[var(--color-fg)] ${
+              className={`inline-flex h-6 max-w-full items-center overflow-hidden rounded-md border border-border bg-muted px-2 text-[11px] text-foreground whitespace-nowrap ${
                 mono ? 'font-mono tabular-nums' : ''
               }`}
             >
-              {entry.label}
+              <span className="min-w-0 truncate">{entry.label}</span>
             </span>
           ))}
         </div>
@@ -771,11 +886,11 @@ function StatTile({
   truncate?: boolean;
 }) {
   return (
-    <div className="min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-muted)] p-3">
-      <div className="mb-1 text-[11px] text-[var(--color-fg-muted)]">{label}</div>
+    <div className="min-w-0 rounded-lg border border-border bg-muted/60 p-3">
+      <div className="mb-1 text-[11px] text-muted-foreground">{label}</div>
       <div
-        className={`text-[13px] font-semibold text-[var(--color-fg)] tabular-nums ${
-          mono ? 'font-mono text-[11px] font-normal text-[var(--color-fg-muted)]' : ''
+        className={`text-[13px] font-semibold text-foreground tabular-nums ${
+          mono ? 'font-mono text-[11px] font-normal text-muted-foreground' : ''
         } ${truncate ? 'truncate' : ''}`}
         title={truncate ? value : undefined}
       >
@@ -796,8 +911,8 @@ function SummaryItem({
 }) {
   return (
     <div>
-      <dt className="mb-1 text-[var(--color-fg-muted)]">{label}</dt>
-      <dd className={`font-medium text-[var(--color-fg)] ${mono ? 'font-mono tabular-nums' : ''}`}>
+      <dt className="mb-1 text-muted-foreground">{label}</dt>
+      <dd className={`font-medium text-foreground ${mono ? 'font-mono tabular-nums' : ''}`}>
         {value ?? '不可用'}
       </dd>
     </div>
@@ -806,7 +921,7 @@ function SummaryItem({
 
 function Th({ children }: { children: React.ReactNode }) {
   return (
-    <th className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-fg-muted)]">
+    <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">
       {children}
     </th>
   );
@@ -821,7 +936,7 @@ function Td({
 }) {
   return (
     <td
-      className={`px-4 py-2.5 text-[13px] text-[var(--color-fg)] ${mono ? 'font-mono text-[12px] tabular-nums text-[var(--color-fg-muted)]' : ''}`}
+      className={`px-4 py-2.5 text-[13px] text-foreground ${mono ? 'font-mono text-[12px] tabular-nums text-muted-foreground' : ''}`}
     >
       {children}
     </td>

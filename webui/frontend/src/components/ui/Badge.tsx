@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils"
 import type { InstanceTone } from "@/lib/format"
 
 const badgeVariants = cva(
-  "group/badge inline-flex h-5 w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-3xl border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-all focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&>svg]:pointer-events-none [&>svg]:size-3!",
+  "group/badge inline-flex h-5 max-w-full w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-3xl border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-all focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&>svg]:pointer-events-none [&>svg]:shrink-0 [&>svg]:size-3!",
   {
     variants: {
       variant: {
@@ -21,9 +21,9 @@ const badgeVariants = cva(
           "hover:bg-muted hover:text-muted-foreground dark:hover:bg-muted/50",
         link: "text-primary underline-offset-4 hover:underline",
         success:
-          "bg-[var(--color-success-soft)] text-[var(--color-success)]",
+          "bg-primary/10 text-primary",
         warning:
-          "bg-[var(--color-warning-soft)] text-[var(--color-warning)]",
+          "bg-secondary text-secondary-foreground",
         muted:
           "bg-muted text-muted-foreground",
       },
@@ -65,8 +65,8 @@ function Badge({
       className={cn(badgeVariants({ variant: resolved }), className)}
       {...props}
     >
-      {dot && <span className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-60" />}
-      {children}
+      {dot && <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-60" />}
+      <span className="inline-flex min-w-0 items-center gap-1 truncate">{children}</span>
     </Comp>
   )
 }

@@ -83,25 +83,6 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
-
-  /* ─── Legacy alias layer — all old --color-* references resolve to shadcn variables ─── */
-  --color-bg: var(--background);
-  --color-surface: var(--card);
-  --color-surface-muted: var(--muted);
-  --color-border: var(--border);
-  --color-border-strong: var(--input);
-  --color-fg: var(--foreground);
-  --color-fg-muted: var(--muted-foreground);
-  --color-fg-subtle: color-mix(in oklch, var(--muted-foreground), transparent 35%);
-  --color-accent: var(--primary);
-  --color-accent-hover: color-mix(in oklch, var(--primary), black 15%);
-  --color-accent-soft: color-mix(in oklch, var(--primary) 12%, white);
-  --color-success: oklch(0.65 0.18 145);
-  --color-success-soft: color-mix(in oklch, oklch(0.65 0.18 145) 12%, white);
-  --color-warning: oklch(0.68 0.16 70);
-  --color-warning-soft: color-mix(in oklch, oklch(0.68 0.16 70) 10%, white);
-  --color-danger: var(--destructive);
-  --color-danger-soft: color-mix(in oklch, var(--destructive) 10%, white);
 }
 
 .dark {
@@ -146,6 +127,7 @@
 
   body {
     @apply bg-background text-foreground;
+    overflow-x: hidden;
   }
   * {
     border-color: var(--border);

@@ -93,23 +93,11 @@ export type AuthMe = {
   tokenTtlSeconds: number;
 };
 
-export type Page =
-  | 'overview'
-  | 'nodes'
-  | 'audit'
-  | 'detail'
-  | 'config'
-  | 'create'
-  | 'system';
-
 export type AuthState = {
   token: string;
   username: string;
   expiresAt: number;
 };
-
-export type ToastKind = 'success' | 'error' | 'info';
-export type Toast = { id: number; kind: ToastKind; text: string };
 
 export type ValidationData = {
   valid: boolean;
@@ -179,3 +167,6 @@ export type AuditLog = {
   message: string;
   createdAt: string;
 };
+
+/** Page identifier — used to bridge old Console-style navigation with React Router. */
+export type Page = 'overview' | 'detail' | 'config' | 'nodes' | 'create' | 'audit' | 'system';

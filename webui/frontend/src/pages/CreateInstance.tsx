@@ -11,15 +11,18 @@ import {
   Settings2,
   XCircle
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { api, nodesApi } from '../lib/api';
 import { shortNodeUuid } from '../lib/format';
 import { Button } from '../components/ui/button';
-import { Field } from '../components/ui/Field';
-import { Input } from '../components/ui/input'
+import { Input } from '../components/ui/input';
+import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
-import { Panel } from '../components/ui/Panel';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { ProxyList } from '../components/ProxyList';
+import { useConsole } from '../context/ConsoleContext';
 import {
   emptyFrpcConfig,
   parseFrpcConfig,
@@ -28,29 +31,16 @@ import {
   type FrpcConfigDraft,
   type ProxyDraft
 } from '../lib/proxyToml';
-import type { InstanceRef, Node, ToastKind } from '../lib/types';
+import type { InstanceRef, Node } from '../lib/types';
 
 const INSTANCE_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$/;
 
 type EditorMode = 'structured' | 'raw';
 
-export function CreateInstance({
-  toast,
-  instances,
-  nodes,
-  initialNodeId,
-  onCreated,
-  onManageNodes,
-  onCancel
-}: {
-  toast: (kind: ToastKind, text: string) => void;
-  instances: InstanceRef[];
-  nodes: Node[];
-  initialNodeId?: number;
-  onCreated: (name: string, nodeId: number) => void;
-  onManageNodes: () => void;
-  onCancel: () => void;
-}) {
+export function CreateInstance() {
+  const { instances, nodes, workspaceNodeId, refreshAll } = useConsole();
+  const navigate = useNavigate();
+  const initialNodeId = workspaceNodeId === 'all' ? undefined : workspaceNodeId;
   const defaultName = useMemo(() => nextClientName(instances), [instances]);
   const initialConfigText = useMemo(() => serializeFrpcConfig(emptyFrpcConfig()), []);
   const resolvedInitialNodeId = useMemo(
@@ -73,8 +63,6 @@ export function CreateInstance({
   const [nodeId, setNodeId] = useState<number>(resolvedInitialNodeId);
   const [nodeDirty, setNodeDirty] = useState(false);
 
-  // Re-sync the suggested name once the instance list arrives (the user
-  // hasn't typed yet — let the default catch up to the real instances).
   useEffect(() => {
     if (!nameDirty) setName(nextClientName(instances));
   }, [instances, nameDirty]);
@@ -128,26 +116,23 @@ export function CreateInstance({
     return (
       <main className="px-6 py-6 max-w-[1600px]">
         <button
-          onClick={onCancel}
-          className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] rounded-sm"
+          onClick={() => navigate('/workspace')}
+          className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
         >
           <ArrowLeft size={13} />
           返回节点工作台
         </button>
 
-        <section className="rounded-lg border border-dashed border-[var(--color-border-strong)] bg-[var(--color-surface)] p-8 text-center">
-          <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
+        <section className="rounded-lg border border-dashed border-input bg-card p-8 text-center">
+          <h2 className="text-[18px] font-semibold tracking-tight text-foreground">
             还没有可用节点
           </h2>
-          <p className="mx-auto mt-2 max-w-[520px] text-[12px] leading-6 text-[var(--color-fg-muted)]">
-            创建实例前需要先添加 Agent 节点。节点接入后，回到工作台选择节点再创建实例，创建页会自动预选该节点。
-          </p>
           <div className="mt-5 flex flex-wrap justify-center gap-2">
-            <Button variant="default" onClick={onManageNodes}>
+            <Button variant="default" onClick={() => navigate('/nodes')}>
               <Plus size={13} />
               添加节点
             </Button>
-            <Button onClick={onCancel}>返回节点工作台</Button>
+            <Button onClick={() => navigate('/workspace')}>返回节点工作台</Button>
           </div>
         </section>
       </main>
@@ -156,15 +141,15 @@ export function CreateInstance({
 
   async function create() {
     if (nameError) {
-      toast('error', nameError);
+      toast.error(nameError);
       return;
     }
     if (nodeError) {
-      toast('error', nodeError);
+      toast.error(nodeError);
       return;
     }
     if (structuredErrors.length) {
-      toast('error', structuredErrors[0]);
+      toast.error(structuredErrors[0]);
       return;
     }
     setSubmitting(true);
@@ -185,10 +170,11 @@ export function CreateInstance({
           body: JSON.stringify(payload)
         });
       }
-      toast('success', '实例创建成功');
-      onCreated(name.trim(), nodeId);
+      toast.success('实例创建成功');
+      await refreshAll();
+      navigate(`/instances/${nodeId}/${encodeURIComponent(name.trim())}`);
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '创建失败');
+      toast.error(err instanceof Error ? err.message : '创建失败');
     } finally {
       setSubmitting(false);
     }
@@ -197,8 +183,8 @@ export function CreateInstance({
   return (
     <main className="px-6 py-6 max-w-[1600px]">
       <button
-        onClick={onCancel}
-        className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] rounded-sm"
+        onClick={() => navigate('/workspace')}
+        className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
       >
         <ArrowLeft size={13} />
         返回节点工作台
@@ -206,12 +192,9 @@ export function CreateInstance({
 
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-[18px] font-semibold tracking-tight text-[var(--color-fg)]">
+          <h2 className="text-[18px] font-semibold tracking-tight text-foreground">
             创建 frpc 实例
           </h2>
-          <p className="mt-1 text-[12px] text-[var(--color-fg-muted)]">
-            依次确认目标节点、frps 连接、代理规则和启动行为。
-          </p>
         </div>
         {validationCount === 0 ? (
           <Badge tone="success">校验通过</Badge>
@@ -222,40 +205,29 @@ export function CreateInstance({
         )}
       </div>
 
-      <div className="mb-4 flex items-center gap-1 border-b border-[var(--color-border)]">
+      <div className="mb-4 flex items-center gap-1 border-b border-border">
         <TabButton active={mode === 'structured'} onClick={() => setMode('structured')}>
           结构化
         </TabButton>
         <TabButton active={mode === 'raw'} onClick={() => setMode('raw')}>
           原始 TOML
         </TabButton>
-        <span className="ml-auto text-[11px] text-[var(--color-fg-muted)] pb-2">
-          {mode === 'structured'
-            ? '按常用字段生成 frpc.toml，适合标准配置'
-            : '高级模式；摘要和校验会按当前 TOML 重新解析'}
-        </span>
       </div>
-
-      {mode === 'raw' && (
-        <div className="mb-4 rounded-lg border border-[var(--color-warning)]/25 bg-[var(--color-warning-soft)] p-3 text-[12px] leading-5 text-[var(--color-warning)]">
-          原始 TOML 模式适合高级配置。切回结构化模式后，只会保留本页面识别的 server/auth/proxies 常用字段。
-        </div>
-      )}
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex flex-col gap-4">
           {mode === 'structured' ? (
             <>
-              <Panel title={<SectionTitle icon={<Server size={14} />} title="1. 基本信息" />}>
+              <FormSection title={<SectionTitle icon={<Server size={14} />} title="1. 基本信息" />}>
                 <div className="flex flex-col gap-4">
-                  <Field label="节点" hint="实例会创建到选中的 Agent 节点">
+                  <Field label="节点">
                     <select
                       value={nodeId}
                       onChange={(event) => {
                         setNodeId(Number(event.target.value));
                         setNodeDirty(true);
                       }}
-                      className="w-full h-9 px-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] focus:ring-2 focus:ring-[var(--color-accent)]/15"
+                      className="w-full h-9 px-3 rounded-md border border-border bg-card text-[13px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                     >
                       <option value={0}>请选择节点</option>
                       {nodes.map((node) => (
@@ -266,25 +238,22 @@ export function CreateInstance({
                     </select>
                   </Field>
                   {selectedNode && (
-                    <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-muted)] p-3">
+                    <div className="rounded-lg border border-border bg-muted p-3">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-[12px] font-semibold text-[var(--color-fg)]">
+                        <span className="text-[12px] font-semibold text-foreground">
                           {selectedNode.name}
                         </span>
                         <Badge tone={nodeIsOnline(selectedNode) ? 'success' : 'danger'}>
                           {nodeLabel(selectedNode)}
                         </Badge>
                       </div>
-                      <div className="mt-1 font-mono text-[11px] text-[var(--color-fg-muted)]">
+                      <div className="mt-1 font-mono text-[11px] text-muted-foreground">
                         uuid {shortNodeUuid(selectedNode.uuid, 8)} · {selectedNode.lastSeenAt ? `最近 ${formatLastSeen(selectedNode.lastSeenAt)}` : '未连接'}
                       </div>
                     </div>
                   )}
                   {nodeError && <ErrorLine>{nodeError}</ErrorLine>}
-                  <Field
-                    label="实例名"
-                    hint="只能包含小写字母、数字和短横线；默认会自动递增 client-NNN"
-                  >
+                  <Field label="实例名">
                     <Input
                       value={name}
                       onChange={(event) => {
@@ -299,14 +268,14 @@ export function CreateInstance({
                     <ErrorLine>{nameError}</ErrorLine>
                   )}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <Field label="显示名称" hint="可选，仅用于界面展示">
+                    <Field label="显示名称">
                       <Input
                         value={displayName}
                         onChange={(event) => setDisplayName(event.target.value)}
                         placeholder="家里 NAS"
                       />
                     </Field>
-                    <Field label="备注描述" hint="可选，方便区分用途">
+                    <Field label="备注描述">
                       <Input
                         value={description}
                         onChange={(event) => setDescription(event.target.value)}
@@ -315,11 +284,11 @@ export function CreateInstance({
                     </Field>
                   </div>
                 </div>
-              </Panel>
+              </FormSection>
 
-              <Panel title={<SectionTitle icon={<Network size={14} />} title="2. frps 连接" />}>
+              <FormSection title={<SectionTitle icon={<Network size={14} />} title="2. frps 连接" />}>
                 <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_140px] gap-4">
-                  <Field label="服务器地址" hint="必填，frps 主机名或 IP">
+                  <Field label="服务器地址">
                     <Input
                       value={structured.serverAddr}
                       onChange={(event) => updateStructured({ serverAddr: event.target.value })}
@@ -327,7 +296,7 @@ export function CreateInstance({
                       aria-invalid={!structured.serverAddr.trim()}
                     />
                   </Field>
-                  <Field label="端口" hint="可选，默认 7000">
+                  <Field label="端口">
                     <Input
                       value={structured.serverPort}
                       onChange={(event) => updateStructured({ serverPort: event.target.value })}
@@ -339,7 +308,6 @@ export function CreateInstance({
                 <div className="mt-4">
                   <Field
                     label="认证密钥 (auth.token)"
-                    hint="可选，未填则在 TOML 中注释整个 [auth] 段"
                   >
                     <Input
                       type="password"
@@ -350,25 +318,19 @@ export function CreateInstance({
                     />
                   </Field>
                 </div>
-              </Panel>
+              </FormSection>
 
-              <Panel title={<SectionTitle icon={<FileCode2 size={14} />} title="3. 代理规则" />}>
-                <ProxyList
-                  proxies={structured.proxies}
-                  onChange={updateProxies}
-                  toast={toast}
-                  emptyHint="还没有代理。点击「新增代理」开始配置内网穿透。"
-                />
-              </Panel>
+              <FormSection title={<SectionTitle icon={<FileCode2 size={14} />} title="3. 代理规则" />}>
+                  <ProxyList
+                    proxies={structured.proxies}
+                    onChange={updateProxies}
+                    emptyHint="还没有代理。点击「新增代理」开始配置内网穿透。"
+                  />
+              </FormSection>
             </>
           ) : (
-            <Panel
+            <FormSection
               title={<SectionTitle icon={<FileCode2 size={14} />} title="原始 TOML" />}
-              actions={
-                <span className="text-[11px] text-[var(--color-fg-muted)]">
-                  高级模式
-                </span>
-              }
             >
               <Textarea
                 value={configText}
@@ -376,33 +338,31 @@ export function CreateInstance({
                 spellCheck={false}
                 className="min-h-[480px]"
               />
-            </Panel>
+            </FormSection>
           )}
 
-          <Panel title={<SectionTitle icon={<Settings2 size={14} />} title="4. 启动选项" />}>
+          <FormSection title={<SectionTitle icon={<Settings2 size={14} />} title="4. 启动选项" />}>
             <div className="flex flex-col gap-2">
               <Toggle
                 checked={enabled}
                 onChange={setEnabled}
                 label="启用该实例"
-                hint="关闭时仅保留配置，不写入 compose.generated.yaml，也不会被启动"
               />
               <Toggle
                 checked={enabled && startAfterCreate}
                 disabled={!enabled}
                 onChange={setStartAfterCreate}
                 label="创建后立即启动"
-                hint={enabled ? '勾选则在写入后自动 docker compose up' : '需要先启用该实例'}
               />
             </div>
-          </Panel>
+          </FormSection>
         </div>
 
         <aside className="flex flex-col gap-4 lg:sticky lg:top-20 lg:self-start">
-          <Panel title={<SectionTitle icon={<Rocket size={14} />} title="创建摘要" />}>
+          <FormSection title={<SectionTitle icon={<Rocket size={14} />} title="创建摘要" />}>
             <div className="flex flex-col gap-3 text-[12px]">
               <SummaryRow label="目标节点">
-                <span className="font-medium text-[var(--color-fg)]">
+                <span className="font-medium text-foreground">
                   {selectedNode ? selectedNode.name : '未选择'}
                 </span>
                 {selectedNode && (
@@ -412,20 +372,20 @@ export function CreateInstance({
                 )}
               </SummaryRow>
               <SummaryRow label="frps">
-                <span className="font-mono text-[11px] text-[var(--color-fg)]">
+                <span className="font-mono text-[11px] text-foreground">
                   {structured.serverAddr.trim() || '未填写'}:{structured.serverPort.trim() || '7000'}
                 </span>
               </SummaryRow>
               <SummaryRow label="代理数量">
-                <span className="font-mono text-[var(--color-fg)]">{structured.proxies.length}</span>
+                <span className="font-mono text-foreground">{structured.proxies.length}</span>
               </SummaryRow>
               <SummaryRow label="远端端口">
-                <span className="font-mono text-[11px] text-[var(--color-fg)]">
+                <span className="font-mono text-[11px] text-foreground">
                   {remotePorts.length ? remotePorts.join(', ') : '无'}
                 </span>
               </SummaryRow>
               <SummaryRow label="将执行">
-                <span className="text-right text-[var(--color-fg)]">
+                <span className="text-right text-foreground">
                   {enabled
                     ? startAfterCreate
                       ? '写入配置并启动实例'
@@ -434,25 +394,25 @@ export function CreateInstance({
                 </span>
               </SummaryRow>
             </div>
-          </Panel>
+          </FormSection>
 
-          <Panel title="校验结果">
+          <FormSection title="校验结果">
             <div role="status" aria-live="polite">
               {structuredErrors.length === 0 && !nameError && !nodeError ? (
-                <div className="flex items-start gap-2 text-[12px] text-[var(--color-success)]">
+                <div className="flex items-start gap-2 text-[12px] text-primary">
                   <CheckCircle2 size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
                   <span>可创建</span>
                 </div>
               ) : (
                 <ul className="flex flex-col gap-2">
                   {nameError && (
-                    <li className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-danger-soft)] text-[12px] text-[var(--color-danger)]">
+                    <li className="flex items-start gap-2 p-2 rounded-md bg-destructive/10 text-[12px] text-destructive">
                       <XCircle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
                       <span>{nameError}</span>
                     </li>
                   )}
                   {nodeError && (
-                    <li className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-danger-soft)] text-[12px] text-[var(--color-danger)]">
+                    <li className="flex items-start gap-2 p-2 rounded-md bg-destructive/10 text-[12px] text-destructive">
                       <XCircle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
                       <span>{nodeError}</span>
                     </li>
@@ -460,7 +420,7 @@ export function CreateInstance({
                   {structuredErrors.map((message, idx) => (
                     <li
                       key={idx}
-                      className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-warning-soft)] text-[12px] text-[var(--color-warning)]"
+                      className="flex items-start gap-2 p-2 rounded-md bg-secondary text-[12px] text-secondary-foreground"
                     >
                       <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
                       <span>{message}</span>
@@ -469,18 +429,7 @@ export function CreateInstance({
                 </ul>
               )}
             </div>
-          </Panel>
-
-          <Panel title="创建后自动完成">
-            <ul className="flex flex-col gap-2.5 text-[12px] text-[var(--color-fg-muted)]">
-              <ChecklistItem>
-                写入 <code className="font-mono text-[11px] text-[var(--color-fg)]">instances/{name || '<name>'}/frpc.toml</code>
-              </ChecklistItem>
-              <ChecklistItem>写入 meta.json</ChecklistItem>
-              <ChecklistItem>重新生成 compose.generated.yaml</ChecklistItem>
-              {enabled && startAfterCreate && <ChecklistItem>docker compose up -d 启动该实例</ChecklistItem>}
-            </ul>
-          </Panel>
+          </FormSection>
 
           <Button variant="default" onClick={create} disabled={!canSubmit || submitting} className="w-full">
             <Plus size={13} />
@@ -489,6 +438,23 @@ export function CreateInstance({
         </aside>
       </section>
     </main>
+  );
+}
+
+function FormSection({
+  title,
+  children,
+}: {
+  title: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card className="gap-0 overflow-hidden rounded-lg border border-border py-0 shadow-sm ring-0">
+      <CardHeader className="rounded-t-none border-b bg-muted/50 px-4 py-3">
+        <CardTitle className="text-sm">{title}</CardTitle>
+      </CardHeader>
+      <CardContent className="p-4">{children}</CardContent>
+    </Card>
   );
 }
 
@@ -505,9 +471,27 @@ function nextClientName(instances: InstanceRef[]): string {
 function SectionTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (
     <span className="inline-flex items-center gap-2">
-      <span className="text-[var(--color-accent)]">{icon}</span>
+      <span className="text-primary">{icon}</span>
       {title}
     </span>
+  );
+}
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label className="text-xs font-medium">{label}</Label>
+      {children}
+      {hint && <p className="text-[11px] leading-5 text-muted-foreground">{hint}</p>}
+    </div>
   );
 }
 
@@ -519,8 +503,8 @@ function SummaryRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 border-b border-[var(--color-border)] pb-2 last:border-b-0 last:pb-0">
-      <span className="shrink-0 text-[var(--color-fg-muted)]">{label}</span>
+    <div className="flex items-start justify-between gap-3 border-b border-border pb-2 last:border-b-0 last:pb-0">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
       <span className="flex min-w-0 flex-wrap justify-end gap-1.5 text-right">{children}</span>
     </div>
   );
@@ -565,10 +549,10 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
-      className={`px-3 py-2 -mb-px border-b-2 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] rounded-t-sm ${
+      className={`px-3 py-2 -mb-px border-b-2 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-t-sm ${
         active
-          ? 'border-[var(--color-accent)] text-[var(--color-fg)]'
-          : 'border-transparent text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]'
+          ? 'border-primary text-foreground'
+          : 'border-transparent text-muted-foreground hover:text-foreground'
       }`}
     >
       {children}
@@ -576,21 +560,9 @@ function TabButton({
   );
 }
 
-function ChecklistItem({ children }: { children: React.ReactNode }) {
-  return (
-    <li className="flex items-start gap-2">
-      <CheckCircle2
-        size={13}
-        className="mt-0.5 shrink-0 text-[var(--color-success)]"
-      />
-      <span>{children}</span>
-    </li>
-  );
-}
-
 function ErrorLine({ children }: { children: React.ReactNode }) {
   return (
-    <div className="-mt-2 inline-flex items-start gap-1.5 text-[11px] text-[var(--color-danger)]">
+    <div className="-mt-2 inline-flex items-start gap-1.5 text-[11px] text-destructive">
       <XCircle size={11} className="mt-0.5 shrink-0" />
       <span>{children}</span>
     </div>
@@ -621,19 +593,19 @@ function Toggle({
         aria-label={label}
         disabled={disabled}
         onClick={() => !disabled && onChange(!checked)}
-        className={`mt-0.5 relative inline-flex w-9 h-5 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)] ${
-          checked ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-border)]'
+        className={`mt-0.5 relative inline-flex w-9 h-5 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card ${
+          checked ? 'bg-primary' : 'bg-input'
         }`}
       >
         <span
-          className={`absolute top-0.5 inline-block w-4 h-4 rounded-full bg-white shadow transition-transform ${
+          className={`absolute top-0.5 inline-block w-4 h-4 rounded-full bg-background shadow transition-transform ${
             checked ? 'translate-x-[18px]' : 'translate-x-0.5'
           }`}
         />
       </button>
       <span className="flex flex-col gap-0.5">
-        <span className="text-[12px] font-medium text-[var(--color-fg)]">{label}</span>
-        {hint && <span className="text-[11px] text-[var(--color-fg-muted)]">{hint}</span>}
+        <span className="text-[12px] font-medium text-foreground">{label}</span>
+        {hint && <span className="text-[11px] text-muted-foreground">{hint}</span>}
       </span>
     </label>
   );

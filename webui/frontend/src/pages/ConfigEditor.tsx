@@ -1,49 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
-import {
-  AlertTriangle,
-  CheckCircle2,
-  RotateCcw,
-  Save,
-  XCircle
-} from 'lucide-react';
+import { AlertTriangle, CheckCircle2, RotateCcw, Save, XCircle } from 'lucide-react';
+import { toast } from 'sonner';
 import { api, nodesApi } from '../lib/api';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Panel } from '../components/ui/Panel';
-import { Textarea } from '@/components/ui/textarea';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Switch } from '../components/ui/switch';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { Textarea } from '../components/ui/textarea';
 import { ProxyList } from '../components/ProxyList';
-import {
-  parseProxies,
-  rewriteProxies,
-  splitTomlAtProxies,
-  type ProxyDraft
-} from '../lib/proxyToml';
-import type { InstanceRef, ToastKind, ValidationData } from '../lib/types';
-
-type EditorMode = 'structured' | 'raw';
-
-export function ConfigEditor({
-  instance,
-  toast
-}: {
-  instance: InstanceRef | null;
-  toast: (kind: ToastKind, text: string) => void;
-}) {
-  return (
-    <main className="px-6 py-6 max-w-[1600px]">
-      <ConfigEditorPanel instance={instance} toast={toast} />
-    </main>
-  );
-}
+import { parseProxies, rewriteProxies, splitTomlAtProxies, type ProxyDraft } from '../lib/proxyToml';
+import { useConsole } from '../context/ConsoleContext';
+import type { InstanceRef, ValidationData } from '../lib/types';
 
 export function ConfigEditorPanel({
   instance,
-  toast,
   embedded = false,
-  onSaved
+  onSaved,
 }: {
-  instance: InstanceRef | null;
-  toast: (kind: ToastKind, text: string) => void;
+  instance: InstanceRef;
   embedded?: boolean;
   onSaved?: () => void;
 }) {
@@ -53,309 +28,109 @@ export function ConfigEditorPanel({
   const [validating, setValidating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [restartAfterSave, setRestartAfterSave] = useState(true);
-  const [mode, setMode] = useState<EditorMode>('structured');
-  const name = instance?.name || '';
-  const instanceKey = instance ? `${instance.nodeId}:${instance.name}` : '';
+  const [mode, setMode] = useState<'structured' | 'raw'>('structured');
+  const name = instance.name;
+  const ik = `${instance.nodeId}:${instance.name}`;
 
   useEffect(() => {
-    if (!instance) {
-      setConfigText('');
-      setOriginalText('');
-      setValidation(null);
-      return;
-    }
-    const request =
-      instance.nodeId > 0
-        ? nodesApi.instances.getConfig(instance.nodeId, instance.name)
-        : api<{ configText: string; validation: ValidationData }>(`/api/instances/${instance.name}/config`);
-    request
-      .then((data) => {
-        setConfigText(data.configText);
-        setOriginalText(data.configText);
-        setValidation(data.validation);
-      })
-      .catch(() => {
-        setConfigText('');
-        setOriginalText('');
-        setValidation(null);
-      });
-    // Only reload when the selected instance identity changes. Summary polling
-    // refreshes the instance object every few seconds and must not overwrite
-    // unsaved edits in this page.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instanceKey]);
+    const req = instance.nodeId > 0
+      ? nodesApi.instances.getConfig(instance.nodeId, instance.name)
+      : api<{ configText: string; validation: ValidationData }>(`/api/instances/${instance.name}/config`);
+    req.then((d) => { setConfigText(d.configText); setOriginalText(d.configText); setValidation(d.validation); })
+      .catch(() => { setConfigText(''); setOriginalText(''); setValidation(null); });
+  }, [ik]);
 
   useEffect(() => {
-    if (!instance) return;
     if (configText === originalText) return;
-    const handle = window.setTimeout(async () => {
+    const h = window.setTimeout(async () => {
       setValidating(true);
       try {
-        const result =
-          instance.nodeId > 0
-            ? await nodesApi.instances.validateConfig(instance.nodeId, instance.name, configText)
-            : await api<ValidationData>(`/api/instances/${instance.name}/config/validate`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'text/plain' },
-                body: configText
-              });
-        setValidation(result);
-      } catch {
-        // ignore — keep last validation
-      } finally {
-        setValidating(false);
-      }
+        const r = instance.nodeId > 0
+          ? await nodesApi.instances.validateConfig(instance.nodeId, instance.name, configText)
+          : await api<ValidationData>(`/api/instances/${instance.name}/config/validate`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: configText });
+        setValidation(r);
+      } catch {} finally { setValidating(false); }
     }, 500);
-    return () => window.clearTimeout(handle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instanceKey, configText, originalText]);
+    return () => window.clearTimeout(h);
+  }, [ik, configText, originalText]);
 
   const dirty = configText !== originalText;
-
-  async function save() {
-    if (!instance) return;
-    setSaving(true);
-    try {
-      if (instance.nodeId > 0) {
-        await nodesApi.instances.updateConfig(instance.nodeId, instance.name, {
-          configText,
-          restartAfterSave
-        });
-      } else {
-        await api<{ validation: ValidationData }>(`/api/instances/${instance.name}/config`, {
-          method: 'PUT',
-          body: JSON.stringify({ configText, restartAfterSave })
-        });
-      }
-      setOriginalText(configText);
-      toast('success', restartAfterSave ? '已保存并重启容器' : '已保存');
-      onSaved?.();
-    } catch (err) {
-      toast('error', err instanceof Error ? err.message : '保存失败');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function reset() {
-    if (!instance) return;
-    try {
-      const data = await api<{ configText: string }>(
-        `/api/config/default?name=${encodeURIComponent(instance.name)}`
-      );
-      setConfigText(data.configText);
-      toast('info', '已载入默认配置，未保存前不会写入磁盘');
-    } catch (err) {
-      toast('error', err instanceof Error ? err.message : '载入默认配置失败');
-    }
-  }
-
-  if (!instance)
-    return (
-      <Panel title="配置">
-        <p className="text-[12px] text-[var(--color-fg-muted)]">请选择需要编辑的实例</p>
-      </Panel>
-    );
-
   const errors = validation?.errors || [];
   const warnings = validation?.warnings || [];
   const summary = validation?.summary;
+  let sb: { tone: 'success' | 'warning' | 'danger' | 'muted'; label: string };
+  if (validating) sb = { tone: 'muted', label: '校验中…' };
+  else if (errors.length) sb = { tone: 'danger', label: `${errors.length} 个错误` };
+  else if (dirty) sb = { tone: 'warning', label: '未保存' };
+  else sb = { tone: 'success', label: '已同步' };
 
-  let stateBadge: { tone: 'success' | 'warning' | 'danger' | 'muted'; label: string };
-  if (validating) stateBadge = { tone: 'muted', label: '校验中…' };
-  else if (errors.length) stateBadge = { tone: 'danger', label: `${errors.length} 个错误` };
-  else if (dirty) stateBadge = { tone: 'warning', label: '未保存' };
-  else stateBadge = { tone: 'success', label: '已同步' };
-
-  const headerActions = (
-    <>
-      <label className="inline-flex items-center gap-1.5 text-[12px] text-[var(--color-fg-muted)] cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={restartAfterSave}
-          onChange={(event) => setRestartAfterSave(event.target.checked)}
-          className="w-3.5 h-3.5 accent-[var(--color-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)] rounded-sm"
-        />
-        保存后重启容器
-      </label>
-      <Button onClick={reset} disabled={saving}>
-        <RotateCcw size={13} />
-        重置为默认
-      </Button>
-      <Button variant="default" onClick={save} disabled={!dirty || saving || !!errors.length}>
-        <Save size={13} />
-        {saving ? '保存中…' : '保存'}
-      </Button>
-    </>
-  );
-
-  return (
-    <>
-      <div className="mb-4 flex items-center gap-3 flex-wrap">
-        <h2 className={`${embedded ? 'text-[15px]' : 'text-[18px]'} font-semibold tracking-tight text-[var(--color-fg)]`}>
-          编辑配置
-        </h2>
-        <span className="text-[12px] text-[var(--color-fg-muted)] font-mono">
-          {name} / frpc.toml
-        </span>
-        <Badge tone={stateBadge.tone}>{stateBadge.label}</Badge>
-      </div>
-
-      <div className="mb-4 flex items-center gap-1 border-b border-[var(--color-border)]">
-        <TabButton active={mode === 'structured'} onClick={() => setMode('structured')}>
-          代理（结构化）
-        </TabButton>
-        <TabButton active={mode === 'raw'} onClick={() => setMode('raw')}>
-          原始 TOML
-        </TabButton>
-        <span className="ml-auto text-[11px] text-[var(--color-fg-muted)] pb-2">
-          {mode === 'structured'
-            ? '结构化编辑只影响 [[proxies]] 段，其他部分请用 TOML 模式'
-            : '完整文本模式，适合高级用户'}
-        </span>
-      </div>
-
-      <section className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4">
-        {mode === 'raw' ? (
-          <Panel title="配置内容" actions={headerActions}>
-            <Textarea
-              value={configText}
-              onChange={(event) => setConfigText(event.target.value)}
-              spellCheck={false}
-              className={embedded ? 'min-h-[420px]' : 'min-h-[520px]'}
-            />
-          </Panel>
-        ) : (
-          <Panel title="代理列表" actions={headerActions}>
-            <StructuredProxyEditor
-              configText={configText}
-              onChange={setConfigText}
-              toast={toast}
-            />
-          </Panel>
-        )}
-
-        <aside className="flex flex-col gap-4">
-          <Panel title="校验结果">
-            <div role="status" aria-live="polite">
-              {!validation ? (
-                <p className="text-[12px] text-[var(--color-fg-muted)]">等待校验…</p>
-              ) : errors.length === 0 && warnings.length === 0 ? (
-                <div className="flex items-start gap-2 text-[12px] text-[var(--color-success)]">
-                  <CheckCircle2 size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
-                  <span>配置合法，可保存</span>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-2">
-                  {errors.map((item, index) => (
-                    <div
-                      key={`err-${index}`}
-                      className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-danger-soft)] text-[12px] text-[var(--color-danger)]"
-                    >
-                      <XCircle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
-                      <span>{item}</span>
-                    </div>
-                  ))}
-                  {warnings.map((item, index) => (
-                    <div
-                      key={`warn-${index}`}
-                      className="flex items-start gap-2 p-2 rounded-md bg-[var(--color-warning-soft)] text-[12px] text-[var(--color-warning)]"
-                    >
-                      <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
-                      <span>{item}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </Panel>
-
-          {summary && (
-            <Panel title="配置摘要">
-              <dl className="grid grid-cols-1 gap-3 text-[12px]">
-                <SummaryItem label="服务端" value={summary.serverAddr} mono />
-                <SummaryItem label="端口" value={summary.serverPort} mono />
-                <SummaryItem label="认证方式" value={summary.authMethod} />
-                <SummaryItem label="代理数量" value={summary.proxyCount} />
-              </dl>
-            </Panel>
-          )}
-        </aside>
-      </section>
-    </>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  children
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`px-3 py-2 -mb-px border-b-2 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] rounded-t-sm ${
-        active
-          ? 'border-[var(--color-accent)] text-[var(--color-fg)]'
-          : 'border-transparent text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]'
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function StructuredProxyEditor({
-  configText,
-  onChange,
-  toast
-}: {
-  configText: string;
-  onChange: (next: string) => void;
-  toast: (kind: ToastKind, text: string) => void;
-}) {
-  const drafts = useMemo(() => {
-    const { proxiesBody } = splitTomlAtProxies(configText);
-    return parseProxies(proxiesBody);
-  }, [configText]);
-
-  function handleChange(next: ProxyDraft[]) {
-    onChange(rewriteProxies(configText, next));
+  async function save() {
+    setSaving(true);
+    try {
+      if (instance.nodeId > 0) await nodesApi.instances.updateConfig(instance.nodeId, instance.name, { configText, restartAfterSave });
+      else await api(`/api/instances/${instance.name}/config`, { method: 'PUT', body: JSON.stringify({ configText, restartAfterSave }) });
+      setOriginalText(configText);
+      toast.success(restartAfterSave ? '已保存并重启容器' : '已保存');
+      onSaved?.();
+    } catch (err) { toast.error(err instanceof Error ? err.message : '保存失败'); }
+    finally { setSaving(false); }
+  }
+  async function reset() {
+    try {
+      const d = await api<{ configText: string }>(`/api/config/default?name=${encodeURIComponent(instance.name)}`);
+      setConfigText(d.configText);
+      toast.info('已载入默认配置，未保存前不会写入磁盘');
+    } catch (err) { toast.error(err instanceof Error ? err.message : '载入默认配置失败'); }
   }
 
+  const header = (
+    <div className="flex flex-wrap items-center gap-2">
+      <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+        <Switch checked={restartAfterSave} onCheckedChange={setRestartAfterSave} size="sm" />
+        保存后重启容器
+      </label>
+      <Button size="sm" onClick={reset} disabled={saving}><RotateCcw size={13} />重置为默认</Button>
+      <Button size="sm" onClick={save} disabled={!dirty || saving || !!errors.length}><Save size={13} />{saving ? '保存中…' : '保存'}</Button>
+    </div>
+  );
+
   return (
-    <div className="flex flex-col gap-3">
-      <ProxyList proxies={drafts} onChange={handleChange} toast={toast} />
-      <p className="text-[11px] text-[var(--color-fg-muted)]">
-        提示：结构化编辑只处理常用字段（name / type / localIP / localPort / remotePort / subdomain / customDomains）。
-        如使用更多 frpc 字段，请回到「原始 TOML」模式编辑——切换 tab 时本段会按当前结构化结果重写，自定义字段会丢失。
-      </p>
+    <div>
+      <div className="mb-4 flex items-center gap-3 flex-wrap">
+        <h2 className="text-sm font-semibold">编辑配置</h2>
+        <span className="text-xs text-muted-foreground font-mono">{name} / frpc.toml</span>
+        <Badge tone={sb.tone}>{sb.label}</Badge>
+      </div>
+      <Tabs value={mode} onValueChange={(v) => setMode(v as 'structured' | 'raw')}>
+        <div className="flex items-center gap-1 border-b mb-4">
+          <TabsList className="border-0 bg-transparent p-0">
+            <TabsTrigger value="structured" className="data-[state=active]:bg-transparent text-xs">代理（结构化）</TabsTrigger>
+            <TabsTrigger value="raw" className="data-[state=active]:bg-transparent text-xs">原始 TOML</TabsTrigger>
+          </TabsList>
+          <span className="ml-auto text-[11px] text-muted-foreground">{mode === 'structured' ? '结构化编辑只影响 [[proxies]] 段' : '完整文本模式'}</span>
+        </div>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <TabsContent value="structured" className="mt-0">
+            <Card><CardHeader className="flex-row items-center justify-between space-y-0 pb-2"><CardTitle className="text-sm">代理列表</CardTitle>{header}</CardHeader><CardContent><SpEditor configText={configText} onChange={setConfigText} /></CardContent></Card>
+          </TabsContent>
+          <TabsContent value="raw" className="mt-0">
+            <Card><CardHeader className="flex-row items-center justify-between space-y-0 pb-2"><CardTitle className="text-sm">配置内容</CardTitle>{header}</CardHeader><CardContent><Textarea value={configText} onChange={(e) => setConfigText(e.target.value)} spellCheck={false} className="min-h-[420px]" /></CardContent></Card>
+          </TabsContent>
+          <aside className="space-y-4">
+            <Card><CardHeader><CardTitle className="text-sm">校验结果</CardTitle></CardHeader><CardContent>
+              {!validation ? <p className="text-xs text-muted-foreground">等待校验…</p>
+                : errors.length === 0 && warnings.length === 0 ? <div className="flex items-start gap-2 text-xs text-primary"><CheckCircle2 size={14} className="mt-0.5 shrink-0" /><span>配置合法，可保存</span></div>
+                : <div className="space-y-2">{errors.map((e, i) => <div key={`e${i}`} className="flex items-start gap-2 p-2 rounded-md bg-destructive/10 text-xs text-destructive"><XCircle size={13} className="mt-0.5 shrink-0" /><span>{e}</span></div>)}{warnings.map((w, i) => <div key={`w${i}`} className="flex items-start gap-2 p-2 rounded-md bg-secondary text-xs text-secondary-foreground"><AlertTriangle size={13} className="mt-0.5 shrink-0" /><span>{w}</span></div>)}</div>}
+            </CardContent></Card>
+            {summary && <Card><CardHeader><CardTitle className="text-sm">配置摘要</CardTitle></CardHeader><CardContent><dl className="space-y-2 text-xs">{S('服务端', summary.serverAddr, true)}{S('端口', summary.serverPort, true)}{S('认证方式', summary.authMethod)}{S('代理数量', summary.proxyCount)}</dl></CardContent></Card>}
+          </aside>
+        </div>
+      </Tabs>
     </div>
   );
 }
-
-function SummaryItem({
-  label,
-  value,
-  mono = false
-}: {
-  label: string;
-  value?: string | number | null;
-  mono?: boolean;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <dt className="text-[var(--color-fg-muted)]">{label}</dt>
-      <dd
-        className={`text-[var(--color-fg)] font-medium ${mono ? 'font-mono tabular-nums' : ''}`}
-      >
-        {value ?? '—'}
-      </dd>
-    </div>
-  );
+function S(l: string, v?: string | number | null, m = false) { return <div className="flex items-baseline justify-between gap-3"><dt className="text-muted-foreground">{l}</dt><dd className={`font-medium ${m ? 'font-mono tabular-nums' : ''}`}>{v ?? '—'}</dd></div>; }
+function SpEditor({ configText, onChange }: { configText: string; onChange: (n: string) => void }) {
+  const drafts = useMemo(() => { const { proxiesBody } = splitTomlAtProxies(configText); return parseProxies(proxiesBody); }, [configText]);
+  return <div className="flex flex-col gap-3"><ProxyList proxies={drafts} onChange={(n) => onChange(rewriteProxies(configText, n))} /></div>;
 }
