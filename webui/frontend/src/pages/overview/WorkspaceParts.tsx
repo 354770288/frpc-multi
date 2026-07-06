@@ -1,8 +1,25 @@
-import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowRight, FileCode2, MoreHorizontal, Trash2 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { Button } from '../../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../../components/ui/dropdown-menu';
+import {
+  Select as UiSelect,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../../components/ui/select';
+import { Switch as UiSwitch } from '../../components/ui/switch';
 import { cn } from '../../lib/utils';
 import type { InstanceTone } from '../../lib/format';
 
@@ -158,6 +175,7 @@ export function NodeCard({
   error: number;
   onClick: () => void;
 }) {
+  // ponytail: 整卡可点的复合布局，shadcn 无对应原语（Button 强制单行居中），保留原生 button
   return (
     <button
       onClick={onClick}
@@ -253,48 +271,31 @@ export function EmptyState({
 }
 
 export function Select({
-  children,
   label,
   value,
-  onChange
+  onChange,
+  options
 }: {
-  children: ReactNode;
   label: string;
   value: string;
   onChange: (value: string) => void;
+  options: { value: string; label: string }[];
 }) {
   return (
-    <select
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      aria-label={label}
-      className="h-8 rounded-lg border border-border bg-background px-2.5 text-[12px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-    >
-      {children}
-    </select>
-  );
-}
-
-export function StatusTab({
-  active,
-  onClick,
-  children
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`h-8 max-w-full shrink-0 overflow-hidden rounded-t-lg border border-b-0 px-3 text-[12px] whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-        active
-          ? 'border-border bg-primary/10 font-semibold text-primary'
-          : 'border-border bg-muted text-muted-foreground hover:text-foreground'
-      }`}
-    >
-      <span className="block min-w-0 truncate">{children}</span>
-    </button>
+    <UiSelect value={value} onValueChange={onChange}>
+      <SelectTrigger size="sm" aria-label={label} className="w-full">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </UiSelect>
   );
 }
 
@@ -359,19 +360,16 @@ export function IconAction({
   primary?: boolean;
 }) {
   return (
-    <button
+    <Button
+      variant={primary ? 'secondary' : 'ghost'}
+      size="icon-sm"
       onClick={onClick}
       disabled={disabled}
       title={label}
       aria-label={label}
-      className={`grid h-7 w-7 place-items-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-        primary
-          ? 'bg-primary/10 text-primary hover:bg-muted'
-          : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-      }`}
     >
       {children}
-    </button>
+    </Button>
   );
 }
 
@@ -387,23 +385,13 @@ export function Switch({
   label: string;
 }) {
   return (
-    <button
-      role="switch"
-      aria-checked={checked}
+    <UiSwitch
+      checked={checked}
+      onCheckedChange={onChange}
+      disabled={disabled}
       aria-label={label}
       title={label}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
-        checked ? 'bg-primary' : 'bg-input'
-      }`}
-    >
-      <span
-        className={`absolute top-0.5 h-4 w-4 rounded-full bg-background shadow transition-transform ${
-          checked ? 'translate-x-[18px]' : 'translate-x-0.5'
-        }`}
-      />
-    </button>
+    />
   );
 }
 
@@ -418,135 +406,32 @@ export function RowMenu({
   onDelete: () => void;
   deleting: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
-  const btnRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function handleClick(event: MouseEvent) {
-      const target = event.target as Node;
-      if (btnRef.current?.contains(target)) return;
-      if (menuRef.current?.contains(target)) return;
-      setOpen(false);
-    }
-    function handleEsc(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        setOpen(false);
-        btnRef.current?.focus();
-      }
-    }
-    function handleScroll() {
-      setOpen(false);
-    }
-    document.addEventListener('mousedown', handleClick);
-    document.addEventListener('keydown', handleEsc);
-    window.addEventListener('scroll', handleScroll, true);
-    window.addEventListener('resize', handleScroll);
-    return () => {
-      document.removeEventListener('mousedown', handleClick);
-      document.removeEventListener('keydown', handleEsc);
-      window.removeEventListener('scroll', handleScroll, true);
-      window.removeEventListener('resize', handleScroll);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open || !menuRef.current) return;
-    const first = menuRef.current.querySelector<HTMLButtonElement>('[role="menuitem"]');
-    first?.focus();
-  }, [open]);
-
-  function toggle() {
-    if (open) {
-      setOpen(false);
-      return;
-    }
-    const rect = btnRef.current?.getBoundingClientRect();
-    if (rect) {
-      setPos({
-        top: rect.bottom + 4,
-        right: window.innerWidth - rect.right
-      });
-    }
-    setOpen(true);
-  }
-
   return (
-    <>
-      <button
-        ref={btnRef}
-        onClick={toggle}
-        title="更多操作"
-        aria-label="更多操作"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className="grid h-7 w-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-      >
-        <MoreHorizontal size={14} />
-      </button>
-      {open && pos && (
-        <div
-          ref={menuRef}
-          role="menu"
-          aria-label="更多操作菜单"
-          style={{ position: 'fixed', top: pos.top, right: pos.right }}
-          className="z-50 min-w-[142px] overflow-hidden rounded-lg border border-border bg-popover py-1 shadow-lg"
-        >
-          <MenuItem
-            onClick={() => {
-              setOpen(false);
-              onOpen();
-            }}
-          >
-            <ArrowRight size={12} />
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon-sm" title="更多操作" aria-label="更多操作">
+          <MoreHorizontal />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuGroup>
+          <DropdownMenuItem onSelect={onOpen}>
+            <ArrowRight />
             进入
-          </MenuItem>
-          <MenuItem
-            onClick={() => {
-              setOpen(false);
-              onConfig();
-            }}
-          >
-            <FileCode2 size={12} />
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={onConfig}>
+            <FileCode2 />
             编辑配置
-          </MenuItem>
-          <div className="my-1 border-t border-border" />
-          <MenuItem
-            onClick={() => {
-              setOpen(false);
-              onDelete();
-            }}
-            danger
-          >
-            <Trash2 size={12} />
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuGroup>
+          <DropdownMenuItem variant="destructive" onSelect={onDelete}>
+            <Trash2 />
             {deleting ? '删除中...' : '删除实例'}
-          </MenuItem>
-        </div>
-      )}
-    </>
-  );
-}
-
-function MenuItem({
-  children,
-  onClick,
-  danger
-}: {
-  children: ReactNode;
-  onClick: () => void;
-  danger?: boolean;
-}) {
-  return (
-    <button
-      role="menuitem"
-      onClick={onClick}
-      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] hover:bg-muted focus-visible:bg-muted focus-visible:outline-none ${
-        danger ? 'text-destructive' : 'text-foreground'
-      }`}
-    >
-      {children}
-    </button>
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

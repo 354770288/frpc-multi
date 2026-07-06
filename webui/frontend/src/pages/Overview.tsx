@@ -21,11 +21,17 @@ import {
   RowMenu,
   Select,
   SummaryCard,
-  StatusTab,
   Switch,
   Td,
   Th
 } from './overview/WorkspaceParts';
+import { ToggleGroup, ToggleGroupItem } from '../components/ui/toggle-group';
+import { Button } from '../components/ui/button';
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from '../components/ui/input-group';
 import {
   instanceStateBadge,
   parsePercent,
@@ -307,16 +313,17 @@ export function Overview() {
           />
 
           <div className="border-b border-border bg-muted p-3">
-            <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-2.5 text-[12px] text-muted-foreground focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
-              <Search size={13} aria-hidden="true" />
-              <input
+            <InputGroup>
+              <InputGroupAddon>
+                <Search aria-hidden="true" />
+              </InputGroupAddon>
+              <InputGroupInput
                 value={nodeKeyword}
                 onChange={(event) => setNodeKeyword(event.target.value)}
                 placeholder="搜索节点名称"
                 aria-label="搜索节点名称"
-                className="min-w-0 flex-1 bg-transparent outline-none text-foreground placeholder:text-muted-foreground/70"
               />
-            </label>
+            </InputGroup>
           </div>
 
           <div className="p-3 grid gap-2.5">
@@ -324,13 +331,10 @@ export function Overview() {
               <EmptyState
                 title="还没有 Agent 节点"
                 actions={
-                  <button
-                    onClick={() => navigate('/nodes')}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-semibold text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                  >
-                    <Plus size={13} />
+                  <Button size="sm" onClick={() => navigate('/nodes')}>
+                    <Plus data-icon="inline-start" />
                     添加节点
-                  </button>
+                  </Button>
                 }
               />
             ) : (
@@ -363,12 +367,9 @@ export function Overview() {
                   <EmptyState
                     title="没有匹配的节点"
                     actions={
-                      <button
-                        onClick={() => setNodeKeyword('')}
-                        className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-[12px] font-semibold text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                      >
+                      <Button variant="outline" size="sm" onClick={() => setNodeKeyword('')}>
                         清除搜索
-                      </button>
+                      </Button>
                     }
                   />
                 )}
@@ -385,20 +386,13 @@ export function Overview() {
 
           <div className="border-b border-border bg-muted/50 px-4 py-3">
             <div className="flex flex-wrap justify-end gap-2">
-              <button
-                onClick={() => navigate('/nodes')}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-[12px] font-semibold text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              >
+              <Button variant="outline" size="sm" onClick={() => navigate('/nodes')}>
                 节点管理
-              </button>
-              <button
-                onClick={() => navigate('/create')}
-                disabled={nodes.length === 0}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-semibold text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-              >
-                <Plus size={13} />
+              </Button>
+              <Button size="sm" onClick={() => navigate('/create')} disabled={nodes.length === 0}>
+                <Plus data-icon="inline-start" />
                 {selectedNode ? '在此节点创建实例' : '创建实例'}
-              </button>
+              </Button>
             </div>
 
             <div className="mt-3 grid grid-cols-2 lg:grid-cols-5 gap-2">
@@ -415,76 +409,83 @@ export function Overview() {
               <EmptyState
                 title="先添加节点"
                 actions={
-                  <button
-                    onClick={() => navigate('/nodes')}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-semibold text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                  >
-                    <Plus size={13} />
+                  <Button size="sm" onClick={() => navigate('/nodes')}>
+                    <Plus data-icon="inline-start" />
                     打开节点管理
-                  </button>
+                  </Button>
                 }
               />
             </div>
           ) : (
             <>
               <div className="grid gap-2 border-b border-border bg-muted p-3 lg:grid-cols-[minmax(240px,1fr)_145px_145px_150px_auto]">
-                <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-2.5 text-[12px] text-muted-foreground focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
-                  <Search size={13} aria-hidden="true" />
-                  <input
+                <InputGroup>
+                  <InputGroupAddon>
+                    <Search aria-hidden="true" />
+                  </InputGroupAddon>
+                  <InputGroupInput
                     value={instanceKeyword}
                     onChange={(event) => setWorkspaceSearch(event.target.value)}
                     placeholder="搜索实例、节点、配置路径"
                     aria-label="搜索实例"
-                    className="min-w-0 flex-1 bg-transparent outline-none text-foreground placeholder:text-muted-foreground/70"
                   />
-                </label>
-                <Select value={statusFilter} onChange={(value) => setStatusFilter(value as StatusFilter)} label="状态">
-                  <option value="all">全部状态</option>
-                  <option value="running">运行中</option>
-                  <option value="error">异常</option>
-                  <option value="stopped">已停止</option>
-                  <option value="disabled">已停用</option>
-                </Select>
-                <Select value={enabledFilter} onChange={(value) => setEnabledFilter(value as EnabledFilter)} label="启用">
-                  <option value="all">启用状态</option>
-                  <option value="enabled">已启用</option>
-                  <option value="disabled">已停用</option>
-                </Select>
-                <Select value={proxyTypeFilter} onChange={setProxyTypeFilter} label="代理类型">
-                  <option value="all">代理类型</option>
-                  {proxyTypeOptions.map((type) => (
-                    <option key={type} value={type}>
-                      {type}
-                    </option>
-                  ))}
-                </Select>
-                <button
+                </InputGroup>
+                <Select
+                  value={statusFilter}
+                  onChange={(value) => setStatusFilter(value as StatusFilter)}
+                  label="状态"
+                  options={[
+                    { value: 'all', label: '全部状态' },
+                    { value: 'running', label: '运行中' },
+                    { value: 'error', label: '异常' },
+                    { value: 'stopped', label: '已停止' },
+                    { value: 'disabled', label: '已停用' },
+                  ]}
+                />
+                <Select
+                  value={enabledFilter}
+                  onChange={(value) => setEnabledFilter(value as EnabledFilter)}
+                  label="启用"
+                  options={[
+                    { value: 'all', label: '启用状态' },
+                    { value: 'enabled', label: '已启用' },
+                    { value: 'disabled', label: '已停用' },
+                  ]}
+                />
+                <Select
+                  value={proxyTypeFilter}
+                  onChange={setProxyTypeFilter}
+                  label="代理类型"
+                  options={[
+                    { value: 'all', label: '代理类型' },
+                    ...proxyTypeOptions.map((type) => ({ value: type, label: type })),
+                  ]}
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => {
                     setWorkspaceSearch('');
                     setStatusFilter('all');
                     setEnabledFilter('all');
                     setProxyTypeFilter('all');
                   }}
-                  className="h-8 rounded-lg border border-border bg-background px-3 text-[12px] font-semibold text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
                   清除筛选
-                </button>
+                </Button>
               </div>
 
-              <div className="flex flex-wrap gap-1.5 px-3 pt-3">
-                <StatusTab active={statusFilter === 'all'} onClick={() => setStatusFilter('all')}>
-                  全部 {selectedNodeInstances.length}
-                </StatusTab>
-                <StatusTab active={statusFilter === 'running'} onClick={() => setStatusFilter('running')}>
-                  运行中 {selectedRunning}
-                </StatusTab>
-                <StatusTab active={statusFilter === 'error'} onClick={() => setStatusFilter('error')}>
-                  异常 {selectedError}
-                </StatusTab>
-                <StatusTab active={statusFilter === 'disabled'} onClick={() => setStatusFilter('disabled')}>
-                  已停用 {selectedDisabled}
-                </StatusTab>
-              </div>
+              <ToggleGroup
+                type="single"
+                value={statusFilter}
+                onValueChange={(value) => setStatusFilter((value || 'all') as StatusFilter)}
+                className="flex-wrap justify-start px-3 pt-3"
+              >
+                <ToggleGroupItem value="all">全部 {selectedNodeInstances.length}</ToggleGroupItem>
+                <ToggleGroupItem value="running">运行中 {selectedRunning}</ToggleGroupItem>
+                <ToggleGroupItem value="error">异常 {selectedError}</ToggleGroupItem>
+                <ToggleGroupItem value="disabled">已停用 {selectedDisabled}</ToggleGroupItem>
+              </ToggleGroup>
 
               {selectedNodeInstances.length === 0 && !instanceKeyword.trim() && statusFilter === 'all' && enabledFilter === 'all' ? (
                 <div className="p-4">
@@ -492,20 +493,14 @@ export function Overview() {
                     title={selectedNode ? '该节点还没有实例' : '还没有实例'}
                     actions={
                       selectedNode ? (
-                        <button
-                          onClick={() => navigate('/create')}
-                          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-semibold text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                        >
-                          <Plus size={13} />
+                        <Button size="sm" onClick={() => navigate('/create')}>
+                          <Plus data-icon="inline-start" />
                           在此节点创建实例
-                        </button>
+                        </Button>
                       ) : (
-                        <button
-                          onClick={() => setWorkspaceNodeId(nodes[0].id)}
-                          className="inline-flex h-8 items-center rounded-lg bg-primary px-3 text-[12px] font-semibold text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                        >
+                        <Button size="sm" onClick={() => setWorkspaceNodeId(nodes[0].id)}>
                           选择 {nodes[0].name}
-                        </button>
+                        </Button>
                       )
                     }
                   />
@@ -531,6 +526,7 @@ export function Overview() {
                         className="min-w-0 rounded-lg border border-border bg-card p-3 shadow-sm"
                       >
                         <div className="flex min-w-0 items-start justify-between gap-3">
+                          {/* ponytail: 两行截断的可点击文本区，shadcn 无对应原语（Button 强制单行居中），保留原生 button */}
                           <button
                             onClick={() => openInstance(item)}
                             className="min-w-0 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
@@ -651,6 +647,7 @@ export function Overview() {
                             className="h-[58px] border-b border-border bg-card transition-colors hover:bg-primary/5"
                           >
                             <Td>
+                              {/* ponytail: 同上，两行截断文本区保留原生 button */}
                               <button
                                 onClick={() => openInstance(item)}
                                 className="block max-w-[240px] rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"

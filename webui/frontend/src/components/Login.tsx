@@ -93,8 +93,8 @@ export function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) 
             </div>
           )}
 
-          <Button variant="default" type="submit" disabled={loading} className="h-9 mt-1">
-            <ShieldCheck size={13} />
+          <Button variant="default" type="submit" disabled={loading} className="mt-1">
+            <ShieldCheck data-icon="inline-start" />
             {loading ? '登录中…' : '登录'}
           </Button>
         </form>

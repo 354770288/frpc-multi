@@ -20,6 +20,16 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/ui/select';
+import { Switch } from '../components/ui/switch';
+import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Badge } from '../components/ui/badge';
 import { ProxyList } from '../components/ProxyList';
 import { useConsole } from '../context/ConsoleContext';
@@ -115,13 +125,15 @@ export function CreateInstance() {
   if (nodes.length === 0) {
     return (
       <main className="px-6 py-6 max-w-[1600px]">
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => navigate('/workspace')}
-          className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
+          className="mb-4 -ml-3 text-muted-foreground"
         >
-          <ArrowLeft size={13} />
+          <ArrowLeft data-icon="inline-start" />
           返回节点工作台
-        </button>
+        </Button>
 
         <section className="rounded-lg border border-dashed border-input bg-card p-8 text-center">
           <h2 className="text-[18px] font-semibold tracking-tight text-foreground">
@@ -182,13 +194,15 @@ export function CreateInstance() {
 
   return (
     <main className="px-6 py-6 max-w-[1600px]">
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={() => navigate('/workspace')}
-        className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
+        className="mb-4 -ml-3 text-muted-foreground"
       >
-        <ArrowLeft size={13} />
+        <ArrowLeft data-icon="inline-start" />
         返回节点工作台
-      </button>
+      </Button>
 
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -205,14 +219,12 @@ export function CreateInstance() {
         )}
       </div>
 
-      <div className="mb-4 flex items-center gap-1 border-b border-border">
-        <TabButton active={mode === 'structured'} onClick={() => setMode('structured')}>
-          结构化
-        </TabButton>
-        <TabButton active={mode === 'raw'} onClick={() => setMode('raw')}>
-          原始 TOML
-        </TabButton>
-      </div>
+      <Tabs value={mode} onValueChange={(value) => setMode(value as EditorMode)} className="mb-4">
+        <TabsList>
+          <TabsTrigger value="structured">结构化</TabsTrigger>
+          <TabsTrigger value="raw">原始 TOML</TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex flex-col gap-4">
@@ -221,21 +233,27 @@ export function CreateInstance() {
               <FormSection title={<SectionTitle icon={<Server size={14} />} title="1. 基本信息" />}>
                 <div className="flex flex-col gap-4">
                   <Field label="节点">
-                    <select
-                      value={nodeId}
-                      onChange={(event) => {
-                        setNodeId(Number(event.target.value));
+                    <Select
+                      value={String(nodeId)}
+                      onValueChange={(value) => {
+                        setNodeId(Number(value));
                         setNodeDirty(true);
                       }}
-                      className="w-full h-9 px-3 rounded-md border border-border bg-card text-[13px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                     >
-                      <option value={0}>请选择节点</option>
-                      {nodes.map((node) => (
-                        <option key={node.id} value={node.id}>
-                          {node.name} ({nodeLabel(node)})
-                        </option>
-                      ))}
-                    </select>
+                      <SelectTrigger aria-label="节点" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="0">请选择节点</SelectItem>
+                          {nodes.map((node) => (
+                            <SelectItem key={node.id} value={String(node.id)}>
+                              {node.name} ({nodeLabel(node)})
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
                   </Field>
                   {selectedNode && (
                     <div className="rounded-lg border border-border bg-muted p-3">
@@ -536,30 +554,6 @@ function formatLastSeen(value: string): string {
   return `${Math.floor(hours / 24)} 天前`;
 }
 
-function TabButton({
-  active,
-  onClick,
-  children
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`px-3 py-2 -mb-px border-b-2 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-t-sm ${
-        active
-          ? 'border-primary text-foreground'
-          : 'border-transparent text-muted-foreground hover:text-foreground'
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
 function ErrorLine({ children }: { children: React.ReactNode }) {
   return (
     <div className="-mt-2 inline-flex items-start gap-1.5 text-[11px] text-destructive">
@@ -586,23 +580,13 @@ function Toggle({
     <label
       className={`flex items-start gap-3 ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
     >
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
+      <Switch
+        checked={checked}
+        onCheckedChange={(next) => !disabled && onChange(next)}
         disabled={disabled}
-        onClick={() => !disabled && onChange(!checked)}
-        className={`mt-0.5 relative inline-flex w-9 h-5 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card ${
-          checked ? 'bg-primary' : 'bg-input'
-        }`}
-      >
-        <span
-          className={`absolute top-0.5 inline-block w-4 h-4 rounded-full bg-background shadow transition-transform ${
-            checked ? 'translate-x-[18px]' : 'translate-x-0.5'
-          }`}
-        />
-      </button>
+        aria-label={label}
+        className="mt-0.5"
+      />
       <span className="flex flex-col gap-0.5">
         <span className="text-[12px] font-medium text-foreground">{label}</span>
         {hint && <span className="text-[11px] text-muted-foreground">{hint}</span>}

@@ -12,6 +12,12 @@ import {
 import { useConsole } from '../context/ConsoleContext';
 import { Button } from './ui/button';
 import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from './ui/input-group';
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -60,9 +66,11 @@ export function Topbar() {
       </Link>
 
       <div className="ml-auto flex min-w-0 items-center gap-2">
-        <div className="hidden h-9 w-[clamp(220px,30vw,420px)] items-center gap-2 rounded-lg border bg-muted/60 px-3 text-[12px] text-muted-foreground focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/30 md:flex">
-          <Search size={14} aria-hidden="true" />
-          <input
+        <InputGroup className="hidden w-[clamp(220px,30vw,420px)] md:flex">
+          <InputGroupAddon>
+            <Search aria-hidden="true" />
+          </InputGroupAddon>
+          <InputGroupInput
             value={searchValue}
             onFocus={() => navigate('/workspace')}
             onChange={(event) => applySearch(event.target.value)}
@@ -71,19 +79,15 @@ export function Topbar() {
             }}
             aria-label="搜索节点工作台实例"
             placeholder="搜索工作台实例、节点、配置路径"
-            className="min-w-0 flex-1 bg-transparent text-foreground outline-none placeholder:text-muted-foreground/60"
           />
           {searchValue && (
-            <button
-              type="button"
-              onClick={() => applySearch('')}
-              className="-mr-1 grid h-6 w-6 place-items-center rounded-md text-muted-foreground/60 hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label="清除工作台搜索"
-            >
-              <X size={13} />
-            </button>
+            <InputGroupAddon align="inline-end">
+              <InputGroupButton onClick={() => applySearch('')} aria-label="清除工作台搜索">
+                <X />
+              </InputGroupButton>
+            </InputGroupAddon>
           )}
-        </div>
+        </InputGroup>
 
         <Button size="sm" onClick={() => navigate('/create')} className="hidden lg:inline-flex">
           <Plus size={14} />

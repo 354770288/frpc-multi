@@ -5,6 +5,14 @@ import {
 import { toast } from 'sonner';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from './ui/select';
 import { PROXY_TYPES, createEmptyProxy, validateProxy, type ProxyDraft } from '../lib/proxyToml';
 
 export function ProxyList({
@@ -80,10 +88,16 @@ function ProxyRow({ d, ex, cd, ve, onT, onChange, onAD, onCD, onConfD }: {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <FR label="代理名"><Input value={d.name} onChange={(e) => onChange({ name: e.target.value })} placeholder="ssh" /></FR>
             <FR label="类型">
-              <select value={d.type} onChange={(e) => onChange({ type: e.target.value })}
-                className="h-9 w-full rounded-md border bg-card px-3 text-xs outline-none focus:border-ring focus:ring-[3px] focus:ring-ring/30">
-                {PROXY_TYPES.map((v) => <option key={v} value={v}>{v}</option>)}
-              </select>
+              <Select value={d.type} onValueChange={(v) => onChange({ type: v })}>
+                <SelectTrigger aria-label="类型" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {PROXY_TYPES.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
             </FR>
             <FR label="本地 IP"><Input value={d.localIP} onChange={(e) => onChange({ localIP: e.target.value })} placeholder="127.0.0.1" /></FR>
             <FR label="本地端口"><Input value={d.localPort} onChange={(e) => onChange({ localPort: e.target.value })} inputMode="numeric" placeholder="22" /></FR>

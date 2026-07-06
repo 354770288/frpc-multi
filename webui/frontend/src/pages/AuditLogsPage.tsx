@@ -11,6 +11,14 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/ui/select';
 import { useConsole } from '../context/ConsoleContext';
 import { toast } from 'sonner';
 import type { AuditLog } from '../lib/types';
@@ -80,13 +88,13 @@ export function AuditLogsPage() {
         <CardContent>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
             <div className="space-y-1.5"><Label className="text-[11px]">时间范围</Label>
-              <S value={tf} onChange={setTf}><option value="all">全部时间</option><option value="today">今天</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option></S></div>
+              <S value={tf} onChange={setTf} label="时间范围" options={[{ value: 'all', label: '全部时间' }, { value: 'today', label: '今天' }, { value: '7d', label: '最近 7 天' }, { value: '30d', label: '最近 30 天' }]} /></div>
             <div className="space-y-1.5"><Label className="text-[11px]">节点</Label>
-              <S value={nf} onChange={setNf}><option value="all">全部节点</option>{hasLocal && <option value="local">本机</option>}{nodes.map((n) => <option key={n.id} value={`node:${n.id}`}>{n.name}</option>)}</S></div>
+              <S value={nf} onChange={setNf} label="节点" options={[{ value: 'all', label: '全部节点' }, ...(hasLocal ? [{ value: 'local', label: '本机' }] : []), ...nodes.map((n) => ({ value: `node:${n.id}`, label: n.name }))]} /></div>
             <div className="space-y-1.5"><Label className="text-[11px]">动作</Label>
-              <S value={af} onChange={setAf}><option value="all">全部动作</option>{actions.map((a) => <option key={a} value={a}>{AL[a] || a}</option>)}</S></div>
+              <S value={af} onChange={setAf} label="动作" options={[{ value: 'all', label: '全部动作' }, ...actions.map((a) => ({ value: a, label: AL[a] || a }))]} /></div>
             <div className="space-y-1.5"><Label className="text-[11px]">结果</Label>
-              <S value={rf} onChange={setRf}><option value="all">全部结果</option><option value="success">成功</option><option value="failed">失败</option></S></div>
+              <S value={rf} onChange={setRf} label="结果" options={[{ value: 'all', label: '全部结果' }, { value: 'success', label: '成功' }, { value: 'failed', label: '失败' }]} /></div>
             <div className="space-y-1.5"><Label className="text-[11px]">实例</Label><Input value={iq} onChange={(e) => setIq(e.target.value)} placeholder="按实例名筛选" /></div>
           </div>
         </CardContent>
@@ -149,8 +157,8 @@ export function AuditLogsPage() {
   );
 }
 
-function S({ value, onChange, children }: { value: string; onChange: (v: string) => void; children: ReactNode }) { return <select value={value} onChange={(e) => onChange(e.target.value)} className="h-9 w-full rounded-md border bg-transparent px-3 text-xs outline-none focus:border-ring focus:ring-[3px] focus:ring-ring/30">{children}</select>; }
-function Msg({ l, ex, onT }: { l: AuditLog; ex: boolean; onT: () => void }) { const m = l.message || '—'; const lo = m.length > 96; return <div className="max-w-[420px]"><span className={`whitespace-pre-wrap break-words text-xs ${l.success ? 'text-muted-foreground' : 'font-medium text-destructive'}`}>{lo && !ex ? `${m.slice(0, 96)}...` : m}</span>{lo && <button onClick={onT} className="ml-2 inline-flex items-center gap-1 rounded-sm text-[11px] font-medium text-primary hover:underline">{ex ? <ChevronDown size={12} /> : <ChevronRight size={12} />}{ex ? '收起' : '展开'}</button>}</div>; }
+function S({ value, onChange, label, options }: { value: string; onChange: (v: string) => void; label: string; options: { value: string; label: string }[] }) { return <Select value={value} onValueChange={onChange}><SelectTrigger aria-label={label} className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{options.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectGroup></SelectContent></Select>; }
+function Msg({ l, ex, onT }: { l: AuditLog; ex: boolean; onT: () => void }) { const m = l.message || '—'; const lo = m.length > 96; return <div className="max-w-[420px]"><span className={`whitespace-pre-wrap break-words text-xs ${l.success ? 'text-muted-foreground' : 'font-medium text-destructive'}`}>{lo && !ex ? `${m.slice(0, 96)}...` : m}</span>{lo && <Button variant="link" size="xs" onClick={onT} className="ml-2 h-auto p-0">{ex ? <ChevronDown /> : <ChevronRight />}{ex ? '收起' : '展开'}</Button>}</div>; }
 function MobileFact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="min-w-0 rounded-md bg-muted px-2.5 py-2"><div className="text-[10px] text-muted-foreground">{label}</div><div className={`mt-0.5 truncate text-[12px] text-foreground ${mono ? 'font-mono tabular-nums text-muted-foreground' : ''}`} title={value}>{value}</div></div>; }
 function nodeVal(id: number | null) { return isLocal(id) ? 'local' : `node:${id}`; }
 function matchTime(v: string, f: string) { if (f === 'all') return true; const t = new Date(v).getTime(); if (Number.isNaN(t)) return false; if (f === 'today') { const s = new Date(); s.setHours(0, 0, 0, 0); return t >= s.getTime(); } return t >= Date.now() - (f === '7d' ? 7 : 30) * 86400000; }

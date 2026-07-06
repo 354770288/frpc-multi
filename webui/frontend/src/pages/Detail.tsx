@@ -19,6 +19,21 @@ import { instanceStateBadge } from '../lib/format';
 import { parseProxies, splitTomlAtProxies, type ProxyDraft } from '../lib/proxyToml';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from '../components/ui/input-group';
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/ui/select';
+import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Panel } from '../components/ui/Panel';
 import { ConfigEditorPanel } from './ConfigEditor';
 import { useConsole } from '../context/ConsoleContext';
@@ -250,13 +265,15 @@ export function Detail() {
 
   return (
     <main className="px-4 sm:px-6 py-5 sm:py-6 max-w-[1720px] mx-auto">
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={() => navigate('/workspace')}
-        className="inline-flex items-center gap-1.5 mb-4 text-[12px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
+        className="mb-4 -ml-3 text-muted-foreground"
       >
-        <ArrowLeft size={13} />
+        <ArrowLeft data-icon="inline-start" />
         返回节点工作台
-      </button>
+      </Button>
 
       <section className="mb-4 overflow-hidden rounded-lg border border-border bg-card">
         <div className="grid gap-4 border-b border-border bg-muted/50 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
@@ -319,20 +336,26 @@ export function Detail() {
         </div>
       </section>
 
-      <div className="mb-4 flex flex-wrap gap-1.5 border-b border-border">
-        <TabButton active={tab === 'logs'} onClick={() => setTab('logs')} icon={<TerminalSquare size={13} />}>
-          日志
-        </TabButton>
-        <TabButton active={tab === 'config'} onClick={() => setTab('config')} icon={<FileCode2 size={13} />}>
-          配置
-        </TabButton>
-        <TabButton active={tab === 'proxies'} onClick={() => setTab('proxies')} icon={<RefreshCw size={13} />}>
-          代理
-        </TabButton>
-        <TabButton active={tab === 'audit'} onClick={() => setTab('audit')} icon={<History size={13} />}>
-          操作记录
-        </TabButton>
-      </div>
+      <Tabs value={tab} onValueChange={(value) => setTab(value as DetailTab)} className="mb-4">
+        <TabsList>
+          <TabsTrigger value="logs">
+            <TerminalSquare />
+            日志
+          </TabsTrigger>
+          <TabsTrigger value="config">
+            <FileCode2 />
+            配置
+          </TabsTrigger>
+          <TabsTrigger value="proxies">
+            <RefreshCw />
+            代理
+          </TabsTrigger>
+          <TabsTrigger value="audit">
+            <History />
+            操作记录
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       {tab === 'logs' && (
         <LogsPanel
@@ -443,56 +466,60 @@ function LogsPanel({
           >
             {follow ? '跟随中' : '跟随'}
           </Button>
-          <select
-            value={logOrder}
-            onChange={(event) => onLogOrderChange(event.target.value as 'newest' | 'oldest')}
-            aria-label="日志排序"
-            className="h-8 rounded-md border border-border bg-card px-2 text-[12px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-          >
-            <option value="newest">最新在上</option>
-            <option value="oldest">最新在下</option>
-          </select>
+          <Select value={logOrder} onValueChange={(value) => onLogOrderChange(value as 'newest' | 'oldest')}>
+            <SelectTrigger size="sm" aria-label="日志排序">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="newest">最新在上</SelectItem>
+                <SelectItem value="oldest">最新在下</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
           <Button variant="ghost" onClick={onClearView}>
             清空视图
           </Button>
-          <select
-            value={tail}
-            onChange={(event) => onTailChange(Number(event.target.value) as TailOption)}
-            aria-label="日志行数"
-            className="h-8 rounded-md border border-border bg-card px-2 text-[12px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-          >
-            {TAIL_OPTIONS.map((value) => (
-              <option key={value} value={value}>
-                最近 {value} 行
-              </option>
-            ))}
-          </select>
+          <Select value={String(tail)} onValueChange={(value) => onTailChange(Number(value) as TailOption)}>
+            <SelectTrigger size="sm" aria-label="日志行数">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                {TAIL_OPTIONS.map((value) => (
+                  <SelectItem key={value} value={String(value)}>
+                    最近 {value} 行
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
           <form
             onSubmit={(event) => {
               event.preventDefault();
               onApplyKeyword();
             }}
-            className="flex h-8 w-[240px] items-center gap-2 rounded-md border border-border px-2.5 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20"
+            className="w-[240px]"
           >
-            <Search size={12} className="text-muted-foreground/70" aria-hidden="true" />
-            <input
-              value={keywordInput}
-              onChange={(event) => onKeywordInputChange(event.target.value)}
-              onBlur={onApplyKeyword}
-              placeholder="按 Enter 搜索"
-              aria-label="按关键字过滤日志"
-              className="min-w-0 flex-1 bg-transparent text-[12px] text-foreground outline-none placeholder:text-muted-foreground/70"
-            />
-            {appliedKeyword && (
-              <button
-                type="button"
-                onClick={onClearKeyword}
-                className="text-[11px] text-muted-foreground hover:text-foreground"
-                aria-label="清除过滤"
-              >
-                清除
-              </button>
-            )}
+            <InputGroup>
+              <InputGroupAddon>
+                <Search aria-hidden="true" />
+              </InputGroupAddon>
+              <InputGroupInput
+                value={keywordInput}
+                onChange={(event) => onKeywordInputChange(event.target.value)}
+                onBlur={onApplyKeyword}
+                placeholder="按 Enter 搜索"
+                aria-label="按关键字过滤日志"
+              />
+              {appliedKeyword && (
+                <InputGroupAddon align="inline-end">
+                  <InputGroupButton onClick={onClearKeyword} aria-label="清除过滤">
+                    清除
+                  </InputGroupButton>
+                </InputGroupAddon>
+              )}
+            </InputGroup>
           </form>
         </div>
       }
@@ -810,35 +837,6 @@ function ActionGroup({ title, children }: { title: string; children: React.React
       <div className="mb-2 text-[11px] font-semibold text-muted-foreground">{title}</div>
       <div className="flex flex-wrap gap-2">{children}</div>
     </div>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  icon,
-  children
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      role="tab"
-      aria-selected={active}
-      className={`inline-flex h-9 max-w-full shrink-0 items-center gap-1.5 overflow-hidden rounded-t-lg border border-b-0 px-3 text-[12px] whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-        active
-          ? 'border-border bg-card font-semibold text-primary'
-          : 'border-transparent text-muted-foreground hover:bg-muted hover:text-foreground'
-      }`}
-    >
-      <span className="shrink-0">{icon}</span>
-      <span className="min-w-0 truncate">{children}</span>
-    </button>
   );
 }
 
