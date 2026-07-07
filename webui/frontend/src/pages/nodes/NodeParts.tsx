@@ -28,7 +28,7 @@ export function StatusBadge({ node }: { node: Node }) {
 export function NodeHealthSummary({ health }: { health?: NodeInstanceHealth }) {
   const s = healthOrEmpty(health);
   return (
-    <div className="flex min-w-[180px] flex-wrap items-center gap-1.5">
+    <div className="flex min-w-[150px] flex-wrap items-center gap-1.5">
       <HC label="实例" value={s.total} />
       <HC label="运行" value={s.running} tone="success" />
       <HC label="异常" value={s.error} tone={s.error ? 'danger' : 'muted'} />

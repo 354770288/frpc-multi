@@ -93,7 +93,7 @@ export function SummaryCard({
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        <div className="grid grid-cols-1 gap-px bg-border/60 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-px bg-border/60 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {items.map((item) => (
             <SummaryMetricCell key={item.label} item={item} />
           ))}
@@ -231,17 +231,6 @@ function NodeStat({ label, value }: { label: string; value: number }) {
     <div className="rounded-lg bg-muted p-2">
       <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className="mt-0.5 font-mono text-[12px] font-semibold text-foreground tabular-nums">
-        {value}
-      </div>
-    </div>
-  );
-}
-
-export function ContextCell({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="rounded-lg border border-border bg-card p-2">
-      <div className="text-[10px] text-muted-foreground">{label}</div>
-      <div className={`mt-1 truncate text-[12px] font-semibold text-foreground ${mono ? 'font-mono tabular-nums' : ''}`}>
         {value}
       </div>
     </div>

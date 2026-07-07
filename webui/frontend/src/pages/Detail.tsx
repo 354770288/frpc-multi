@@ -525,6 +525,7 @@ function LogsPanel({
       }
       bodyClassName="p-0"
     >
+      {/* ponytail: 日志终端区按终端惯例固定深色，不随主题切换 */}
       <pre
         className="m-0 h-[560px] overflow-auto bg-zinc-950 px-4 py-3 font-mono text-[12px] leading-[1.65] text-slate-200 whitespace-pre-wrap"
       >

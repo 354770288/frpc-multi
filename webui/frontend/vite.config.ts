@@ -20,7 +20,15 @@ export default defineConfig({
   },
   build: {
     outDir: '../backend/static',
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ['react', 'react-dom', 'react-router-dom'],
+          ui: ['radix-ui', 'lucide-react', '@hugeicons/react', '@hugeicons/core-free-icons', 'sonner']
+        }
+      }
+    }
   }
 });
 

@@ -3,13 +3,17 @@ import { Link, useNavigate } from 'react-router-dom';
 import {
   ClipboardList,
   LogOut,
+  Monitor,
+  Moon,
   Plus,
   Search,
   Settings,
+  Sun,
   X,
   ChevronDown,
 } from 'lucide-react';
 import { useConsole } from '../context/ConsoleContext';
+import { useTheme, type Theme } from '../hooks/useTheme';
 import { Button } from './ui/button';
 import {
   InputGroup,
@@ -22,6 +26,8 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
@@ -34,6 +40,7 @@ export function Topbar() {
     setWorkspaceNodeId,
   } = useConsole();
   const navigate = useNavigate();
+  const { theme, setTheme } = useTheme();
   const [searchValue, setSearchValue] = useState(workspaceSearch);
 
   useEffect(() => {
@@ -118,6 +125,24 @@ export function Topbar() {
               <Settings size={13} />
               账号与安全
             </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+              外观
+            </DropdownMenuLabel>
+            <DropdownMenuRadioGroup value={theme} onValueChange={(value) => setTheme(value as Theme)}>
+              <DropdownMenuRadioItem value="light" className="text-xs">
+                <Sun size={13} />
+                浅色
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="dark" className="text-xs">
+                <Moon size={13} />
+                深色
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="system" className="text-xs">
+                <Monitor size={13} />
+                跟随系统
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => navigate('/login')} className="text-xs">
               <LogOut size={13} />

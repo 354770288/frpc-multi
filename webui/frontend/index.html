@@ -10,6 +10,13 @@
       rel="stylesheet"
     />
     <title>frpc 多实例管理</title>
+    <script>
+      (function () {
+        var t = localStorage.getItem('theme');
+        if (t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches))
+          document.documentElement.classList.add('dark');
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

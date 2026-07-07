@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { nodesApi } from '../lib/api';
-import { bytesToHuman, shortNodeUuid } from '../lib/format';
+import { bytesToHuman, formatLastSeen, shortNodeUuid } from '../lib/format';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -138,7 +138,7 @@ export function NodesPage() {
                 </div>
               )}
             </div>
-            <div className="hidden 2xl:block">
+            <div className="hidden overflow-x-auto 2xl:block">
               <table className="w-full min-w-[980px]">
                 <thead><tr className="border-b bg-muted/50"><Th>名称</Th><Th>状态</Th><Th>实例健康</Th><Th>系统摘要</Th><Th>UUID</Th><Th>最近在线</Th><Th align="right">操作</Th></tr></thead>
                 <tbody>
@@ -148,14 +148,14 @@ export function NodesPage() {
                       <Td><StatusBadge node={node} /></Td>
                       <Td><NodeHealthSummary health={nodeHealthById[node.id]} /></Td>
                       <Td><NodeSystemSummary node={node} snapshot={nodeSystems[node.id]} /></Td>
-                      <Td><span className="font-mono text-[11px] text-muted-foreground">{shortNodeUuid(node.uuid)}</span></Td>
-                      <Td><span className="text-xs text-muted-foreground">{node.lastSeenAt || '—'}</span></Td>
+                      <Td><span className="font-mono text-[11px] text-muted-foreground" title={node.uuid || undefined}>{shortNodeUuid(node.uuid, 8)}</span></Td>
+                      <Td><span className="whitespace-nowrap text-xs text-muted-foreground" title={node.lastSeenAt || undefined}>{formatLastSeen(node.lastSeenAt)}</span></Td>
                       <Td align="right">
                         <div className="flex items-center justify-end gap-1">
                           <Button size="sm" onClick={() => showInstall(node)} disabled={!!pending[node.id]}><Terminal size={13} />安装命令</Button>
                           <Button size="sm" onClick={() => setConfirming({ action: 'rotate', node })} disabled={!!pending[node.id]}><KeyRound size={13} />轮换密钥</Button>
-                          <Button size="sm" onClick={() => setConfirming({ action: 'upgrade', node })} disabled={!!pending[node.id] || !node.online} title={node.online ? undefined : '离线节点需先接入 Agent'}><UploadCloud size={13} />升级</Button>
-                          <Button size="sm" variant="destructive" onClick={() => setConfirming({ action: 'delete', node })} disabled={!!pending[node.id]}><Trash2 size={13} />删除</Button>
+                          <Button size="icon-sm" variant="secondary" onClick={() => setConfirming({ action: 'upgrade', node })} disabled={!!pending[node.id] || !node.online} title={node.online ? '升级 Agent' : '离线节点需先接入 Agent'} aria-label="升级 Agent"><UploadCloud size={13} /></Button>
+                          <Button size="icon-sm" variant="destructive" onClick={() => setConfirming({ action: 'delete', node })} disabled={!!pending[node.id]} title="删除节点" aria-label="删除节点"><Trash2 size={13} /></Button>
                         </div>
                       </Td>
                     </tr>
@@ -218,5 +218,5 @@ function MobileFact({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-function Th({ children, align = 'left' }: { children: React.ReactNode; align?: 'left' | 'right' }) { return <th className={`px-4 py-2.5 text-[11px] font-medium text-muted-foreground ${align === 'right' ? 'text-right' : 'text-left'}`}>{children}</th>; }
+function Th({ children, align = 'left' }: { children: React.ReactNode; align?: 'left' | 'right' }) { return <th className={`whitespace-nowrap px-4 py-2.5 text-[11px] font-medium text-muted-foreground ${align === 'right' ? 'text-right' : 'text-left'}`}>{children}</th>; }
 function Td({ children, align = 'left' }: { children: React.ReactNode; align?: 'left' | 'right' }) { return <td className={`px-4 py-3 align-middle ${align === 'right' ? 'text-right' : 'text-left'}`}>{children}</td>; }

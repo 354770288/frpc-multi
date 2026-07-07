@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
+  Cpu,
   ListFilter,
+  MemoryStick,
   Pause,
   Play,
   Plus,
@@ -13,7 +15,6 @@ import {
 } from 'lucide-react';
 import {
   Badge,
-  ContextCell,
   EmptyState,
   IconAction,
   NodeCard,
@@ -33,6 +34,7 @@ import {
   InputGroupInput,
 } from '../components/ui/input-group';
 import {
+  formatLastSeen,
   instanceStateBadge,
   parsePercent,
   shortNodeUuid
@@ -58,7 +60,6 @@ export function Overview() {
     counts,
     dockerAvailable,
     dockerError,
-    system,
     pendingAction,
     workspaceNodeId: selectedNodeId,
     setWorkspaceNodeId,
@@ -239,7 +240,6 @@ export function Overview() {
   }, [selectedNodeInstances, stats]);
 
   const onlineNodes = nodes.filter((node) => node.online || node.status === 'online').length;
-  const offlineNodes = Math.max(nodes.length - onlineNodes, 0);
   const selectedRunning = selectedNode
     ? selectedNode.running
     : nodeSummaries.reduce((sum, node) => sum + node.running, 0);
@@ -295,6 +295,18 @@ export function Overview() {
             tone: selectedError > 0 ? 'issue' : 'quiet',
             label: '异常实例',
             value: String(selectedError)
+          },
+          {
+            icon: Cpu,
+            tone: 'quiet',
+            label: 'CPU 采样',
+            value: cpuTotal
+          },
+          {
+            icon: MemoryStick,
+            tone: 'quiet',
+            label: '内存采样',
+            value: memoryTotal
           },
         ]}
       />
@@ -393,14 +405,6 @@ export function Overview() {
                 <Plus data-icon="inline-start" />
                 {selectedNode ? '在此节点创建实例' : '创建实例'}
               </Button>
-            </div>
-
-            <div className="mt-3 grid grid-cols-2 lg:grid-cols-5 gap-2">
-              <ContextCell label="Console 角色" value={system?.role || '--'} />
-              <ContextCell label="在线节点" value={`${onlineNodes} / ${nodes.length || 0}`} mono />
-              <ContextCell label="离线节点" value={String(offlineNodes)} mono />
-              <ContextCell label="CPU 采样" value={cpuTotal} mono />
-              <ContextCell label="内存采样" value={memoryTotal} mono />
             </div>
           </div>
 
@@ -797,22 +801,6 @@ function nodeStatusLabel(status: NodeStatus): string {
   if (status === 'offline') return '离线';
   if (status === 'error') return '异常';
   return '未知';
-}
-
-function formatLastSeen(value: string | null): string {
-  if (!value) return '未连接';
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return value;
-  const diff = Date.now() - timestamp;
-  if (diff < 0) return '刚刚';
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return `${seconds} 秒前`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} 分钟前`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
-  const days = Math.floor(hours / 24);
-  return `${days} 天前`;
 }
 
 function formatServer(summary: InstanceSummary | null | undefined): string {

@@ -138,6 +138,13 @@
   }
 }
 
+/* 主题切换瞬间禁用所有过渡，避免各元素颜色渐变不同步导致的闪烁 */
+.theme-transition-off *,
+.theme-transition-off *::before,
+.theme-transition-off *::after {
+  transition: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
