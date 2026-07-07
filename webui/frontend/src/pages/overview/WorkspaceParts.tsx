@@ -21,21 +21,6 @@ import {
 } from '../../components/ui/select';
 import { Switch as UiSwitch } from '../../components/ui/switch';
 import { cn } from '../../lib/utils';
-import type { InstanceTone } from '../../lib/format';
-
-const TONE_STYLES: Record<InstanceTone, string> = {
-  success: 'bg-primary/10 text-primary',
-  warning: 'bg-secondary text-secondary-foreground',
-  danger: 'bg-destructive/10 text-destructive',
-  muted: 'bg-muted text-muted-foreground'
-};
-
-const TONE_DOT: Record<InstanceTone, string> = {
-  success: 'bg-primary',
-  warning: 'bg-secondary-foreground',
-  danger: 'bg-destructive',
-  muted: 'bg-muted-foreground/60'
-};
 
 type MetricTone = 'online' | 'running' | 'scope' | 'issue' | 'quiet';
 
@@ -93,7 +78,7 @@ export function SummaryCard({
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        <div className="grid grid-cols-1 gap-px bg-border/60 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-1 gap-px bg-border/60 sm:grid-cols-2 lg:grid-cols-4">
           {items.map((item) => (
             <SummaryMetricCell key={item.label} item={item} />
           ))}
@@ -237,28 +222,6 @@ function NodeStat({ label, value }: { label: string; value: number }) {
   );
 }
 
-export function EmptyState({
-  title,
-  text,
-  actions
-}: {
-  title: string;
-  text?: string;
-  actions?: ReactNode;
-}) {
-  return (
-    <div className="rounded-lg border border-dashed border-input bg-muted p-6 text-center">
-      <div className="text-[13px] font-semibold text-foreground">{title}</div>
-      {text && (
-        <p className="mx-auto mt-1.5 max-w-[360px] text-[12px] leading-5 text-muted-foreground">
-          {text}
-        </p>
-      )}
-      {actions && <div className="mt-3 flex justify-center">{actions}</div>}
-    </div>
-  );
-}
-
 export function Select({
   label,
   value,
@@ -285,15 +248,6 @@ export function Select({
         </SelectGroup>
       </SelectContent>
     </UiSelect>
-  );
-}
-
-export function Badge({ children, tone }: { children: ReactNode; tone: InstanceTone }) {
-  return (
-    <span className={`inline-flex h-6 max-w-full items-center gap-1.5 overflow-hidden rounded-full px-2 text-[11px] font-bold whitespace-nowrap ${TONE_STYLES[tone]}`}>
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${TONE_DOT[tone]}`} />
-      <span className="min-w-0 truncate">{children}</span>
-    </span>
   );
 }
 
@@ -417,7 +371,7 @@ export function RowMenu({
         <DropdownMenuGroup>
           <DropdownMenuItem variant="destructive" onSelect={onDelete}>
             <Trash2 />
-            {deleting ? '删除中...' : '删除实例'}
+            {deleting ? '删除中…' : '删除实例'}
           </DropdownMenuItem>
         </DropdownMenuGroup>
       </DropdownMenuContent>

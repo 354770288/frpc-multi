@@ -8,9 +8,10 @@ import { useNavigate } from 'react-router-dom';
 import { auditLogsApi } from '../lib/api';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
+import { EmptyState } from '../components/EmptyState';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import {
   Select,
   SelectContent,
@@ -75,15 +76,17 @@ export function AuditLogsPage() {
         <h2 className="text-lg font-semibold">审计日志</h2>
         <Badge tone="muted">{logs.length} 条</Badge>
         {failedCount > 0 && <Badge tone="danger">{failedCount} 条失败</Badge>}
-        <Button className="ml-auto" size="sm" onClick={load} disabled={loading}><RefreshCw size={13} />刷新</Button>
+        <Button className="ml-auto" size="sm" variant="outline" onClick={load} disabled={loading}><RefreshCw size={13} />刷新</Button>
       </div>
 
       <Card className="mb-4">
-        <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
+        <CardHeader className="pb-2">
           <CardTitle className="inline-flex items-center gap-2 text-sm"><Filter size={14} />客户端筛选</CardTitle>
-          <Button size="sm" variant="ghost" onClick={() => { setTf('all'); setNf('all'); setAf('all'); setRf('all'); setIq(''); }}>
-            <RotateCcw size={13} />重置
-          </Button>
+          <CardAction>
+            <Button size="sm" variant="ghost" onClick={() => { setTf('all'); setNf('all'); setAf('all'); setRf('all'); setIq(''); }}>
+              <RotateCcw size={13} />重置
+            </Button>
+          </CardAction>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
@@ -101,14 +104,16 @@ export function AuditLogsPage() {
       </Card>
 
       <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
+        <CardHeader className="pb-2">
           <CardTitle className="text-sm">最近操作</CardTitle>
-          <span className="text-[11px] text-muted-foreground">显示 {filtered.length} / {logs.length}</span>
+          <CardAction>
+            <span className="text-[11px] text-muted-foreground">显示 {filtered.length} / {logs.length}</span>
+          </CardAction>
         </CardHeader>
         <CardContent className="p-0">
           <div className="grid gap-3 p-3 2xl:hidden">
             {filtered.map((l) => (
-              <div key={l.id} className={`min-w-0 rounded-lg border border-border bg-card p-3 ${l.success ? '' : 'bg-destructive/10/40'}`}>
+              <div key={l.id} className={`min-w-0 rounded-lg border border-border bg-card p-3 ${l.success ? '' : 'bg-destructive/10'}`}>
                 <div className="flex min-w-0 items-center justify-between gap-2">
                   <span className="truncate font-mono text-[11px] text-muted-foreground">{fmt(l.createdAt)}</span>
                   {l.success ? <Badge tone="success"><CheckCircle2 size={12} />成功</Badge> : <Badge tone="danger"><XCircle size={12} />失败</Badge>}
@@ -127,9 +132,7 @@ export function AuditLogsPage() {
               </div>
             ))}
             {!filtered.length && (
-              <div className="rounded-lg border border-dashed border-input bg-muted p-6 text-center text-xs text-muted-foreground">
-                {loading ? '加载中…' : logs.length ? '没有匹配' : '暂无审计记录'}
-              </div>
+              <EmptyState title={loading ? '加载中…' : logs.length ? '没有匹配' : '暂无审计记录'} />
             )}
           </div>
           <div className="hidden 2xl:block">
@@ -137,7 +140,7 @@ export function AuditLogsPage() {
               <thead><tr className="border-b bg-muted/50"><Th>时间</Th><Th>操作人</Th><Th>动作</Th><Th>节点</Th><Th>实例</Th><Th>结果</Th><Th>消息</Th><Th align="right">定位</Th></tr></thead>
               <tbody>
                 {filtered.map((l) => (
-                  <tr key={l.id} className={`border-b last:border-b-0 hover:bg-muted/50 ${l.success ? '' : 'bg-destructive/10/40'}`}>
+                  <tr key={l.id} className={`border-b last:border-b-0 hover:bg-muted/50 ${l.success ? '' : 'bg-destructive/10'}`}>
                     <Td mono>{fmt(l.createdAt)}</Td><Td>{l.username || '—'}</Td><Td>{AL[l.action] || l.action}</Td><Td>{nl(l.nodeId, nodeNameById)}</Td><Td mono>{l.instanceName || '—'}</Td>
                     <Td>{l.success ? <Badge tone="success"><CheckCircle2 size={12} />成功</Badge> : <Badge tone="danger"><XCircle size={12} />失败</Badge>}</Td>
                     <Td><Msg l={l} ex={!!em[l.id]} onT={() => setEm((p) => ({ ...p, [l.id]: !p[l.id] }))} /></Td>

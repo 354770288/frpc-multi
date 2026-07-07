@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { ReactNode } from 'react';
 import { toast as sonnerToast } from 'sonner';
 import { api, auditLogsApi, nodesApi } from '../lib/api';
-import { actionLabel, instanceStateBadge } from '../lib/format';
+import { actionLabel, instanceStateBadge, parsePercent } from '../lib/format';
 import type {
   AuditLog,
   AuthState,
@@ -22,6 +22,11 @@ type SummaryCounts = { total: number; running: number; stopped: number; error: n
 const EMPTY_COUNTS: SummaryCounts = { total: 0, running: 0, stopped: 0, error: 0 };
 type NodeSystemSnapshot = Record<number, { info: SystemInfo | null; error: string | null }>;
 
+export type StatsPoint = { cpu: number; mem: number };
+export type StatsHistoryMap = Record<string, StatsPoint[]>;
+// 5s 轮询 × 12 点 ≈ 1 分钟趋势窗口（内存态，刷新页面清零）
+const STATS_HISTORY_LEN = 12;
+
 export function instanceKey(nodeId: number, name: string) {
   return `${nodeId}:${name}`;
 }
@@ -38,6 +43,7 @@ interface ConsoleContextValue {
   summaryLoaded: boolean;
   summaryError: string;
   stats: StatsMap;
+  statsHistory: StatsHistoryMap;
   counts: SummaryCounts;
   dockerAvailable: boolean;
   dockerError: string;
@@ -77,6 +83,7 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
   const [summaryLoaded, setSummaryLoaded] = useState(false);
   const [summaryError, setSummaryError] = useState('');
   const [stats, setStats] = useState<StatsMap>({});
+  const [statsHistory, setStatsHistory] = useState<StatsHistoryMap>({});
   const [counts, setCounts] = useState<SummaryCounts>(EMPTY_COUNTS);
   const [dockerAvailable, setDockerAvailable] = useState(false);
   const [dockerError, setDockerError] = useState('');
@@ -113,6 +120,16 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
       }
       setInstances(list);
       setStats(statMap);
+      setStatsHistory((prev) => {
+        const next: StatsHistoryMap = {};
+        for (const [statKey, stat] of Object.entries(statMap)) {
+          next[statKey] = [
+            ...(prev[statKey] || []),
+            { cpu: parsePercent(stat.cpuPercent), mem: parsePercent(stat.memPercent) },
+          ].slice(-STATS_HISTORY_LEN);
+        }
+        return next;
+      });
       setCounts({ total: data.total, running: data.running, stopped: data.stopped, error: data.error });
       setDockerAvailable(!!data.dockerAvailable);
       setDockerError(data.dockerError || '');
@@ -246,7 +263,7 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
 
   const value: ConsoleContextValue = {
     auth, onAuthRefresh,
-    nodes, instances, summaryLoading, summaryLoaded, summaryError, stats, counts, dockerAvailable, dockerError, system, pendingAction, auditLogs, setAuditLogs, nodeSystems, nodeHealthById,
+    nodes, instances, summaryLoading, summaryLoaded, summaryError, stats, statsHistory, counts, dockerAvailable, dockerError, system, pendingAction, auditLogs, setAuditLogs, nodeSystems, nodeHealthById,
     workspaceNodeId, setWorkspaceNodeId, workspaceSearch, setWorkspaceSearch,
     action, patchInstance, deleteInstance, refreshAll, loadSummary,
   };

@@ -18,6 +18,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
+import { Meter } from '../components/ui/meter';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { useConsole } from '../context/ConsoleContext';
 import { toast as sonner } from 'sonner';
@@ -126,7 +127,7 @@ export function SystemPage() {
           {onlineCount} / {nodes.length} 节点在线
         </Badge>
         {tab === 'nodes' && (
-          <Button className="ml-auto" size="sm" onClick={() => setNodeSystemRefreshKey((v) => v + 1)}>
+          <Button className="ml-auto" size="sm" variant="outline" onClick={() => setNodeSystemRefreshKey((v) => v + 1)}>
             <RefreshCw size={13} />刷新节点系统
           </Button>
         )}
@@ -275,15 +276,16 @@ function NodeSystemCard({ node, refreshKey }: { node: Node; refreshKey: number }
         </CardTitle>
       </CardHeader>
       <CardContent>
-        {loading ? (
-          <p className="text-xs text-muted-foreground">加载中...</p>
+        {loading && !info && !error ? (
+          <p className="text-xs text-muted-foreground">加载中…</p>
         ) : error ? (
           <div className="flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/10 p-3 text-xs leading-5 text-destructive">
             <XCircle size={14} className="mt-0.5 shrink-0" />
             <span>节点系统信息不可达：{error}</span>
           </div>
         ) : info ? (
-          <div className="space-y-4">
+          // refetch 期间保留旧渲染，仅降不透明度（dataviz：no skeleton flash on refetch）
+          <div className={`space-y-4 ${loading ? 'opacity-60' : ''}`}>
             <dl className="grid grid-cols-1 gap-x-6 gap-y-4 text-xs sm:grid-cols-2">
               <InfoItem label="Docker 版本" value={info.dockerVersion || '未连接'} mono />
               <InfoItem label="frpc 镜像" value={info.frpImage} mono />
@@ -294,12 +296,11 @@ function NodeSystemCard({ node, refreshKey }: { node: Node; refreshKey: number }
               <div className="mb-2 flex items-center gap-2 text-xs font-medium">
                 <HardDrive size={13} />磁盘占用
               </div>
-              <div className="h-2 overflow-hidden rounded-full bg-card">
-                <div
-                  className={`h-full rounded-full ${diskRatio >= 90 ? 'bg-destructive' : diskRatio >= 75 ? 'bg-secondary-foreground' : 'bg-primary'}`}
-                  style={{ width: `${Math.min(100, diskRatio).toFixed(1)}%` }}
-                />
-              </div>
+              <Meter
+                value={info.disk && info.disk.total > 0 ? diskRatio : null}
+                className="h-2"
+                aria-label="磁盘占用"
+              />
               <div className="mt-2 text-[11px] text-muted-foreground">
                 {info.disk && info.disk.total > 0
                   ? `${diskRatio.toFixed(1)}% (${bytesToHuman(info.disk.used)} / ${bytesToHuman(info.disk.total)})`
@@ -316,12 +317,16 @@ function NodeSystemCard({ node, refreshKey }: { node: Node; refreshKey: number }
 }
 
 function MetricCard({ label, value, tone = 'muted' as const }: { label: string; value: number; tone?: 'success' | 'warning' | 'muted' }) {
-  const toneClass = tone === 'success' ? 'text-primary' : tone === 'warning' ? 'text-secondary-foreground' : '';
+  // dataviz：数值文字用 text token，状态色由旁边的圆点标记承载
+  const dotClass = tone === 'success' ? 'bg-primary' : tone === 'warning' ? 'bg-warning' : 'bg-muted-foreground/50';
   return (
     <Card>
       <CardContent className="pt-4">
-        <div className="text-[11px] text-muted-foreground">{label}</div>
-        <div className={`mt-1 font-mono text-[22px] font-semibold tabular-nums ${toneClass}`}>{value}</div>
+        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} aria-hidden="true" />
+          {label}
+        </div>
+        <div className="mt-1 font-mono text-[22px] font-semibold tabular-nums">{value}</div>
       </CardContent>
     </Card>
   );

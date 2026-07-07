@@ -96,7 +96,7 @@ export function NodesPage() {
       <div className="mb-6 flex items-center gap-3">
         <h2 className="text-lg font-semibold">节点</h2>
         <Badge tone="muted">{nodes.length} 个</Badge>
-        <Button className="ml-auto" size="sm" onClick={loadNodes} disabled={loading}><RefreshCw size={13} />刷新</Button>
+        <Button className="ml-auto" size="sm" variant="outline" onClick={loadNodes} disabled={loading}><RefreshCw size={13} />刷新</Button>
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
@@ -122,12 +122,12 @@ export function NodesPage() {
                       <div className="text-[10px] text-muted-foreground">系统摘要</div>
                       <div className="mt-1"><NodeSystemSummary node={node} snapshot={nodeSystems[node.id]} /></div>
                     </div>
-                    <MobileFact label="最近在线" value={node.lastSeenAt || '—'} />
+                    <MobileFact label="最近在线" value={formatLastSeen(node.lastSeenAt)} />
                   </div>
                   <div className="mt-3 flex flex-wrap justify-end gap-1.5 border-t border-border pt-3">
-                    <Button size="sm" onClick={() => showInstall(node)} disabled={!!pending[node.id]}><Terminal size={13} />安装命令</Button>
-                    <Button size="sm" onClick={() => setConfirming({ action: 'rotate', node })} disabled={!!pending[node.id]}><KeyRound size={13} />轮换密钥</Button>
-                    <Button size="sm" onClick={() => setConfirming({ action: 'upgrade', node })} disabled={!!pending[node.id] || !node.online} title={node.online ? undefined : '离线节点需先接入 Agent'}><UploadCloud size={13} />升级</Button>
+                    <Button size="sm" variant="outline" onClick={() => showInstall(node)} disabled={!!pending[node.id]}><Terminal size={13} />安装命令</Button>
+                    <Button size="sm" variant="outline" onClick={() => setConfirming({ action: 'rotate', node })} disabled={!!pending[node.id]}><KeyRound size={13} />轮换密钥</Button>
+                    <Button size="sm" variant="outline" onClick={() => setConfirming({ action: 'upgrade', node })} disabled={!!pending[node.id] || !node.online} title={node.online ? undefined : '离线节点需先接入 Agent'}><UploadCloud size={13} />升级</Button>
                     <Button size="sm" variant="destructive" onClick={() => setConfirming({ action: 'delete', node })} disabled={!!pending[node.id]}><Trash2 size={13} />删除</Button>
                   </div>
                 </div>
@@ -152,8 +152,8 @@ export function NodesPage() {
                       <Td><span className="whitespace-nowrap text-xs text-muted-foreground" title={node.lastSeenAt || undefined}>{formatLastSeen(node.lastSeenAt)}</span></Td>
                       <Td align="right">
                         <div className="flex items-center justify-end gap-1">
-                          <Button size="sm" onClick={() => showInstall(node)} disabled={!!pending[node.id]}><Terminal size={13} />安装命令</Button>
-                          <Button size="sm" onClick={() => setConfirming({ action: 'rotate', node })} disabled={!!pending[node.id]}><KeyRound size={13} />轮换密钥</Button>
+                          <Button size="sm" variant="outline" onClick={() => showInstall(node)} disabled={!!pending[node.id]}><Terminal size={13} />安装命令</Button>
+                          <Button size="sm" variant="outline" onClick={() => setConfirming({ action: 'rotate', node })} disabled={!!pending[node.id]}><KeyRound size={13} />轮换密钥</Button>
                           <Button size="icon-sm" variant="secondary" onClick={() => setConfirming({ action: 'upgrade', node })} disabled={!!pending[node.id] || !node.online} title={node.online ? '升级 Agent' : '离线节点需先接入 Agent'} aria-label="升级 Agent"><UploadCloud size={13} /></Button>
                           <Button size="icon-sm" variant="destructive" onClick={() => setConfirming({ action: 'delete', node })} disabled={!!pending[node.id]} title="删除节点" aria-label="删除节点"><Trash2 size={13} /></Button>
                         </div>
@@ -195,7 +195,7 @@ export function NodesPage() {
 function NodeSystemSummary({ node, snapshot }: { node: Node; snapshot?: { info: SystemInfo | null; error: string | null } }) {
   const online = node.online || node.status === 'online';
   if (!online) return <span className="text-xs text-muted-foreground">Agent 未在线</span>;
-  if (!snapshot) return <span className="text-xs text-muted-foreground">加载中...</span>;
+  if (!snapshot) return <span className="text-xs text-muted-foreground">加载中…</span>;
   if (snapshot.error || !snapshot.info) return <span className="text-xs text-destructive">系统信息不可达{snapshot.error ? `：${snapshot.error}` : ''}</span>;
   const info = snapshot.info;
   const diskRatio = info.disk.total > 0 ? (info.disk.used / info.disk.total) * 100 : null;

@@ -15,10 +15,13 @@ import {
   XCircle
 } from 'lucide-react';
 import { api, auditLogsApi, nodesApi } from '../lib/api';
-import { instanceStateBadge } from '../lib/format';
+import { instanceStateBadge, parsePercent } from '../lib/format';
 import { parseProxies, splitTomlAtProxies, type ProxyDraft } from '../lib/proxyToml';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
+import { EmptyState } from '../components/EmptyState';
+import { Meter } from '../components/ui/meter';
+import { Sparkline } from '../components/Sparkline';
 import {
   InputGroup,
   InputGroupAddon,
@@ -56,6 +59,12 @@ const ACTION_LABEL: Record<string, string> = {
   recreate_instance: '重建'
 };
 
+// ponytail: 只 strip 不着色；docker logs 常丢 ESC 字节只剩 "[1;31m" 字面量，两种形态都匹配
+const ANSI_RE = /\x1b\[[0-9;]*m|\[[0-9;]{1,8}m/g;
+function stripAnsi(line: string): string {
+  return line.replace(ANSI_RE, '');
+}
+
 function parseDetailTab(value: string | null): DetailTab {
   return value === 'config' || value === 'proxies' || value === 'audit' ? value : 'logs';
 }
@@ -66,6 +75,7 @@ export function Detail() {
     summaryLoaded,
     summaryError,
     stats,
+    statsHistory,
     pendingAction,
     action,
     loadSummary
@@ -142,8 +152,9 @@ export function Detail() {
         instance.nodeId > 0
           ? await nodesApi.instances.logs(instance.nodeId, instance.name, params)
           : await api<{ lines: string[] }>(`/api/instances/${instance.name}/logs?${params.toString()}`);
-      setLogs(data.lines);
-      setViewLogs(data.lines);
+      const lines = data.lines.map(stripAnsi);
+      setLogs(lines);
+      setViewLogs(lines);
     } catch {
       setLogs([]);
     } finally {
@@ -225,7 +236,7 @@ export function Detail() {
       : invalidRoute
         ? '请从节点工作台重新打开实例'
         : isInitialLoading
-          ? '正在加载实例列表...'
+          ? '正在加载实例列表…'
           : '实例可能已被删除或移动到其他节点';
 
     return (
@@ -254,6 +265,7 @@ export function Detail() {
   }
 
   const stat = stats[key];
+  const history = statsHistory[key] || [];
   const enabled = detail?.enabled ?? instance.enabled;
   const badge = instanceStateBadge(stat, enabled);
   const pending = pendingAction[key];
@@ -283,7 +295,7 @@ export function Detail() {
               {!enabled && <Badge tone="muted">已停用</Badge>}
               {detailLoading && <Badge tone="muted">加载中</Badge>}
             </div>
-            <h1 className="truncate text-[22px] font-semibold tracking-tight text-foreground">
+            <h1 className="truncate text-lg font-semibold tracking-tight text-foreground">
               {displayName}
             </h1>
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
@@ -296,39 +308,53 @@ export function Detail() {
           <div className="grid gap-3 sm:grid-cols-2">
             <ActionGroup title="运行操作">
               <Button
-                variant="default"
+                size="sm"
+                variant="outline"
                 disabled={!!pending || !enabled}
                 onClick={() => action(instance, 'start')}
                 title={!enabled ? '实例已停用，请先在节点工作台启用' : undefined}
               >
                 <Play size={13} />
-                {pending === 'start' ? '启动中...' : '启动'}
+                {pending === 'start' ? '启动中…' : '启动'}
               </Button>
-              <Button disabled={!!pending} onClick={() => action(instance, 'stop')}>
+              <Button size="sm" variant="outline" disabled={!!pending} onClick={() => action(instance, 'stop')}>
                 <Square size={13} />
-                {pending === 'stop' ? '停止中...' : '停止'}
+                {pending === 'stop' ? '停止中…' : '停止'}
               </Button>
-              <Button disabled={!!pending || !enabled} onClick={() => action(instance, 'restart')}>
+              <Button size="sm" variant="outline" disabled={!!pending || !enabled} onClick={() => action(instance, 'restart')}>
                 <RefreshCw size={13} />
-                {pending === 'restart' ? '重启中...' : '重启'}
+                {pending === 'restart' ? '重启中…' : '重启'}
               </Button>
             </ActionGroup>
             <ActionGroup title="高风险操作">
               <Button
+                size="sm"
                 variant="destructive"
                 disabled={!!pending || !enabled}
                 onClick={() => action(instance, 'recreate')}
               >
                 <RotateCcw size={13} />
-                {pending === 'recreate' ? '重建中...' : '重新创建容器'}
+                {pending === 'recreate' ? '重建中…' : '重新创建容器'}
               </Button>
             </ActionGroup>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 p-3 md:grid-cols-4 xl:grid-cols-6">
-          <StatTile label="CPU 占用" value={stat?.cpuPercent || '--'} />
-          <StatTile label="内存占用" value={stat?.memUsage || '--'} />
+        <div className="grid grid-cols-2 gap-2 p-3 md:grid-cols-4">
+          <StatTile
+            label="CPU 占用"
+            value={stat?.cpuPercent || '--'}
+            meter={stat ? parsePercent(stat.cpuPercent) : null}
+            trend={history.map((point) => point.cpu)}
+          />
+          <StatTile
+            label="内存占用"
+            value={stat?.memUsage || '--'}
+            meter={stat ? parsePercent(stat.memPercent) : null}
+            trend={history.map((point) => point.mem)}
+          />
+          <StatTile label="网络 I/O" value={stat?.netIO || '--'} mono truncate />
+          <StatTile label="进程数" value={stat?.pids || '--'} />
           <StatTile label="重启次数" value={stat ? String(stat.restartCount) : '--'} />
           <StatTile label="容器" value={stat?.containerName || stat?.service || '--'} mono truncate />
           <StatTile label="服务端" value={detail?.summary.serverAddr || '--'} mono truncate />
@@ -445,22 +471,23 @@ function LogsPanel({
         <span className="inline-flex items-center gap-2">
           日志
           {loading && (
-            <span className="text-[11px] font-normal text-muted-foreground">加载中...</span>
+            <span className="text-[11px] font-normal text-muted-foreground">加载中…</span>
           )}
         </span>
       }
       actions={
         <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={onRefresh} disabled={loading || paused}>
+          <Button size="sm" variant="outline" onClick={onRefresh} disabled={loading || paused}>
             <RefreshCw size={13} />
             刷新
           </Button>
-          <Button onClick={() => onPausedChange(!paused)}>
+          <Button size="sm" variant="outline" onClick={() => onPausedChange(!paused)}>
             {paused ? <Play size={13} /> : <Square size={13} />}
             {paused ? '继续' : '暂停'}
           </Button>
           <Button
-            variant={follow ? 'default' : 'ghost'}
+            size="sm"
+            variant={follow ? 'secondary' : 'ghost'}
             onClick={() => onFollowChange(!follow)}
             title={follow ? '关闭新日志定位' : '自动定位到最新日志'}
           >
@@ -477,7 +504,7 @@ function LogsPanel({
               </SelectGroup>
             </SelectContent>
           </Select>
-          <Button variant="ghost" onClick={onClearView}>
+          <Button size="sm" variant="ghost" onClick={onClearView}>
             清空视图
           </Button>
           <Select value={String(tail)} onValueChange={(value) => onTailChange(Number(value) as TailOption)}>
@@ -499,7 +526,7 @@ function LogsPanel({
               event.preventDefault();
               onApplyKeyword();
             }}
-            className="w-[240px]"
+            className="w-[240px] max-w-full"
           >
             <InputGroup>
               <InputGroupAddon>
@@ -551,7 +578,7 @@ function ProxySummaryPanel({
   if (loading) {
     return (
       <Panel title="代理">
-        <p className="text-[12px] text-muted-foreground">加载中...</p>
+        <p className="text-[12px] text-muted-foreground">加载中…</p>
       </Panel>
     );
   }
@@ -593,9 +620,7 @@ function ProxySummaryPanel({
             </div>
           ))}
           {!proxies.length && (
-            <div className="rounded-lg border border-dashed border-input bg-muted p-6 text-center text-[12px] text-muted-foreground">
-              {detail.summary.proxyCount > 0 ? '未能解析代理表格' : '暂无代理'}
-            </div>
+            <EmptyState title={detail.summary.proxyCount > 0 ? '未能解析代理表格' : '暂无代理'} />
           )}
         </div>
 
@@ -663,7 +688,7 @@ function AuditPanel({
     <Panel
       title="操作记录"
       actions={
-        <Button onClick={onRefresh} disabled={loading}>
+        <Button size="sm" variant="outline" onClick={onRefresh} disabled={loading}>
           <RefreshCw size={13} />
           刷新
         </Button>
@@ -698,9 +723,7 @@ function AuditPanel({
             </div>
           ))}
           {!logs.length && (
-            <div className="rounded-lg border border-dashed border-input bg-muted p-6 text-center text-[12px] text-muted-foreground">
-              {loading ? '加载中...' : '该实例暂无操作记录'}
-            </div>
+            <EmptyState title={loading ? '加载中…' : '该实例暂无操作记录'} />
           )}
         </div>
         <div className="hidden 2xl:block">
@@ -749,7 +772,7 @@ function AuditPanel({
                   colSpan={5}
                   className="px-4 py-10 text-center text-[12px] text-muted-foreground"
                 >
-                  {loading ? '加载中...' : '该实例暂无操作记录'}
+                  {loading ? '加载中…' : '该实例暂无操作记录'}
                 </td>
               </tr>
             )}
@@ -877,24 +900,33 @@ function StatTile({
   label,
   value,
   mono = false,
-  truncate = false
+  truncate = false,
+  meter,
+  trend
 }: {
   label: string;
   value: string;
   mono?: boolean;
   truncate?: boolean;
+  /** 0–100 占比；null 表示暂无数据（渲染空轨道） */
+  meter?: number | null;
+  trend?: number[];
 }) {
   return (
     <div className="min-w-0 rounded-lg border border-border bg-muted/60 p-3">
       <div className="mb-1 text-[11px] text-muted-foreground">{label}</div>
-      <div
-        className={`text-[13px] font-semibold text-foreground tabular-nums ${
-          mono ? 'font-mono text-[11px] font-normal text-muted-foreground' : ''
-        } ${truncate ? 'truncate' : ''}`}
-        title={truncate ? value : undefined}
-      >
-        {value}
+      <div className="flex items-center justify-between gap-2">
+        <div
+          className={`min-w-0 text-[13px] font-semibold text-foreground tabular-nums ${
+            mono ? 'font-mono text-[11px] font-normal text-muted-foreground' : ''
+          } ${truncate ? 'truncate' : ''}`}
+          title={truncate ? value : undefined}
+        >
+          {value}
+        </div>
+        {trend && <Sparkline points={trend} />}
       </div>
+      {meter !== undefined && <Meter value={meter} className="mt-2 h-1" aria-label={`${label}占比`} />}
     </div>
   );
 }

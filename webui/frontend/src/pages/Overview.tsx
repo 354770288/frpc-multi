@@ -3,9 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
-  Cpu,
-  ListFilter,
-  MemoryStick,
   Pause,
   Play,
   Plus,
@@ -14,8 +11,6 @@ import {
   Server,
 } from 'lucide-react';
 import {
-  Badge,
-  EmptyState,
   IconAction,
   NodeCard,
   PanelHead,
@@ -26,6 +21,8 @@ import {
   Td,
   Th
 } from './overview/WorkspaceParts';
+import { Badge } from '../components/ui/badge';
+import { EmptyState } from '../components/EmptyState';
 import { ToggleGroup, ToggleGroupItem } from '../components/ui/toggle-group';
 import { Button } from '../components/ui/button';
 import {
@@ -36,7 +33,6 @@ import {
 import {
   formatLastSeen,
   instanceStateBadge,
-  parsePercent,
   shortNodeUuid
 } from '../lib/format';
 import { api, nodesApi } from '../lib/api';
@@ -215,30 +211,6 @@ export function Overview() {
     );
   }, [nodeKeyword, nodeSummaries]);
 
-  const cpuTotal = useMemo(() => {
-    let total = 0;
-    let samples = 0;
-    for (const item of selectedNodeInstances) {
-      const value = stats[instanceKey(item)]?.cpuPercent;
-      if (!value) continue;
-      total += parsePercent(value);
-      samples += 1;
-    }
-    return samples ? `${total.toFixed(1)}%` : '--';
-  }, [selectedNodeInstances, stats]);
-
-  const memoryTotal = useMemo(() => {
-    let total = 0;
-    let samples = 0;
-    for (const item of selectedNodeInstances) {
-      const value = stats[instanceKey(item)]?.memPercent;
-      if (!value) continue;
-      total += parsePercent(value);
-      samples += 1;
-    }
-    return samples ? `${total.toFixed(1)}%` : '--';
-  }, [selectedNodeInstances, stats]);
-
   const onlineNodes = nodes.filter((node) => node.online || node.status === 'online').length;
   const selectedRunning = selectedNode
     ? selectedNode.running
@@ -285,28 +257,16 @@ export function Overview() {
             value: `${selectedRunning} / ${scopedTotal}`
           },
           {
-            icon: ListFilter,
-            tone: 'scope',
-            label: '当前范围',
-            value: `${visibleInstances.length} 条`
-          },
-          {
             icon: AlertTriangle,
             tone: selectedError > 0 ? 'issue' : 'quiet',
             label: '异常实例',
             value: String(selectedError)
           },
           {
-            icon: Cpu,
+            icon: Pause,
             tone: 'quiet',
-            label: 'CPU 采样',
-            value: cpuTotal
-          },
-          {
-            icon: MemoryStick,
-            tone: 'quiet',
-            label: '内存采样',
-            value: memoryTotal
+            label: '已停用',
+            value: String(selectedDisabled)
           },
         ]}
       />
@@ -543,7 +503,7 @@ export function Overview() {
                               {item.description ? ` · ${item.description}` : ''}
                             </span>
                           </button>
-                          <Badge tone={badgeTone}>{badge.label}</Badge>
+                          <Badge tone={badgeTone} dot>{badge.label}</Badge>
                         </div>
 
                         <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -671,7 +631,7 @@ export function Overview() {
                               </span>
                             </Td>
                             <Td>
-                              <Badge tone={badgeTone}>{badge.label}</Badge>
+                              <Badge tone={badgeTone} dot>{badge.label}</Badge>
                             </Td>
                             <Td>
                               <Switch

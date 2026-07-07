@@ -31,6 +31,7 @@ import {
 import { Switch } from '../components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Badge } from '../components/ui/badge';
+import { EmptyState } from '../components/EmptyState';
 import { ProxyList } from '../components/ProxyList';
 import { useConsole } from '../context/ConsoleContext';
 import {
@@ -124,7 +125,7 @@ export function CreateInstance() {
 
   if (nodes.length === 0) {
     return (
-      <main className="px-6 py-6 max-w-[1600px]">
+      <main className="mx-auto max-w-[1600px] px-6 py-6">
         <Button
           variant="ghost"
           size="sm"
@@ -135,18 +136,18 @@ export function CreateInstance() {
           返回节点工作台
         </Button>
 
-        <section className="rounded-lg border border-dashed border-input bg-card p-8 text-center">
-          <h2 className="text-[18px] font-semibold tracking-tight text-foreground">
-            还没有可用节点
-          </h2>
-          <div className="mt-5 flex flex-wrap justify-center gap-2">
-            <Button variant="default" onClick={() => navigate('/nodes')}>
-              <Plus size={13} />
-              添加节点
-            </Button>
-            <Button onClick={() => navigate('/workspace')}>返回节点工作台</Button>
-          </div>
-        </section>
+        <EmptyState
+          title="还没有可用节点"
+          actions={
+            <div className="flex flex-wrap justify-center gap-2">
+              <Button onClick={() => navigate('/nodes')}>
+                <Plus size={13} />
+                添加节点
+              </Button>
+              <Button variant="outline" onClick={() => navigate('/workspace')}>返回节点工作台</Button>
+            </div>
+          }
+        />
       </main>
     );
   }
@@ -193,7 +194,7 @@ export function CreateInstance() {
   }
 
   return (
-    <main className="px-6 py-6 max-w-[1600px]">
+    <main className="mx-auto max-w-[1600px] px-6 py-6">
       <Button
         variant="ghost"
         size="sm"
@@ -206,7 +207,7 @@ export function CreateInstance() {
 
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-[18px] font-semibold tracking-tight text-foreground">
+          <h2 className="text-lg font-semibold tracking-tight text-foreground">
             创建 frpc 实例
           </h2>
         </div>

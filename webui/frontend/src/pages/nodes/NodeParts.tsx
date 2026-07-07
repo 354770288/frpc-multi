@@ -37,8 +37,7 @@ export function NodeHealthSummary({ health }: { health?: NodeInstanceHealth }) {
   );
 }
 function HC({ label, value, tone = 'muted' }: { label: string; value: number; tone?: 'success' | 'warning' | 'danger' | 'muted' }) {
-  const c = tone === 'success' ? 'bg-primary/10 text-primary' : tone === 'warning' ? 'bg-secondary text-secondary-foreground' : tone === 'danger' ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground';
-  return <span className={`inline-flex h-6 items-center gap-1 rounded-md px-2 text-[11px] ${c}`}><span>{label}</span><span className="font-mono font-semibold tabular-nums">{value}</span></span>;
+  return <Badge tone={tone}>{label} <span className="font-mono font-semibold tabular-nums">{value}</span></Badge>;
 }
 
 export function OfflineHint({ node }: { node: Node }) {
