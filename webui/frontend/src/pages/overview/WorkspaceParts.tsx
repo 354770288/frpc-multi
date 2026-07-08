@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react';
 import { ArrowRight, FileCode2, MoreHorizontal, Trash2 } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
+import { Card, CardAction, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -21,95 +21,34 @@ import {
 } from '../../components/ui/select';
 import { Switch as UiSwitch } from '../../components/ui/switch';
 import { cn } from '../../lib/utils';
+import type { InstanceTone } from '../../lib/format';
 
-type MetricTone = 'online' | 'running' | 'scope' | 'issue' | 'quiet';
-
-type SummaryMetricItem = {
-  icon: LucideIcon;
+export type SummaryStat = {
   label: string;
   value: string;
-  tone: MetricTone;
-  mono?: boolean;
+  /** 右上角状态徽章；仅在有信号时给（dataviz：数值文字用 text token，状态色由标记承载） */
+  badge?: { label: string; tone: InstanceTone };
 };
 
-const SUMMARY_STYLES: Record<MetricTone, { icon: string; value: string }> = {
-  online: {
-    icon: 'bg-primary/10 text-primary ring-primary/15',
-    value: 'text-foreground'
-  },
-  running: {
-    icon: 'bg-chart-1/20 text-chart-4 ring-chart-3/15',
-    value: 'text-foreground'
-  },
-  scope: {
-    icon: 'bg-secondary text-secondary-foreground ring-border',
-    value: 'text-foreground'
-  },
-  issue: {
-    icon: 'bg-destructive/10 text-destructive ring-destructive/10',
-    value: 'text-destructive'
-  },
-  quiet: {
-    icon: 'bg-muted text-muted-foreground ring-border',
-    value: 'text-foreground'
-  }
-};
-
-export function SummaryCard({
-  scopeLabel,
-  items
-}: {
-  scopeLabel: string;
-  items: SummaryMetricItem[];
-}) {
+// 参照 shadcn dashboard SectionCards：小标 + 大数字 + CardAction 徽章
+export function SummaryCards({ items }: { items: SummaryStat[] }) {
   return (
-    <Card
-      size="sm"
-      className="mb-4 gap-0 overflow-hidden rounded-lg border border-border bg-card py-0 shadow-sm ring-0"
-    >
-      <CardHeader className="flex flex-col gap-1 rounded-t-none border-b border-border/70 bg-muted/50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <CardTitle className="text-sm font-semibold leading-5 text-foreground">
-            工作台概览
-          </CardTitle>
-          <CardDescription className="truncate text-[11px] leading-4 text-muted-foreground">
-            当前范围：{scopeLabel}
-          </CardDescription>
-        </div>
-      </CardHeader>
-      <CardContent className="p-0">
-        <div className="grid grid-cols-1 gap-px bg-border/60 sm:grid-cols-2 lg:grid-cols-4">
-          {items.map((item) => (
-            <SummaryMetricCell key={item.label} item={item} />
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function SummaryMetricCell({ item }: { item: SummaryMetricItem }) {
-  const Icon = item.icon;
-  const styles = SUMMARY_STYLES[item.tone];
-  return (
-    <div className="min-h-[76px] bg-card px-4 py-3">
-      <div className="flex h-full items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-[11px] font-medium leading-4 text-muted-foreground">{item.label}</div>
-          <div
-            className={cn(
-              'mt-1 truncate font-semibold leading-7 tracking-normal',
-              item.mono === false ? 'text-[17px]' : 'font-mono text-[20px] tabular-nums',
-              styles.value
+    <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {items.map((item) => (
+        <Card key={item.label} size="sm">
+          <CardHeader>
+            <CardDescription className="text-xs">{item.label}</CardDescription>
+            <CardTitle className="text-2xl font-semibold tabular-nums">
+              {item.value}
+            </CardTitle>
+            {item.badge && (
+              <CardAction>
+                <Badge tone={item.badge.tone}>{item.badge.label}</Badge>
+              </CardAction>
             )}
-          >
-            {item.value}
-          </div>
-        </div>
-        <span className={cn('grid size-8 shrink-0 place-items-center rounded-md ring-1', styles.icon)}>
-          <Icon aria-hidden="true" size={15} />
-        </span>
-      </div>
+          </CardHeader>
+        </Card>
+      ))}
     </div>
   );
 }

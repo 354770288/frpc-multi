@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useNavigate } from 'react-router-dom';
 import {
-  ClipboardList,
   LogOut,
   Monitor,
   Moon,
@@ -14,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useConsole } from '../context/ConsoleContext';
 import { useTheme, type Theme } from '../hooks/useTheme';
+import { cn } from '../lib/utils';
 import { Button } from './ui/button';
 import {
   InputGroup,
@@ -31,6 +31,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
+
+const NAV_ITEMS = [
+  { to: '/workspace', label: '工作台' },
+  { to: '/nodes', label: '节点' },
+  { to: '/audit', label: '审计' },
+] as const;
 
 export function Topbar() {
   const {
@@ -71,6 +77,25 @@ export function Topbar() {
           </div>
         </div>
       </Link>
+
+      <nav className="hidden items-center gap-1 md:flex" aria-label="主导航">
+        {NAV_ITEMS.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            className={({ isActive }) =>
+              cn(
+                'rounded-md px-3 py-1.5 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                isActive
+                  ? 'bg-muted font-medium text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              )
+            }
+          >
+            {item.label}
+          </NavLink>
+        ))}
+      </nav>
 
       <div className="ml-auto flex min-w-0 items-center gap-2">
         <InputGroup className="hidden w-[clamp(220px,30vw,420px)] md:flex">
@@ -114,13 +139,8 @@ export function Topbar() {
           <DropdownMenuContent align="end" className="w-[200px]">
             <DropdownMenuLabel className="text-xs">
               <div className="font-semibold">{auth.username || 'admin'}</div>
-              <div className="text-[11px] font-normal text-muted-foreground">系统与审计入口</div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => navigate('/audit')} className="text-xs">
-              <ClipboardList size={13} />
-              审计日志
-            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => navigate('/system')} className="text-xs">
               <Settings size={13} />
               账号与安全

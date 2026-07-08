@@ -1,14 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Activity,
-  AlertTriangle,
   Pause,
   Play,
   Plus,
   RotateCcw,
   Search,
-  Server,
 } from 'lucide-react';
 import {
   IconAction,
@@ -16,7 +13,7 @@ import {
   PanelHead,
   RowMenu,
   Select,
-  SummaryCard,
+  SummaryCards,
   Switch,
   Td,
   Th
@@ -212,6 +209,7 @@ export function Overview() {
   }, [nodeKeyword, nodeSummaries]);
 
   const onlineNodes = nodes.filter((node) => node.online || node.status === 'online').length;
+  const offlineNodes = nodes.length - onlineNodes;
   const selectedRunning = selectedNode
     ? selectedNode.running
     : nodeSummaries.reduce((sum, node) => sum + node.running, 0);
@@ -230,41 +228,32 @@ export function Overview() {
       ? '在线'
       : nodeStatusLabel(selectedNode.status)
     : `${onlineNodes} / ${nodes.length || 0}`;
-  const scopedStatusTone = selectedNode
-    ? selectedNode.status === 'error'
-      ? 'issue'
-      : selectedNodeOnline
-        ? 'online'
-        : 'quiet'
-    : 'online';
 
   return (
     <main className="w-full max-w-[1720px] mx-auto px-4 sm:px-6 py-5 sm:py-6">
-      <SummaryCard
-        scopeLabel={selectedNode ? selectedNode.name : '全部节点'}
+      <SummaryCards
         items={[
           {
-            icon: Server,
-            tone: scopedStatusTone,
-            label: selectedNode ? '节点状态' : '在线节点',
+            label: selectedNode ? `节点状态 · ${selectedNode.name}` : '在线节点',
             value: scopedStatusValue,
-            mono: !selectedNode
+            badge: selectedNode
+              ? undefined
+              : nodes.length > 0
+                ? offlineNodes > 0
+                  ? { label: `${offlineNodes} 台离线`, tone: 'warning' }
+                  : { label: '全部在线', tone: 'success' }
+                : undefined
           },
           {
-            icon: Activity,
-            tone: selectedRunning > 0 ? 'running' : 'quiet',
             label: '运行实例',
             value: `${selectedRunning} / ${scopedTotal}`
           },
           {
-            icon: AlertTriangle,
-            tone: selectedError > 0 ? 'issue' : 'quiet',
             label: '异常实例',
-            value: String(selectedError)
+            value: String(selectedError),
+            badge: selectedError > 0 ? { label: '需处理', tone: 'danger' } : undefined
           },
           {
-            icon: Pause,
-            tone: 'quiet',
             label: '已停用',
             value: String(selectedDisabled)
           },
