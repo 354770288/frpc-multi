@@ -155,8 +155,10 @@ export function Detail() {
       const lines = data.lines.map(stripAnsi);
       setLogs(lines);
       setViewLogs(lines);
-    } catch {
+    } catch (err) {
       setLogs([]);
+      // 7s 轮询失败会反复进入，固定 id 让 sonner 复用同一条 toast 避免刷屏
+      toast.error(err instanceof Error ? err.message : '日志加载失败', { id: 'detail-logs-error' });
     } finally {
       setLogsLoading(false);
     }
@@ -526,7 +528,7 @@ function LogsPanel({
               event.preventDefault();
               onApplyKeyword();
             }}
-            className="w-[240px] max-w-full"
+            className="min-w-0 flex-1 basis-[160px] max-w-[240px]"
           >
             <InputGroup>
               <InputGroupAddon>
@@ -554,7 +556,10 @@ function LogsPanel({
     >
       {/* ponytail: 日志终端区按终端惯例固定深色，不随主题切换 */}
       <pre
-        className="m-0 h-[560px] overflow-auto bg-zinc-950 px-4 py-3 font-mono text-[12px] leading-[1.65] text-slate-200 whitespace-pre-wrap"
+        tabIndex={0}
+        role="log"
+        aria-label="实例日志"
+        className="m-0 h-[560px] overflow-auto bg-zinc-950 px-4 py-3 font-mono text-[12px] leading-[1.65] text-slate-200 whitespace-pre-wrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
       >
         {logs.length
           ? (logOrder === 'oldest' ? logs : logs.slice().reverse()).join('\n')

@@ -37,7 +37,7 @@ export function ConfigEditorPanel({
       ? nodesApi.instances.getConfig(instance.nodeId, instance.name)
       : api<{ configText: string; validation: ValidationData }>(`/api/instances/${instance.name}/config`);
     req.then((d) => { setConfigText(d.configText); setOriginalText(d.configText); setValidation(d.validation); })
-      .catch(() => { setConfigText(''); setOriginalText(''); setValidation(null); });
+      .catch((err) => { setConfigText(''); setOriginalText(''); setValidation(null); toast.error(err instanceof Error ? err.message : '配置加载失败'); });
   }, [ik]);
 
   useEffect(() => {
@@ -117,7 +117,7 @@ export function ConfigEditorPanel({
             <Card><CardHeader className="flex-row items-center justify-between space-y-0 pb-2"><CardTitle className="text-sm">配置内容</CardTitle>{header}</CardHeader><CardContent><Textarea value={configText} onChange={(e) => setConfigText(e.target.value)} spellCheck={false} className="min-h-[420px]" /></CardContent></Card>
           </TabsContent>
           <aside className="space-y-4">
-            <Card><CardHeader><CardTitle className="text-sm">校验结果</CardTitle></CardHeader><CardContent>
+            <Card><CardHeader><CardTitle className="text-sm">校验结果</CardTitle></CardHeader><CardContent role="status" aria-live="polite">
               {!validation ? <p className="text-xs text-muted-foreground">等待校验…</p>
                 : errors.length === 0 && warnings.length === 0 ? <div className="flex items-start gap-2 text-xs text-primary"><CheckCircle2 size={14} className="mt-0.5 shrink-0" /><span>配置合法，可保存</span></div>
                 : <div className="space-y-2">{errors.map((e, i) => <div key={`e${i}`} className="flex items-start gap-2 p-2 rounded-md bg-destructive/10 text-xs text-destructive"><XCircle size={13} className="mt-0.5 shrink-0" /><span>{e}</span></div>)}{warnings.map((w, i) => <div key={`w${i}`} className="flex items-start gap-2 p-2 rounded-md bg-secondary text-xs text-secondary-foreground"><AlertTriangle size={13} className="mt-0.5 shrink-0" /><span>{w}</span></div>)}</div>}
