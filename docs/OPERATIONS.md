@@ -184,6 +184,32 @@ test ! -d instances/client-smoke-001
 bash scripts/check-health.sh
 ```
 
+## 资源限制策略
+
+默认资源限制写在 `.env.example`：
+
+```text
+FRPC_MEMORY_LIMIT=128m
+FRPC_CPU_LIMIT=0.25
+```
+
+对于 2GB RAM 的 VPS，同时运行约 10 个 `frpc` 实例时，单容器 `128m` 是偏保守的上限。如果业务流量很轻，可以改为 `64m`。如果某个容器反复触发内存上限，不建议直接盲目加大限制，应先查看日志、连接数、代理数量和对应 `frps` 状态。
+
+Docker 日志轮转已经写在 `compose.generated.yaml`（由 Agent 生成）：
+
+```text
+max-size: 10m
+max-file: 3
+```
+
+这可以避免某个异常实例长期刷日志，把 VPS 磁盘写满。
+
+## 网络模式
+
+默认使用 Docker bridge 网络。容器访问宿主机服务时使用 `host.docker.internal`，该映射由生成的 compose 中 `extra_hosts: host-gateway` 提供。
+
+只有在明确需要宿主机网络栈时，才考虑改为 `network_mode: host`。切换前必须检查全部启用实例的端口，避免端口冲突和误暴露。
+
 ## 内存异常处理
 
 如果发现某个容器内存异常增长：
@@ -238,6 +264,28 @@ docker stats --no-stream
 - swap 长期占用很高。
 - 日志增长速度异常。
 - VPS load 持续高于 CPU 核心数。
+
+## 升级与回滚
+
+主控 / Agent 镜像版本可固定在 `.env`：
+
+```text
+AGENT_IMAGE=ghcr.io/354770288/frpc-multi:latest
+FRP_IMAGE=ghcr.io/fatedier/frpc:v0.68.1
+```
+
+升级主控：
+
+```bash
+cd /opt/frpc-multi
+bash scripts/backup-configs.sh
+docker compose -f compose.console.yaml pull
+docker compose -f compose.console.yaml up -d
+```
+
+升级 Agent：面板节点行点"升级 Agent"，或在 Agent 机器上重新运行一键安装命令（脚本会用新镜像重建容器）。
+
+frp 镜像升级后如果实例表现更差，立即回滚 `.env` 中的 `FRP_IMAGE` 并重建实例容器。
 
 ## 备份与恢复
 
