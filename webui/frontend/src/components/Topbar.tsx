@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import {
+  Github,
   LogOut,
   Monitor,
   Moon,
-  Plus,
   Search,
   Settings,
   Sun,
@@ -121,9 +121,15 @@ export function Topbar() {
           )}
         </InputGroup>
 
-        <Button size="sm" onClick={() => navigate('/create')} className="hidden lg:inline-flex">
-          <Plus size={14} />
-          创建实例
+        <Button variant="ghost" size="icon-sm" asChild>
+          <a
+            href="https://github.com/354770288/frpc-multi"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="打开 GitHub 项目仓库"
+          >
+            <Github size={16} />
+          </a>
         </Button>
 
         <DropdownMenu>
