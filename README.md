@@ -55,7 +55,7 @@ agent   —— compose.agent.yaml，出站连回主控，挂载 docker.sock 管�
   webui/                       # WebUI 前后端（单镜像，多阶段构建）
   scripts/                     # 部署、巡检、备份、swap、Agent 一键安装脚本
   .github/workflows/           # 构建并发布镜像到 GHCR
-  docs/                        # 运维、安全、迁移、Agent 安装文档
+  docs/                        # 运维、安全、部署验证、迁移、Agent 安装文档
   backups/                     # 配置备份输出目录
   logs/                        # 预留日志目录
 ```
@@ -179,6 +179,6 @@ docker compose -f compose.console.yaml up -d
 - [运维手册](docs/OPERATIONS.md)
 - [安全说明](docs/SECURITY.md)
 - [Agent 安装说明](docs/AGENT_INSTALL.md)
+- [VPS 部署与验证](docs/DEPLOY_VERIFY.md)
 - [从旧架构迁移](docs/MIGRATION.md)
-- [二期管理平台规划](docs/PHASE-2.md)
 - [WebUI 使用说明](webui/README.md)

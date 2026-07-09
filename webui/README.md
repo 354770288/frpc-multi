@@ -9,6 +9,16 @@ WebUI 是 frpc 多实例管理面板，用于动态创建、编辑、启动、�
 
 连接方向是 Agent 主动连 Console，因此 Agent 机器无需公网、无需开放入站端口。详见仓库根目录 README 与 `docs/AGENT_INSTALL.md`。
 
+## 页面结构
+
+- **工作台**（`/workspace`）：概览卡（在线节点 / 运行实例 / 异常实例 / 已停用）+ 节点列表 + 实例卡片，支持按状态、启用、代理类型筛选。
+- **节点**（`/nodes`）：节点的创建、一键安装命令、密钥轮换、升级、删除。
+- **实例详情**（`/instances/:nodeId/:name`）：日志（实时跟随 / 关键字过滤）、配置编辑（结构化代理编辑 + 原始 TOML，带校验）、代理摘要、操作记录。
+- **审计**（`/audit`）：全部关键操作的审计日志，失败操作也记录。
+- **系统**（`/system`）：主控与各节点的系统信息（Docker 版本、frpc 镜像、磁盘）。
+
+界面支持暗色 / 亮色 / 跟随系统三种主题（头像菜单切换）。
+
 ## 默认访问
 
 Console 默认绑定到宿主机本机地址：
@@ -61,3 +71,24 @@ docker logs -f frpc-agent                                        # Agent 连回�
 docker compose -f compose.yaml -f compose.generated.yaml ps      # 本机 frpc 实例
 docker logs --tail 200 frpc-<instance-name>                      # 单个实例日志
 ```
+
+## 本地开发
+
+后端（FastAPI，默认监听 `127.0.0.1:8081`，角色默认 console）：
+
+```bash
+cd webui/backend
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python run.py
+```
+
+前端（Vite dev server，`/api` 代理到 8081）：
+
+```bash
+cd webui/frontend
+npm install
+npm run dev   # http://127.0.0.1:5173
+```
+
+生产构建 `npm run build` 输出到 `webui/backend/static`，由后端直接托管（8081 即完整面板）。Docker 镜像的多阶段构建也走同一路径。

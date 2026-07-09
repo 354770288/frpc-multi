@@ -7,7 +7,6 @@
 - VPS 至少有 2GB RAM，并已开启 1-2GB swap。
 - 已安装 Docker Engine 和 Docker Compose plugin。
 - `/opt/frpc-multi/.env` 已存在，并固定了明确的 `FRP_IMAGE` 版本。
-- `instances/` 目录中已经没有 `CHANGE_ME` 占位符。
 - 每个启用实例的 proxy name 唯一。
 - 每个启用实例的 remote port 不冲突。
 - `bash scripts/check-health.sh` 可以正常执行。
