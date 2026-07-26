@@ -197,13 +197,15 @@ def list_nodes(
 @router.post("")
 def create_node(
     payload: NodeCreate,
-    _: Annotated[str, Depends(require_auth)],
+    user: Annotated[str, Depends(require_auth)],
     store: Annotated[NodeStore, Depends(node_store)],
+    audits: Annotated[AuditStore, Depends(audit_store)],
 ):
     try:
         record = store.create_node(name=payload.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audits.create_log(username=user, action="create_node", node_id=record.id, message=record.name)
     # 创建即返回 secret + 安装命令（明文仅此一次随响应给出，便于前端展示一键命令）。
     return {**_public_node(record), "install": _install_info(record, include_secret=True)}
 
@@ -231,12 +233,14 @@ def get_node_install(
 @router.post("/{node_id}/rotate-secret")
 def rotate_node_secret(
     node_id: int,
-    _: Annotated[str, Depends(require_auth)],
+    user: Annotated[str, Depends(require_auth)],
     store: Annotated[NodeStore, Depends(node_store)],
+    audits: Annotated[AuditStore, Depends(audit_store)],
 ):
     record = store.rotate_secret(node_id)
     if record is None:
         raise HTTPException(status_code=404, detail="节点不存在")
+    audits.create_log(username=user, action="rotate_secret", node_id=record.id, message=record.name)
     return {**_public_node(record), "install": _install_info(record, include_secret=True)}
 
 
@@ -244,23 +248,28 @@ def rotate_node_secret(
 def patch_node(
     node_id: int,
     payload: NodePatch,
-    _: Annotated[str, Depends(require_auth)],
+    user: Annotated[str, Depends(require_auth)],
     store: Annotated[NodeStore, Depends(node_store)],
+    audits: Annotated[AuditStore, Depends(audit_store)],
 ):
+    old = _get_node(node_id, store)
     try:
         record = store.update_node(node_id, name=payload.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if record is None:
         raise HTTPException(status_code=404, detail="节点不存在")
+    if record.name != old.name:
+        audits.create_log(username=user, action="rename_node", node_id=record.id, message=f"{old.name} → {record.name}")
     return _public_node(record)
 
 
 @router.delete("/{node_id}")
 async def delete_node(
     node_id: int,
-    _: Annotated[str, Depends(require_auth)],
+    user: Annotated[str, Depends(require_auth)],
     store: Annotated[NodeStore, Depends(node_store)],
+    audits: Annotated[AuditStore, Depends(audit_store)],
 ):
     """删除节点。若节点在线，先让 Agent 停所有实例、删配置、自毁容器，再删库记录。
 
@@ -279,6 +288,13 @@ async def delete_node(
 
     if not store.delete_node(node_id):
         raise HTTPException(status_code=404, detail="节点不存在")
+    audits.create_log(
+        username=user,
+        action="delete_node",
+        node_id=node_id,
+        success=not detail,
+        message=detail or record.name,
+    )
     return {"deleted": True, "decommissioned": decommissioned, "detail": detail}
 
 

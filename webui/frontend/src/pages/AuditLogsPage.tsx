@@ -27,7 +27,8 @@ import type { AuditLog } from '../lib/types';
 const AL: Record<string, string> = {
   create_instance: '创建实例', patch_instance: '更新实例', update_config: '修改配置',
   delete_instance: '删除实例', start_instance: '启动', stop_instance: '停止',
-  restart_instance: '重启', recreate_instance: '重建',
+  restart_instance: '重启', recreate_instance: '重建', upgrade_agent: '升级 Agent',
+  create_node: '创建节点', rename_node: '节点改名', rotate_secret: '轮换密钥', delete_node: '删除节点',
 };
 
 export function AuditLogsPage() {

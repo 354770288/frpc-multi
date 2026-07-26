@@ -799,10 +799,37 @@ class AuditLogApiTests(unittest.TestCase):
             logs = client.get("/api/audit-logs", headers=headers).json()
             self.assertEqual(
                 [item["action"] for item in logs],
-                ["delete_instance", "start_instance", "update_config", "create_instance"],
+                ["delete_instance", "start_instance", "update_config", "create_instance", "create_node"],
             )
             self.assertTrue(all(item["nodeId"] == node_id for item in logs))
             self.assertTrue(all(item["success"] is True for item in logs))
+
+    def test_node_lifecycle_actions_create_audit_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = load_main_app(
+                PROJECT_DIR=tmp,
+                DATABASE_PATH=str(Path(tmp) / "console.db"),
+                WEBUI_USERNAME="admin",
+                WEBUI_PASSWORD="password",
+                FRPC_MULTI_ROLE="console",
+            )
+            client = TestClient(app)
+            headers = auth_headers(client)
+            node = client.post("/api/nodes", json={"name": "lifecycle"}, headers=headers).json()
+            node_id = node["id"]
+
+            client.post(f"/api/nodes/{node_id}/rotate-secret", headers=headers)
+            client.patch(f"/api/nodes/{node_id}", json={"name": "lifecycle-2"}, headers=headers)
+            client.delete(f"/api/nodes/{node_id}", headers=headers)
+
+            logs = client.get("/api/audit-logs", headers=headers).json()
+            self.assertEqual(
+                [item["action"] for item in logs],
+                ["delete_node", "rename_node", "rotate_secret", "create_node"],
+            )
+            self.assertTrue(all(item["success"] is True for item in logs))
+            self.assertEqual(logs[1]["message"], "lifecycle → lifecycle-2")
+            self.assertEqual(logs[0]["message"], "lifecycle-2")
 
     def test_failed_node_instance_action_is_audited_as_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -827,12 +854,14 @@ class AuditLogApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 502)
 
             logs = client.get("/api/audit-logs", headers=headers).json()
-            self.assertEqual(len(logs), 1)
+            self.assertEqual(len(logs), 2)
             self.assertEqual(logs[0]["action"], "start_instance")
             self.assertEqual(logs[0]["instanceName"], "client-001")
             self.assertEqual(logs[0]["nodeId"], node_id)
             self.assertFalse(logs[0]["success"])
             self.assertTrue(logs[0]["message"])
+            self.assertEqual(logs[1]["action"], "create_node")
+            self.assertTrue(logs[1]["success"])
 
 
 class MultiNodeSummaryTests(unittest.TestCase):
