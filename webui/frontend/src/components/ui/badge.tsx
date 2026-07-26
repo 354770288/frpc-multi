@@ -23,7 +23,7 @@ const badgeVariants = cva(
         success:
           "bg-primary/10 text-primary",
         warning:
-          "bg-secondary text-secondary-foreground",
+          "bg-warning/10 text-warning dark:bg-warning/15",
         muted:
           "bg-muted text-muted-foreground",
       },

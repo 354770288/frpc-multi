@@ -23,6 +23,7 @@ export function NodesPage() {
   const { nodeHealthById, nodeSystems, refreshAll } = useConsole();
   const [nodes, setNodes] = useState<Node[]>([]);
   const [name, setName] = useState('');
+  const [nameTouched, setNameTouched] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [pending, setPending] = useState<Record<number, string>>({});
@@ -41,11 +42,12 @@ export function NodesPage() {
   const offlineCount = nodes.filter((n) => !(n.online || n.status === 'online')).length;
 
   const createNode = async () => {
-    if (formError) { toast.error(formError); return; }
+    if (formError) { setNameTouched(true); toast.error(formError); return; }
     setSaving(true);
     try {
       const created = await nodesApi.create({ name: name.trim() });
       setName('');
+      setNameTouched(false);
       setInstall({ node: created, info: created.install });
       toast.success('节点已创建，请在目标机运行安装命令');
       await loadNodes();
@@ -175,9 +177,9 @@ export function NodesPage() {
             <CardContent className="flex flex-col gap-4">
               <div className="flex flex-col gap-1.5">
                 <Label className="text-xs">节点名称</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="vps-hk-01" onKeyDown={(e) => { if (e.key === 'Enter') createNode(); }} />
+                <Input value={name} onChange={(e) => setName(e.target.value)} onBlur={() => setNameTouched(true)} placeholder="vps-hk-01" onKeyDown={(e) => { if (e.key === 'Enter') createNode(); }} />
               </div>
-              {formError && <div className="flex items-start gap-2 rounded-md bg-secondary p-2 text-xs text-secondary-foreground"><XCircle size={13} className="mt-0.5 shrink-0" /><span>{formError}</span></div>}
+              {nameTouched && formError && <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-2 text-xs text-destructive"><XCircle size={13} className="mt-0.5 shrink-0" /><span>{formError}</span></div>}
               <Button onClick={createNode} disabled={saving || !!formError}><Plus size={13} />{saving ? '创建中…' : '创建节点'}</Button>
             </CardContent>
           </Card>
@@ -207,7 +209,7 @@ function NodeSystemSummary({ node, snapshot }: { node: Node; snapshot?: { info: 
   );
 }
 function Chip({ l, v, t = 'muted' }: { l: string; v: string; t?: 'success' | 'warning' | 'danger' | 'muted' }) {
-  const c = t === 'success' ? 'bg-primary/10 text-primary' : t === 'warning' ? 'bg-secondary text-secondary-foreground' : t === 'danger' ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground';
+  const c = t === 'success' ? 'bg-primary/10 text-primary' : t === 'warning' ? 'bg-warning/10 text-warning dark:bg-warning/15' : t === 'danger' ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground';
   return <span className={`inline-flex h-6 max-w-full items-center gap-1 overflow-hidden rounded-md px-2 text-[11px] whitespace-nowrap ${c}`}><span className="shrink-0">{l}</span><span className="min-w-0 truncate font-mono text-[10px] tabular-nums">{v}</span></span>;
 }
 function MobileFact({ label, value }: { label: string; value: string }) {
