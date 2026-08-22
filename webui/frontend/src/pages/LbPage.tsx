@@ -1,16 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
-  Cloud, Globe, ListChecks, Pencil, Plus, RefreshCw, RefreshCcw, Trash2,
+  ChevronDown, Cloud, Globe, ListChecks, Pencil, Plus, RefreshCw, RefreshCcw, Trash2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { lbApi, probeApi } from '../lib/api';
 import { formatLastSeen } from '../lib/format';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import {
+  Collapsible, CollapsibleContent, CollapsibleTrigger,
+} from '../components/ui/collapsible';
+import {
+  Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle,
+} from '../components/ui/empty';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Switch } from '../components/ui/switch';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import {
   Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
@@ -80,13 +87,16 @@ export function LbPage() {
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
         <aside className="flex flex-col gap-4">
-          <CloudflareCard
-            configured={tokenConfigured}
-            masked={tokenMasked}
-            zones={zones}
-            onZones={setZones}
-            onSaved={load}
-          />
+          {/* 首次加载完成后再挂载：defaultOpen 依赖 configured，须等真实值就绪 */}
+          {!loading && (
+            <CloudflareCard
+              configured={tokenConfigured}
+              masked={tokenMasked}
+              zones={zones}
+              onZones={setZones}
+              onSaved={load}
+            />
+          )}
           <Card>
             <CardHeader><CardTitle className="text-sm">工作原理</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-2 text-[11px] leading-5 text-muted-foreground">
@@ -126,7 +136,19 @@ export function LbPage() {
                         </div>
                       </Td>
                       <Td><span className="text-xs text-muted-foreground">{domain.zoneName}</span></Td>
-                      <Td><Badge tone="muted">{domain.group}</Badge></Td>
+                      <Td>
+                        <div className="flex items-center gap-1.5">
+                          <Badge tone="muted">{domain.group}</Badge>
+                          {domain.poolSize === 0 && (
+                            <>
+                              <Badge tone="warning">空池</Badge>
+                              <Link to="/probe" className="whitespace-nowrap text-[11px] text-primary underline underline-offset-2">
+                                去服务器库 →
+                              </Link>
+                            </>
+                          )}
+                        </div>
+                      </Td>
                       <Td><span className="font-mono text-xs tabular-nums">{domain.poolSize} 台</span></Td>
                       <Td>
                         <span className="text-xs">
@@ -169,8 +191,44 @@ export function LbPage() {
                     </tr>
                   ))}
                   {!domains.length && (
-                    <tr><td colSpan={7} className="px-4 py-10 text-center text-xs text-muted-foreground">
-                      {loading ? '加载中…' : tokenConfigured ? '暂无候选域名，点「新增域名」创建' : '请先在左侧配置 Cloudflare API Token'}
+                    <tr><td colSpan={7} className="px-0 py-0">
+                      {loading ? (
+                        <div className="px-4 py-10 text-center text-xs text-muted-foreground">加载中…</div>
+                      ) : !tokenConfigured ? (
+                        <Empty className="py-10">
+                          <EmptyHeader>
+                            <EmptyMedia variant="icon"><Cloud /></EmptyMedia>
+                            <EmptyTitle>先配置 Cloudflare</EmptyTitle>
+                            <EmptyDescription>展开左上角 Cloudflare 卡片，粘贴 API Token（Zone 读 + DNS 编辑权限）后即可添加候选域名。</EmptyDescription>
+                          </EmptyHeader>
+                        </Empty>
+                      ) : (
+                        <Empty className="py-10">
+                          <EmptyHeader>
+                            <EmptyMedia variant="icon"><Globe /></EmptyMedia>
+                            <EmptyTitle>还没有候选域名</EmptyTitle>
+                            <EmptyDescription>候选域名 = 多台健康 frps 的 DNS 轮询入口。三步接入：</EmptyDescription>
+                          </EmptyHeader>
+                          <EmptyContent>
+                            <div className="flex flex-col gap-2 text-left text-xs leading-5 text-muted-foreground">
+                              <div>
+                                <span className="mr-1 font-medium text-foreground">① 备池</span>
+                                服务器库穿透测试，通过的服务器勾选批量改入健康分组
+                                <Link to="/probe" className="ml-1 text-primary underline underline-offset-2">去服务器库 →</Link>
+                              </div>
+                              <div>
+                                <span className="mr-1 font-medium text-foreground">② 建域名</span>
+                                点右上方「新增域名」，选择 Zone 并绑定该健康分组，立即同步生成 A 记录
+                              </div>
+                              <div>
+                                <span className="mr-1 font-medium text-foreground">③ 使用</span>
+                                创建实例时选择该域名，serverAddr 自动填域名
+                                <Link to="/create" className="ml-1 text-primary underline underline-offset-2">去创建实例 →</Link>
+                              </div>
+                            </div>
+                          </EmptyContent>
+                        </Empty>
+                      )}
                     </td></tr>
                   )}
                 </tbody>
@@ -247,36 +305,46 @@ function CloudflareCard({ configured, masked, zones, onZones, onSaved }: {
   };
 
   return (
-    <Card>
-      <CardHeader className="flex-row items-center gap-2">
-        <CardTitle className="text-sm">Cloudflare</CardTitle>
-        {configured
-          ? <Badge tone="success"><Cloud size={11} />已配置 {masked}</Badge>
-          : <Badge tone="warning">未配置</Badge>}
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex flex-col gap-1.5">
-          <Label className="text-xs">API Token（需要 Zone 读 + DNS 编辑权限）</Label>
-          <Input
-            type="password" value={token} onChange={(e) => setToken(e.target.value)}
-            placeholder={configured ? '输入新 Token 覆盖' : '粘贴 Cloudflare API Token'}
-          />
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <Button variant="outline" size="sm" onClick={() => verify(token.trim() || undefined)} disabled={verifying}>
-            {verifying ? '验证中…' : '验证令牌'}
-          </Button>
-          <Button size="sm" onClick={save} disabled={saving || !token.trim()}>
-            {saving ? '保存中…' : '保存'}
-          </Button>
-        </div>
-        {!!zones.length && (
-          <div className="rounded-md bg-muted px-2.5 py-2 text-[11px] leading-5 text-muted-foreground">
-            可用 Zone：{zones.map((zone) => zone.name).join('、')}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+    <Collapsible defaultOpen={!configured}>
+      <Card data-slot="cloudflare-card">
+        <CardHeader className="flex-row items-center gap-2">
+          <CollapsibleTrigger className="group/collapsible-trigger flex min-w-0 flex-1 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <CardTitle className="text-sm">Cloudflare</CardTitle>
+            {configured
+              ? <Badge tone="success"><Cloud size={11} />已配置 {masked}</Badge>
+              : <Badge tone="warning">未配置</Badge>}
+            <ChevronDown
+              size={14}
+              className="ml-auto shrink-0 text-muted-foreground transition-transform group-data-[state=open]/collapsible-trigger:rotate-180"
+            />
+          </CollapsibleTrigger>
+        </CardHeader>
+        <CollapsibleContent>
+          <CardContent className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label className="text-xs">API Token（需要 Zone 读 + DNS 编辑权限）</Label>
+              <Input
+                type="password" value={token} onChange={(e) => setToken(e.target.value)}
+                placeholder={configured ? '输入新 Token 覆盖' : '粘贴 Cloudflare API Token'}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="outline" size="sm" onClick={() => verify(token.trim() || undefined)} disabled={verifying}>
+                {verifying ? '验证中…' : '验证令牌'}
+              </Button>
+              <Button size="sm" onClick={save} disabled={saving || !token.trim()}>
+                {saving ? '保存中…' : '保存'}
+              </Button>
+            </div>
+            {!!zones.length && (
+              <div className="rounded-md bg-muted px-2.5 py-2 text-[11px] leading-5 text-muted-foreground">
+                可用 Zone：{zones.map((zone) => zone.name).join('、')}
+              </div>
+            )}
+          </CardContent>
+        </CollapsibleContent>
+      </Card>
+    </Collapsible>
   );
 }
 

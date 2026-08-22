@@ -166,8 +166,16 @@ export function Probe() {
 
   useEffect(() => { loadHistory(historyIp); }, [loadHistory, historyIp]);
 
-  const filtered = useMemo(() => servers.filter((item) => {
-    if (groupFilter !== 'all' && item.group !== groupFilter) return false;
+  /** 分组 → 组内服务器数：分组管理弹窗里标出空分组（提示先入组再绑域名）。 */
+  const groupCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const server of servers) {
+      if (server.group) counts.set(server.group, (counts.get(server.group) ?? 0) + 1);
+    }
+    return counts;
+  }, [servers]);
+
+  const filtered = useMemo(() => servers.filter((item) => {    if (groupFilter !== 'all' && item.group !== groupFilter) return false;
     const score = connScore(item.latestConnectivity);
     if (connFilter === 'pass' && score !== 4) return false;
     if (connFilter === 'partial' && (score <= 1 || score === 4)) return false;
@@ -684,6 +692,7 @@ export function Probe() {
       {groupsOpen && (
         <GroupDialog
           groups={groups}
+          groupCounts={groupCounts}
           onClose={() => setGroupsOpen(false)}
           onChanged={loadServers}
         />
@@ -854,9 +863,10 @@ function ImportDialog({ groups, onClose, onImported }: {
   );
 }
 
-/** 分组管理弹窗：提前创建分组（导入时必选），删除预创建记录。 */
-function GroupDialog({ groups, onClose, onChanged }: {
+/** 分组管理弹窗：提前创建分组（导入时必选），删除预创建记录；空分组提示入组步骤。 */
+function GroupDialog({ groups, groupCounts, onClose, onChanged }: {
   groups: string[];
+  groupCounts: Map<string, number>;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -903,14 +913,20 @@ function GroupDialog({ groups, onClose, onChanged }: {
           <div className="text-[11px] font-medium text-muted-foreground">已有分组（含服务器正在使用的分组）</div>
           {groups.length ? (
             <div className="flex max-h-60 flex-col gap-1 overflow-y-auto">
-              {groups.map((item) => (
-                <div key={item} className="flex items-center gap-2 rounded-md bg-muted/60 px-2.5 py-1.5">
-                  <span className="min-w-0 flex-1 truncate text-[12px]">{item}</span>
-                  <Button size="icon-sm" variant="ghost" onClick={() => remove(item)} disabled={busy} aria-label={`删除分组 ${item}`} title="删除预创建记录（不影响已归入该分组的服务器）">
-                    <Trash2 size={13} />
+              {groups.map((item) => {
+                const count = groupCounts.get(item) ?? 0;
+                return (
+                  <div key={item} className="flex items-center gap-2 rounded-md bg-muted/60 px-2.5 py-1.5">
+                    <span className="min-w-0 flex-1 truncate text-[12px]">{item}</span>
+                    {count > 0
+                      ? <span className="whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">{count} 台</span>
+                      : <span className="whitespace-nowrap text-[11px] text-muted-foreground" title="测通服务器后勾选批量改入该分组（即入池），再到负载均衡绑定域名">空 · 待入组</span>}
+                    <Button size="icon-sm" variant="ghost" onClick={() => remove(item)} disabled={busy} aria-label={`删除分组 ${item}`} title="删除预创建记录（不影响已归入该分组的服务器）">
+                      <Trash2 size={13} />
                   </Button>
                 </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="rounded-md border border-dashed border-input p-4 text-center text-xs text-muted-foreground">还没有分组</div>
@@ -922,7 +938,7 @@ function GroupDialog({ groups, onClose, onChanged }: {
   );
 }
 
-/** 勾选批量修改弹窗：改分组（必选）或改标签（可空=清除）。 */
+/** 勾选批量修改弹窗：改分组（必选）或改标签（可空=清除）；改组成功后引导去负载均衡绑域名。 */
 function BatchEditDialog({ kind, ids, count, groups, onClose, onSaved }: {
   kind: 'group' | 'label';
   ids: number[];
@@ -931,6 +947,7 @@ function BatchEditDialog({ kind, ids, count, groups, onClose, onSaved }: {
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const navigate = useNavigate();
   const [group, setGroup] = useState('');
   const [label, setLabel] = useState('');
   const [saving, setSaving] = useState(false);
@@ -942,7 +959,14 @@ function BatchEditDialog({ kind, ids, count, groups, onClose, onSaved }: {
     try {
       const changes = kind === 'group' ? { group } : { label: label.trim() };
       const result = await probeApi.batchUpdateServers(ids, changes);
-      toast.success(`已更新 ${result.updated} 台`);
+      if (kind === 'group') {
+        toast.success(`已更新 ${result.updated} 台（入组 ${group}）`, {
+          duration: 6000,
+          action: { label: '去负载均衡绑域名', onClick: () => navigate('/lb') },
+        });
+      } else {
+        toast.success(`已更新 ${result.updated} 台`);
+      }
       onSaved();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '更新失败');

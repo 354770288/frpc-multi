@@ -1,6 +1,9 @@
 import type { ReactNode } from 'react';
-import { Topbar } from './components/Topbar';
+import { AppSidebar } from './components/AppSidebar';
+import { SiteHeader } from './components/SiteHeader';
 import { ConsoleProvider } from './context/ConsoleContext';
+import { SidebarInset, SidebarProvider } from './components/ui/sidebar';
+import { TooltipProvider } from './components/ui/tooltip';
 import type { AuthState } from './lib/types';
 
 export function ConsoleLayout({
@@ -14,12 +17,15 @@ export function ConsoleLayout({
 }) {
   return (
     <ConsoleProvider auth={auth} onAuthRefresh={onAuthRefresh}>
-      <div className="flex min-h-screen flex-col">
-        <Topbar />
-        <main id="main-content" tabIndex={-1} className="flex-1 min-w-0 outline-none">
-          {children}
-        </main>
-      </div>
+      <TooltipProvider>
+        <SidebarProvider>
+          <AppSidebar />
+          <SidebarInset id="main-content" tabIndex={-1} className="min-w-0 outline-none">
+            <SiteHeader />
+            <div className="min-w-0 flex-1">{children}</div>
+          </SidebarInset>
+        </SidebarProvider>
+      </TooltipProvider>
     </ConsoleProvider>
   );
 }

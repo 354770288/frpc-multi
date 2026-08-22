@@ -11,7 +11,7 @@ import {
   Settings2,
   XCircle
 } from 'lucide-react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { api, nodesApi } from '../lib/api';
 import { shortNodeUuid } from '../lib/format';
@@ -347,10 +347,21 @@ export function CreateInstance() {
                     <ToggleGroupItem value="lb" className="text-xs" disabled={!lbDomains.length}
                       title={lbDomains.length ? undefined : '暂无负载均衡域名'}>负载均衡域名</ToggleGroupItem>
                   </ToggleGroup>
+                  {!lbDomains.length && (
+                    <span className="text-[11px] text-muted-foreground">
+                      还没有候选域名，<Link to="/lb" className="text-primary underline underline-offset-2">去负载均衡创建 →</Link>
+                    </span>
+                  )}
                   {addrSource === 'lb' && selectedLbDomain && (
-                    <Badge tone="success">
-                      {selectedLbDomain.name} · 池 {selectedLbDomain.poolSize} 台
-                    </Badge>
+                    selectedLbDomain.poolSize > 0 ? (
+                      <Badge tone="success">
+                        {selectedLbDomain.name} · 池 {selectedLbDomain.poolSize} 台
+                      </Badge>
+                    ) : (
+                      <Badge tone="warning">
+                        {selectedLbDomain.name} · 空池，<Link to="/probe" className="underline underline-offset-2">去服务器库入组 →</Link>
+                      </Badge>
+                    )
                   )}
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_140px] gap-4">

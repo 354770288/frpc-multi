@@ -8,6 +8,7 @@ logs/*
 webui/frontend/node_modules/
 webui/backend/.venv/
 webui/backend/static/
+webui/frontend/tsconfig.tsbuildinfo
 __pycache__/
 *.pyc
 
