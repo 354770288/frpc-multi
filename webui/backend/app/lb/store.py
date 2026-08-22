@@ -51,6 +51,7 @@ class LbDomain:
     last_sync_at: str | None
     last_sync_ok: bool | None
     last_sync_message: str
+    current_ip: str | None
     created_at: str
 
 
@@ -68,6 +69,7 @@ def _domain_from_row(row) -> LbDomain:
         last_sync_at=row["last_sync_at"],
         last_sync_ok=(None if row["last_sync_ok"] is None else bool(row["last_sync_ok"])),
         last_sync_message=row["last_sync_message"],
+        current_ip=row["current_ip"],
         created_at=row["created_at"],
     )
 
@@ -209,13 +211,15 @@ class LbStore:
         self._with_connection(write)
 
     def mark_sync_result(self, domain_id: int, *, ok: bool, message: str,
-                         added: list[str], removed: list[str], kept: int) -> None:
+                         added: list[str], removed: list[str], kept: int,
+                         current_ip: str | None = None) -> None:
         timestamp = now_iso()
 
         def write(connection):
             connection.execute(
-                "UPDATE lb_domains SET last_sync_at = ?, last_sync_ok = ?, last_sync_message = ? WHERE id = ?",
-                (timestamp, 1 if ok else 0, message[:500], domain_id),
+                "UPDATE lb_domains SET last_sync_at = ?, last_sync_ok = ?, last_sync_message = ?, "
+                "current_ip = ? WHERE id = ?",
+                (timestamp, 1 if ok else 0, message[:500], current_ip, domain_id),
             )
             connection.execute(
                 "INSERT INTO lb_sync_logs (domain_id, added, removed, kept, success, message, created_at) "

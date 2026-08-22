@@ -593,23 +593,15 @@ export function Overview() {
                 </div>
 
                 <div className="hidden 2xl:block">
-                  <table className="w-full min-w-[1320px] border-collapse">
+                  {/* 精简列：全屏宽度下不溢出、操作列始终可见；容器名/配置路径移入悬停提示与详情页 */}
+                  <table className="w-full table-fixed border-collapse">
                     <thead>
                       <tr className="h-9 border-y border-border bg-muted">
-                        <Th>实例</Th>
-                        <Th>节点</Th>
-                        <Th>状态</Th>
-                        <Th>启用</Th>
-                        <Th>frps</Th>
-                        <Th align="right">代理</Th>
-                        <Th>远端端口</Th>
-                        <Th>类型</Th>
-                        <Th>容器</Th>
-                        <Th align="right">CPU</Th>
-                        <Th align="right">内存</Th>
-                        <Th align="right">重启</Th>
-                        <Th>配置路径</Th>
-                        <Th align="right">操作</Th>
+                        <Th className="w-[30%] min-w-[220px]">实例</Th>
+                        <Th className="w-[120px]">状态</Th>
+                        <Th className="min-w-[180px]">穿透</Th>
+                        <Th className="w-[170px]">资源</Th>
+                        <Th align="right" className="w-[132px]">操作</Th>
                       </tr>
                     </thead>
                     <tbody>
@@ -625,70 +617,65 @@ export function Overview() {
                         const ports = formatPorts(summary);
                         const types = formatTypes(summary);
                         const memoryUsage = formatMemoryUsage(stat?.memUsage);
+                        const metaTip = [
+                          item.configPath ? `配置：${item.configPath}` : '',
+                          stat?.containerName || stat?.service ? `容器：${stat?.containerName || stat?.service}` : '',
+                        ].filter(Boolean).join('\n');
                         return (
                           <tr
                             key={key}
                             className="h-[58px] border-b border-border bg-card transition-colors hover:bg-primary/5"
                           >
                             <Td>
-                              {/* ponytail: 同上，两行截断文本区保留原生 button */}
                               <button
                                 onClick={() => openInstance(item)}
-                                className="block max-w-[240px] rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                                title={metaTip || undefined}
+                                className="block w-full rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                               >
                                 <span className="block truncate text-[13px] font-semibold text-foreground hover:text-primary hover:underline">
                                   {item.displayName || item.name}
                                 </span>
                                 <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
-                                  {item.name}
+                                  {item.name} · {item.nodeName}
                                   {item.description ? ` · ${item.description}` : ''}
                                 </span>
                               </button>
                             </Td>
                             <Td>
-                              <span className="text-[12px] text-muted-foreground">
-                                {item.nodeName}
-                              </span>
+                              <div className="flex flex-col items-start gap-1">
+                                <Badge tone={badgeTone} dot>{badge.label}</Badge>
+                                <Switch
+                                  checked={item.enabled}
+                                  disabled={pending === 'toggle'}
+                                  label={item.enabled ? '点击停用' : '点击启用'}
+                                  onChange={(next) => patchInstance(item, { enabled: next, applyImmediately: true })}
+                                />
+                              </div>
                             </Td>
                             <Td>
-                              <Badge tone={badgeTone} dot>{badge.label}</Badge>
+                              <div className="min-w-0" title={[server, `端口：${ports || '—'}`, `类型：${types || '—'}`].join('\n')}>
+                                <span className="block truncate font-mono text-[11px] text-foreground">
+                                  {server || '—'}
+                                </span>
+                                <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                                  {summary ? `${summary.proxyCount} 条代理` : '代理 --'}
+                                  {ports ? ` · ${ports}` : ''}
+                                  {types ? ` · ${types}` : ''}
+                                </span>
+                              </div>
                             </Td>
                             <Td>
-                              <Switch
-                                checked={item.enabled}
-                                disabled={pending === 'toggle'}
-                                label={item.enabled ? '点击停用' : '点击启用'}
-                                onChange={(next) => patchInstance(item, { enabled: next, applyImmediately: true })}
-                              />
-                            </Td>
-                            <Td>
-                              <span className="block max-w-[150px] truncate font-mono text-[11px] text-muted-foreground" title={server}>
-                                {server}
-                              </span>
-                            </Td>
-                            <Td align="right" mono>{summary ? summary.proxyCount : '--'}</Td>
-                            <Td>
-                              <span className="block max-w-[120px] truncate font-mono text-[11px] text-muted-foreground" title={ports}>
-                                {ports}
-                              </span>
-                            </Td>
-                            <Td>
-                              <span className="block max-w-[120px] truncate text-[11px] text-muted-foreground" title={types}>
-                                {types}
-                              </span>
-                            </Td>
-                            <Td>
-                              <span className="block max-w-[150px] truncate font-mono text-[11px] text-muted-foreground">
-                                {stat?.containerName || stat?.service || '--'}
-                              </span>
-                            </Td>
-                            <Td align="right" mono>{stat?.cpuPercent || '--'}</Td>
-                            <Td align="right" mono>{memoryUsage}</Td>
-                            <Td align="right" mono>{stat ? stat.restartCount : '--'}</Td>
-                            <Td>
-                              <span className="block max-w-[210px] truncate font-mono text-[11px] text-muted-foreground" title={item.configPath}>
-                                {item.configPath || '--'}
-                              </span>
+                              <div
+                                className="min-w-0 font-mono text-[11px] tabular-nums text-muted-foreground"
+                                title={stat?.containerName || stat?.service || ''}
+                              >
+                                <span className="block truncate">
+                                  CPU {stat?.cpuPercent || '--'} · 内存 {memoryUsage}
+                                </span>
+                                <span className="mt-0.5 block truncate">
+                                  重启 {stat ? stat.restartCount : '--'}
+                                </span>
+                              </div>
                             </Td>
                             <Td align="right">
                               <div className="flex items-center justify-end gap-1">
@@ -730,7 +717,7 @@ export function Overview() {
                       })}
                       {visibleInstances.length === 0 && (
                         <tr>
-                          <td colSpan={14} className="px-4 py-10 text-center text-[12px] text-muted-foreground">
+                          <td colSpan={5} className="px-4 py-10 text-center text-[12px] text-muted-foreground">
                             当前筛选条件下没有匹配的实例
                           </td>
                         </tr>
@@ -879,7 +866,7 @@ function DeployChainCard({ reachable, domains, domainPooled, nodesOnline, nodesT
       <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-4 py-2.5">
         <h2 className="text-sm font-semibold">部署链路</h2>
         <span className="text-[11px] text-muted-foreground">
-          服务器库入池 → 域名 DNS 轮询 → Agent 节点 → frpc 实例
+          服务器库入池 → 域名主备切换 → Agent 节点 → frpc 实例
         </span>
         {allDone && <Badge tone="success">全链就绪</Badge>}
       </div>

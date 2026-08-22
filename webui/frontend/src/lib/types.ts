@@ -299,16 +299,45 @@ export type LbDomain = {
   lastSyncAt: string | null;
   lastSyncOk: boolean | null;
   lastSyncMessage: string;
+  currentIp: string | null;
   createdAt: string;
   poolSize: number;
 };
 
+// 单 A 主备：池内 IP 健康快照与各域名当前指向/最优 IP
+export type LbHealthState = {
+  ip: string;
+  ok: boolean | null;
+  consecutiveFail: number;
+  lastCheck: string | null;
+  lastOk: string | null;
+  detail: string;
+  port: number;
+};
+
+export type LbHealthDomain = {
+  domainId: number;
+  name: string;
+  group: string;
+  currentIp: string | null;
+  bestIp: string | null;
+  poolIps: string[];
+};
+
+export type LbHealth = {
+  states: LbHealthState[];
+  domains: LbHealthDomain[];
+};
+
 export type LbSyncResult = {
   ok: boolean;
+  targetIp: string | null;
+  previousIp: string | null;
+  switched: boolean;
   added: string[];
   removed: string[];
-  kept: number;
   poolSize: number;
+  healthySize: number;
   unmanagedCount: number;
   errors: string[];
   message: string;

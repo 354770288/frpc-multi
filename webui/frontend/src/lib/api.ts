@@ -7,6 +7,7 @@ import type {
   InstanceDetail,
   LbDomain,
   LbDnsRecord,
+  LbHealth,
   LbSyncLog,
   LbSyncResult,
   Node,
@@ -225,5 +226,6 @@ export const lbApi = {
     }),
   syncDomain: (id: number) => api<LbSyncResult>(`/api/lb/domains/${id}/sync`, { method: 'POST' }),
   domainRecords: (id: number) => api<LbDnsRecord[]>(`/api/lb/domains/${id}/records`),
-  domainLogs: (id: number, limit = 50) => api<LbSyncLog[]>(`/api/lb/domains/${id}/logs?limit=${limit}`)
+  domainLogs: (id: number, limit = 50) => api<LbSyncLog[]>(`/api/lb/domains/${id}/logs?limit=${limit}`),
+  health: () => api<LbHealth>('/api/lb/health')
 };

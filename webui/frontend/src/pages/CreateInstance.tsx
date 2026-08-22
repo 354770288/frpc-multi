@@ -375,7 +375,7 @@ export function CreateInstance() {
                       />
                     </Field>
                   ) : (
-                    <Field label="候选域名（DNS 轮询负载均衡）">
+                    <Field label="候选域名（DNS 主备切换）">
                       <Select
                         value={lbDomains.some((d) => d.name === structured.serverAddr) ? structured.serverAddr : ''}
                         onValueChange={(value) => updateStructured({ serverAddr: value })}

@@ -22,10 +22,11 @@ import {
   Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import { ConfirmOverlay, Overlay } from '../components/Overlay';
-import type { CloudflareZone, LbDomain, LbDnsRecord, LbSyncLog } from '../lib/types';
+import type { CloudflareZone, LbDomain, LbDnsRecord, LbHealth, LbSyncLog } from '../lib/types';
 
 export function LbPage() {
   const [domains, setDomains] = useState<LbDomain[]>([]);
+  const [health, setHealth] = useState<LbHealth | null>(null);
   const [tokenConfigured, setTokenConfigured] = useState(false);
   const [tokenMasked, setTokenMasked] = useState('');
   const [zones, setZones] = useState<CloudflareZone[]>([]);
@@ -39,13 +40,14 @@ export function LbPage() {
 
   const load = useCallback(async () => {
     try {
-      const [list, info, groupList] = await Promise.all([
-        lbApi.domains(), lbApi.cloudflare(), probeApi.groups(),
+      const [list, info, groupList, healthSnapshot] = await Promise.all([
+        lbApi.domains(), lbApi.cloudflare(), probeApi.groups(), lbApi.health().catch(() => null),
       ]);
       setDomains(list);
       setTokenConfigured(info.configured);
       setTokenMasked(info.tokenMasked);
       setGroups(groupList);
+      setHealth(healthSnapshot);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '负载均衡数据加载失败');
     } finally {
@@ -77,7 +79,7 @@ export function LbPage() {
     <div className="mx-auto max-w-[1600px] px-6 py-6">
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-semibold">负载均衡</h2>
-        <Badge tone="muted">Cloudflare DDNS 域名池</Badge>
+        <Badge tone="muted">Cloudflare DDNS · 单 A 主备</Badge>
         <div className="ml-auto flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={load} disabled={loading}>
             <RefreshCw size={13} />刷新
@@ -98,12 +100,12 @@ export function LbPage() {
             />
           )}
           <Card>
-            <CardHeader><CardTitle className="text-sm">工作原理</CardTitle></CardHeader>
+            <CardHeader><CardTitle className="text-sm">工作原理（单 A 主备）</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-2 text-[11px] leading-5 text-muted-foreground">
-              <p>候选域名绑定服务器库的一个分组；同步把分组内服务器 IP 写成 Cloudflare 多条灰云 A 记录。</p>
-              <p>frpc 的 serverAddr 填该域名，连接/重连时 DNS 轮询到不同 frps —— 负载均衡 + 故障切换。</p>
-              <p>建议流程：穿透测试 → 通过的服务器批量改入健康分组 → 此处绑定该分组并同步。</p>
-              <p>只增删带「frpc-multi-lb」托管标记的记录，手动添加的 DNS 记录不受影响。</p>
+              <p>候选域名绑定服务器库的健康分组；A 记录永远只有一条，指向池内「最优健康」的 frps（按穿透测试可达与速率选优）。</p>
+              <p>frpc 的 serverAddr 与访问端填同一个域名，解析到同一台 → 命中率 100%（多 A 轮询会让访问端随机落到没有隧道的机器）。</p>
+              <p>当前指向的 frps 故障时（tcping 连续失败），自动把 A 记录切到下一台健康机器，frpc 断线重连即完成故障切换。</p>
+              <p>只增删带「frpc-multi-lb」托管标记的灰云记录，手动添加的 DNS 记录不受影响。</p>
             </CardContent>
           </Card>
         </aside>
@@ -122,11 +124,18 @@ export function LbPage() {
               <table className="w-full min-w-[880px]">
                 <thead>
                   <tr className="border-b bg-muted/50">
-                    <Th>域名</Th><Th>Zone</Th><Th>绑定分组</Th><Th>池</Th><Th>模式</Th><Th>最近同步</Th><Th align="right">操作</Th>
+                    <Th>域名</Th><Th>Zone</Th><Th>绑定分组</Th><Th>当前指向</Th><Th>池</Th><Th>模式</Th><Th>最近同步</Th><Th align="right">操作</Th>
                   </tr>
                 </thead>
                 <tbody>
-                  {domains.map((domain) => (
+                  {domains.map((domain) => {
+                    const domainHealth = health?.domains.find((item) => item.domainId === domain.id) ?? null;
+                    const poolStates = domainHealth
+                      ? domainHealth.poolIps.map((ip) => health?.states.find((s) => s.ip === ip) ?? null)
+                      : [];
+                    const healthyCount = poolStates.filter((s) => !s || s.ok !== false).length;
+                    const pendingSwitch = domainHealth?.bestIp && domainHealth.bestIp !== domain.currentIp;
+                    return (
                     <tr key={domain.id} className="border-b last:border-b-0 hover:bg-muted/50 transition-colors">
                       <Td>
                         <div className="flex items-center gap-1.5">
@@ -149,7 +158,23 @@ export function LbPage() {
                           )}
                         </div>
                       </Td>
-                      <Td><span className="font-mono text-xs tabular-nums">{domain.poolSize} 台</span></Td>
+                      <Td>
+                        {domain.currentIp ? (
+                          <div className="flex items-center gap-1.5" title={pendingSwitch ? `健康监测建议切换到 ${domainHealth?.bestIp}` : undefined}>
+                            <span className="font-mono text-[12px]">{domain.currentIp}</span>
+                            {pendingSwitch
+                              ? <Badge tone="warning">切换中 → {domainHealth?.bestIp}</Badge>
+                              : <Badge tone="success" dot>在线</Badge>}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">未同步</span>
+                        )}
+                      </Td>
+                      <Td>
+                        <span className="font-mono text-xs tabular-nums" title={poolStates.map((s) => s ? `${s.ip} ${s.ok === false ? '✗' : '✓'}` : '').filter(Boolean).join('\n')}>
+                          {healthyCount}/{domain.poolSize} 健康
+                        </span>
+                      </Td>
                       <Td>
                         <span className="text-xs">
                           {domain.syncMode === 'scheduled'
@@ -189,9 +214,10 @@ export function LbPage() {
                         </div>
                       </Td>
                     </tr>
-                  ))}
+                    );
+                  })}
                   {!domains.length && (
-                    <tr><td colSpan={7} className="px-0 py-0">
+                    <tr><td colSpan={8} className="px-0 py-0">
                       {loading ? (
                         <div className="px-4 py-10 text-center text-xs text-muted-foreground">加载中…</div>
                       ) : !tokenConfigured ? (
@@ -207,7 +233,7 @@ export function LbPage() {
                           <EmptyHeader>
                             <EmptyMedia variant="icon"><Globe /></EmptyMedia>
                             <EmptyTitle>还没有候选域名</EmptyTitle>
-                            <EmptyDescription>候选域名 = 多台健康 frps 的 DNS 轮询入口。三步接入：</EmptyDescription>
+                            <EmptyDescription>候选域名 = 绑定健康分组的单 A 主备入口（自动指向最优 frps，故障自动切换）。三步接入：</EmptyDescription>
                           </EmptyHeader>
                           <EmptyContent>
                             <div className="flex flex-col gap-2 text-left text-xs leading-5 text-muted-foreground">
@@ -474,7 +500,7 @@ function DomainDialog({ domain, zones, groups, onClose, onSaved, onNeedZones }: 
           </div>
         )}
         <div className="flex items-center justify-between rounded-md bg-muted px-3 py-2">
-          <span className="text-xs">启用（停用后不参与定时同步）</span>
+          <span className="text-xs">启用（停用后不参与定时同步与故障切换）</span>
           <Switch checked={enabled} onCheckedChange={setEnabled} />
         </div>
       </div>

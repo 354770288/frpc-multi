@@ -1,7 +1,7 @@
-"""/api/lb/*：负载均衡（Cloudflare DDNS 域名池）。
+"""/api/lb/*：负载均衡（Cloudflare DDNS，单 A 主备模式）。
 
-候选域名绑定服务器库分组；同步把分组内服务器 IP 收敛为
-Cloudflare 上的托管 A 记录。变更操作写审计（lb_* 动作前缀）。
+候选域名绑定服务器库分组；同步把该域名收敛为**一条**托管 A 记录，
+指向池内最优健康 IP（健康监测见 lb.health）。变更操作写审计（lb_* 前缀）。
 """
 
 from __future__ import annotations
@@ -64,9 +64,34 @@ def _public_domain(domain, store: ProbeStore) -> dict:
         "lastSyncAt": domain.last_sync_at,
         "lastSyncOk": domain.last_sync_ok,
         "lastSyncMessage": domain.last_sync_message,
+        "currentIp": domain.current_ip,
         "createdAt": domain.created_at,
         "poolSize": len(pool),
     }
+
+
+@router.get("/health")
+def pool_health_view():
+    """池内 IP 健康快照 + 各启用域名的当前指向与最优健康 IP。"""
+    from .health import best_ip_for_domain, pool_health
+
+    store = lb_store()
+    probe = probe_store()
+    states = {item["ip"]: item for item in pool_health.snapshot()}
+    domains = []
+    for domain in store.list_domains():
+        if not domain.enabled:
+            continue
+        pool = [s.ip for s in probe.list_servers() if s.server_group == domain.group_name]
+        domains.append({
+            "domainId": domain.id,
+            "name": domain.name,
+            "group": domain.group_name,
+            "currentIp": domain.current_ip,
+            "bestIp": best_ip_for_domain(domain, probe, pool_health),
+            "poolIps": pool,
+        })
+    return {"states": list(states.values()), "domains": domains}
 
 
 # ---------------------------------------------------------------------------

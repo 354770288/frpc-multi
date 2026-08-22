@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS lb_domains (
     last_sync_at TEXT,
     last_sync_ok INTEGER,
     last_sync_message TEXT NOT NULL DEFAULT '',
+    current_ip TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -167,6 +168,13 @@ def _migrate_nodes(connection: sqlite3.Connection) -> None:
             connection.execute("ALTER TABLE nodes ADD COLUMN secret TEXT NOT NULL DEFAULT ''")
 
 
+def _migrate_lb_domains(connection: sqlite3.Connection) -> None:
+    """lb_domains 补 current_ip 列（单 A 主备模式：当前 A 记录指向的 IP）。"""
+    columns = _column_names(connection, "lb_domains")
+    if columns and "current_ip" not in columns:
+        connection.execute("ALTER TABLE lb_domains ADD COLUMN current_ip TEXT")
+
+
 def connect_database(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)
@@ -174,5 +182,6 @@ def connect_database(path: Path) -> sqlite3.Connection:
     connection.execute("PRAGMA foreign_keys = ON")
     connection.executescript(SCHEMA)
     _migrate_nodes(connection)
+    _migrate_lb_domains(connection)
     connection.commit()
     return connection
