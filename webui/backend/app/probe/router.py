@@ -459,3 +459,88 @@ def clear_history(kind: str, user: Annotated[str, Depends(require_auth)]):
 @router.get("/dashboard")
 def dashboard():
     return probe_store().dashboard()
+
+
+# ---------------------------------------------------------------------------
+# 网段发现（整合自 portpilot）：扫描自有网段内开放 frps 端口的设备
+# ---------------------------------------------------------------------------
+class DiscoverStart(BaseModel):
+    targets: str
+    exclude: str = ""
+    port: int | None = None
+    concurrency: int = 500
+    timeout: float = 1.5
+
+
+class DiscoverImport(BaseModel):
+    ips: list[str]
+    group: str
+
+
+@router.post("/discover/start")
+def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_auth)]):
+    from .discover import (
+        MAX_CONCURRENCY, MAX_TIMEOUT, MIN_CONCURRENCY, MIN_TIMEOUT, DiscoverParams, discover_runner,
+    )
+
+    if not payload.targets.strip():
+        raise HTTPException(status_code=400, detail="至少填写一个目标网段")
+    if not MIN_CONCURRENCY <= payload.concurrency <= MAX_CONCURRENCY:
+        raise HTTPException(status_code=400, detail=f"并发需在 {MIN_CONCURRENCY}-{MAX_CONCURRENCY}")
+    if not MIN_TIMEOUT <= payload.timeout <= MAX_TIMEOUT:
+        raise HTTPException(status_code=400, detail=f"超时需在 {MIN_TIMEOUT}-{MAX_TIMEOUT} 秒")
+    port = payload.port or _effective_options().frps_port
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=400, detail="端口必须在 1-65535")
+    params = DiscoverParams(
+        targets=[part.strip() for part in payload.targets.replace("\n", ",").split(",") if part.strip()],
+        exclude=[part.strip() for part in payload.exclude.replace("\n", ",").split(",") if part.strip()],
+        port=port,
+        concurrency=payload.concurrency,
+        timeout=payload.timeout,
+    )
+    try:
+        discover_runner.start(params)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        audit(user, "probe_discover_start", success=False, message=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit(user, "probe_discover_start",
+          message=f"目标 {payload.targets.strip()[:120]} 端口 {port} 并发 {payload.concurrency}")
+    return discover_runner.status()
+
+
+@router.get("/discover/status")
+def discover_status():
+    from .discover import discover_runner
+    return discover_runner.status()
+
+
+@router.post("/discover/stop")
+def discover_stop(user: Annotated[str, Depends(require_auth)]):
+    from .discover import discover_runner
+    stopped = discover_runner.stop()
+    audit(user, "probe_discover_stop", success=stopped,
+          message="已下发停止" if stopped else "当前没有运行中的扫描")
+    return {"stopped": stopped}
+
+
+@router.post("/discover/import")
+def discover_import(payload: DiscoverImport, user: Annotated[str, Depends(require_auth)]):
+    from .discover import discover_runner
+
+    group = payload.group.strip()
+    if not group:
+        raise HTTPException(status_code=400, detail="请选择导入分组")
+    ips = [ip.strip() for ip in payload.ips if ip.strip()]
+    if not ips:
+        raise HTTPException(status_code=400, detail="请勾选要导入的 IP")
+    valid_hits = discover_runner.found_ips()
+    items = [{"ip": ip, "group": group} for ip in ips if ip in valid_hits]
+    if not items:
+        raise HTTPException(status_code=400, detail="所选 IP 不在当前扫描结果中")
+    inserted, skipped = probe_store().import_servers(items)
+    audit(user, "probe_discover_import",
+          message=f"分组「{group}」新增 {inserted} 台（跳过已在库 {skipped}）")
+    return {"inserted": inserted, "skipped": skipped}

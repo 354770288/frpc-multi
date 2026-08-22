@@ -274,6 +274,31 @@ export type ProbeDashboard = {
   speed: { tested: number; avgDownloadMbps: number | null; avgUploadMbps: number | null; maxDownloadMbps: number | null };
 };
 
+// ---- 网段发现（portpilot 整合） ----
+
+export type DiscoverHit = {
+  ip: string;
+  port: number;
+  latencyMs: number;
+};
+
+export type DiscoverStatus = {
+  running: boolean;
+  params: {
+    targets: string[];
+    exclude: string[];
+    port: number;
+    concurrency: number;
+    timeout: number;
+  } | null;
+  total: number;
+  scanned: number;
+  found: DiscoverHit[];
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string;
+};
+
 // ---- 负载均衡（DDNS 域名池） ----
 
 export type CloudflareInfo = {

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowDown, ArrowRight, ArrowUp, ArrowUpDown, Download, FolderCog, Gauge, ListPlus,
-  Pencil, Play, Plus, RefreshCw, Rocket, Settings2, Square, Tag, Trash2, Upload, X, Zap,
+  Pencil, Play, Plus, Radar, RefreshCw, Rocket, Settings2, Square, Tag, Trash2, Upload, X, Zap,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { probeApi } from '../lib/api';
@@ -21,8 +21,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { ConnBadge, ProbeStatCards, RecentList, SpeedText } from './probe/ProbeParts';
 import { ConfirmOverlay, Overlay } from '../components/Overlay';
 import type {
-  ProbeConnectivityHistory, ProbeConnectivitySummary, ProbeDashboard, ProbeServer,
-  ProbeSpeedHistory, ProbeTestConfig, ProbeTestStatus,
+  DiscoverStatus, ProbeConnectivityHistory, ProbeConnectivitySummary, ProbeDashboard,
+  ProbeServer, ProbeSpeedHistory, ProbeTestConfig, ProbeTestStatus,
 } from '../lib/types';
 
 type TestScope = 'all' | 'selected' | string; // 'all' | 'selected' | 分组名
@@ -80,6 +80,7 @@ export function Probe() {
   const [config, setConfig] = useState<ProbeTestConfig | null>(null);
   const [groupsOpen, setGroupsOpen] = useState(false);
   const [batchEdit, setBatchEdit] = useState<'group' | 'label' | null>(null);
+  const [discoverOpen, setDiscoverOpen] = useState(false);
 
   // 测试
   const [scope, setScope] = useState<TestScope>('all');
@@ -382,6 +383,9 @@ export function Probe() {
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
                   <ListPlus size={13} />批量导入
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setDiscoverOpen(true)} title="扫描自有网段，发现开放 frps 端口的设备">
+                  <Radar size={13} />网段发现
                 </Button>
                 <Button size="sm" onClick={() => setEditing('new')}><Plus size={13} />添加</Button>
               </div>
@@ -713,6 +717,15 @@ export function Probe() {
           running={running}
           onClose={() => setConfigOpen(false)}
           onSaved={(next) => { setConfig(next); setConfigOpen(false); }}
+        />
+      )}
+      {discoverOpen && (
+        <DiscoverDialog
+          groups={groups}
+          existingIps={new Set(servers.map((item) => item.ip))}
+          defaultPort={config?.frpsPort ?? 7000}
+          onClose={() => setDiscoverOpen(false)}
+          onImported={loadServers}
         />
       )}
       {deletingSelected && (
@@ -1121,4 +1134,229 @@ function ThSort({ label, sortKey, activeKey, asc, onSort }: {
 }
 function Td({ children, align = 'left' }: { children: React.ReactNode; align?: 'left' | 'right' }) {
   return <td className={`px-4 py-3 align-middle ${align === 'right' ? 'text-right' : 'text-left'}`}>{children}</td>;
+}
+
+/**
+ * 网段发现弹窗（整合自 portpilot）：扫描自有网段内开放 frps 端口的设备，
+ * 勾选导入服务器库 → 走既有穿透测试入池链路。仅供扫描自己有权管理的网段。
+ */
+function DiscoverDialog({ groups, existingIps, defaultPort, onClose, onImported }: {
+  groups: string[];
+  existingIps: Set<string>;
+  defaultPort: number;
+  onClose: () => void;
+  onImported: () => void;
+}) {
+  const [targets, setTargets] = useState('');
+  const [exclude, setExclude] = useState('');
+  const [port, setPort] = useState(String(defaultPort));
+  const [concurrency, setConcurrency] = useState('500');
+  const [probeTimeout, setProbeTimeout] = useState('1.5');
+  const [status, setStatus] = useState<DiscoverStatus | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [group, setGroup] = useState('');
+  const [starting, setStarting] = useState(false);
+  const [importing, setImporting] = useState(false);
+
+  const running = !!status?.running;
+
+  useEffect(() => {
+    probeApi.discoverStatus().then((current) => {
+      setStatus(current);
+      // 已有结果时默认全选「不在库」的命中项
+      const ips = current.found.filter((hit) => !existingIps.has(hit.ip)).map((hit) => hit.ip);
+      setSelected(new Set(ips));
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => {
+      probeApi.discoverStatus().then(setStatus).catch(() => {});
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  const toggle = (ip: string, inLibrary: boolean) => {
+    if (inLibrary) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(ip)) next.delete(ip);
+      else next.add(ip);
+      return next;
+    });
+  };
+
+  const start = async () => {
+    if (!targets.trim()) { toast.error('请填写目标网段'); return; }
+    setStarting(true);
+    try {
+      setStatus(await probeApi.discoverStart({
+        targets,
+        exclude: exclude.trim() || undefined,
+        port: port.trim() ? Number(port) : undefined,
+        concurrency: concurrency.trim() ? Number(concurrency) : undefined,
+        timeout: probeTimeout.trim() ? Number(probeTimeout) : undefined,
+      }));
+      setSelected(new Set());
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '启动扫描失败');
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const stop = async () => {
+    try { await probeApi.discoverStop(); } catch { /* 状态轮询会跟上 */ }
+  };
+
+  const importSelected = async () => {
+    if (!group) { toast.error('请选择导入分组'); return; }
+    const ips = [...selected];
+    if (!ips.length) { toast.error('请勾选要导入的 IP'); return; }
+    setImporting(true);
+    try {
+      const result = await probeApi.discoverImport(ips, group);
+      toast.success(`导入完成：新增 ${result.inserted} 台，跳过已在库 ${result.skipped} 台`, {
+        duration: 6000,
+        action: { label: '去跑穿透测试', onClick: () => { onImported(); onClose(); } },
+      });
+      onImported();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '导入失败');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const found = status?.found ?? [];
+  const progress = status && status.total > 0 ? Math.round((status.scanned / status.total) * 100) : 0;
+
+  return (
+    <Overlay title="网段发现（扫描自有网段）" onClose={onClose} wide>
+      <div className="flex flex-col gap-4">
+        <p className="text-[11px] leading-4 text-muted-foreground">
+          扫描自己有权管理的网段（内网 / 自有 VPS 段），找出开放 frps 端口的设备，勾选导入服务器库后跑穿透测试。
+          仅做资产发现，请勿扫描未授权网络。
+        </p>
+
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-xs">目标网段（CIDR / IP 段 / 单 IP，逗号或换行分隔）</Label>
+          <Textarea
+            value={targets} onChange={(e) => setTargets(e.target.value)}
+            placeholder={'10.0.0.0/24\n192.168.1.1-192.168.1.254\n172.16.0.1-254'}
+            className="max-h-32 font-mono text-xs" disabled={running}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">排除</Label>
+            <Input value={exclude} onChange={(e) => setExclude(e.target.value)}
+              placeholder="10.0.0.1,10.0.9.0/24" disabled={running} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">frps 端口</Label>
+            <Input value={port} onChange={(e) => setPort(e.target.value)} inputMode="numeric" disabled={running} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">并发</Label>
+            <Input value={concurrency} onChange={(e) => setConcurrency(e.target.value)} inputMode="numeric" disabled={running} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">超时（秒）</Label>
+            <Input value={probeTimeout} onChange={(e) => setProbeTimeout(e.target.value)} inputMode="decimal" disabled={running} />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {running ? (
+            <>
+              <Button size="sm" variant="destructive" onClick={stop}><Square size={13} />停止扫描</Button>
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {status!.scanned} / {status!.total}（{progress}%）· 命中 {found.length} 台
+              </span>
+            </>
+          ) : (
+            <Button size="sm" onClick={start} disabled={starting}>
+              <Play size={13} />{starting ? '启动中…' : found.length ? '重新扫描' : '开始扫描'}
+            </Button>
+          )}
+        </div>
+        {running && (
+          <Progress value={progress} className="h-1.5" />
+        )}
+        {status?.error && <div className="text-xs text-destructive">{status.error}</div>}
+
+        {found.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-medium text-muted-foreground">
+                命中 {found.length} 台（勾选 {selected.size} 台）
+              </span>
+              <Button size="sm" variant="ghost" className="ml-auto h-6 px-2 text-[11px]"
+                onClick={() => setSelected(new Set(found.filter((hit) => !existingIps.has(hit.ip)).map((hit) => hit.ip)))}>
+                全选（不在库）
+              </Button>
+            </div>
+            <div className="max-h-56 overflow-y-auto rounded-md border border-border">
+              <table className="w-full">
+                <thead className="sticky top-0 bg-muted">
+                  <tr className="text-[11px] text-muted-foreground">
+                    <th className="w-8 px-2 py-1.5" />
+                    <th className="px-2 py-1.5 text-left">IP</th>
+                    <th className="px-2 py-1.5 text-left">端口</th>
+                    <th className="px-2 py-1.5 text-left">延迟</th>
+                    <th className="px-2 py-1.5 text-left">状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {found.map((hit) => {
+                    const inLibrary = existingIps.has(hit.ip);
+                    return (
+                      <tr key={hit.ip} className="border-t border-border text-xs">
+                        <td className="px-2 py-1.5">
+                          <input
+                            type="checkbox"
+                            className="size-3.5 accent-[var(--primary)]"
+                            checked={inLibrary || selected.has(hit.ip)}
+                            disabled={inLibrary}
+                            onChange={() => toggle(hit.ip, inLibrary)}
+                          />
+                        </td>
+                        <td className="px-2 py-1.5 font-mono">{hit.ip}</td>
+                        <td className="px-2 py-1.5 font-mono text-muted-foreground">{hit.port}</td>
+                        <td className="px-2 py-1.5 font-mono tabular-nums text-muted-foreground">{hit.latencyMs} ms</td>
+                        <td className="px-2 py-1.5">
+                          {inLibrary ? <Badge tone="muted">已在库</Badge> : <Badge tone="success">可导入</Badge>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-end gap-2">
+              <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                <Label className="text-xs">导入分组</Label>
+                <Select value={group} onValueChange={setGroup}>
+                  <SelectTrigger><SelectValue placeholder="选择分组" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {groups.length
+                        ? groups.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)
+                        : <div className="px-3 py-2 text-xs text-muted-foreground">还没有分组，先到「分组管理」创建</div>}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button onClick={importSelected} disabled={importing || !selected.size}>
+                {importing ? '导入中…' : `导入所选（${selected.size}）`}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </Overlay>
+  );
 }

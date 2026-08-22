@@ -30,6 +30,7 @@ def load_main_app(**env: str):
         "app.control.hub",
         "app.probe.router",
         "app.probe.runner",
+        "app.probe.discover",
         "app.settings",
         "app.auth",
     ]:

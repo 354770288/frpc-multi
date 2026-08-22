@@ -3,6 +3,7 @@ import type {
   AuditLog,
   CloudflareInfo,
   CloudflareZone,
+  DiscoverStatus,
   Instance,
   InstanceDetail,
   LbDomain,
@@ -199,7 +200,18 @@ export const probeApi = {
       method: 'POST',
       body: JSON.stringify({ values })
     }),
-  dashboard: () => api<ProbeDashboard>('/api/probe/dashboard')
+  dashboard: () => api<ProbeDashboard>('/api/probe/dashboard'),
+  discoverStart: (payload: {
+    targets: string; exclude?: string; port?: number; concurrency?: number; timeout?: number;
+  }) => api<DiscoverStatus>('/api/probe/discover/start', {
+    method: 'POST', body: JSON.stringify(payload)
+  }),
+  discoverStatus: () => api<DiscoverStatus>('/api/probe/discover/status'),
+  discoverStop: () => api<{ stopped: boolean }>('/api/probe/discover/stop', { method: 'POST' }),
+  discoverImport: (ips: string[], group: string) =>
+    api<{ inserted: number; skipped: number }>('/api/probe/discover/import', {
+      method: 'POST', body: JSON.stringify({ ips, group })
+    })
 };
 
 export const lbApi = {

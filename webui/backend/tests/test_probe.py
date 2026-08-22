@@ -456,6 +456,7 @@ class ProbeApiTests(unittest.TestCase):
             "app.main",
             "app.probe.router",
             "app.probe.runner",
+            "app.probe.discover",
             "app.control.router",
             "app.control.hub",
             "app.settings",
@@ -829,6 +830,104 @@ class RunnerParallelTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 3.0)
         # 停止后不产生任何入库结果
         self.assertEqual(self.store.list_connectivity_history(), [])
+
+
+class DiscoverApiTests(unittest.TestCase):
+    """网段发现 API：start → status → import 生命周期 + 校验/审计。"""
+
+    def make_client(self):
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        previous = {
+            key: os.environ.get(key)
+            for key in ("WEBUI_USERNAME", "WEBUI_PASSWORD", "DATABASE_PATH")
+        }
+        self.db_path = Path(tempfile.mkdtemp(prefix="frpc-discover-api-")) / "console.db"
+        os.environ.update(
+            WEBUI_USERNAME="admin", WEBUI_PASSWORD="password", DATABASE_PATH=str(self.db_path),
+        )
+        for module_name in [
+            "app.main", "app.probe.router", "app.probe.runner", "app.probe.discover",
+            "app.control.router", "app.control.hub", "app.settings", "app.auth",
+        ]:
+            sys.modules.pop(module_name, None)
+        try:
+            app = importlib.import_module("app.main").app
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        client = TestClient(app)
+        token = client.post("/api/auth/login", json={"username": "admin", "password": "password"}).json()["token"]
+        return client, {"Authorization": f"Bearer {token}"}
+
+    def test_discover_lifecycle_and_import(self):
+        client, headers = self.make_client()
+
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(8)
+        port = server.getsockname()[1]
+        try:
+            # 空目标 / 非法端口拒绝
+            self.assertEqual(client.post("/api/probe/discover/start",
+                                         json={"targets": "  "}, headers=headers).status_code, 400)
+            self.assertEqual(client.post("/api/probe/discover/start",
+                                         json={"targets": "10.0.0.0/8"}, headers=headers).status_code, 400)
+
+            started = client.post("/api/probe/discover/start", json={
+                "targets": "127.0.0.1", "port": port, "concurrency": 4, "timeout": 1.0,
+            }, headers=headers)
+            self.assertEqual(started.status_code, 200)
+            body = started.json()
+            self.assertEqual(body["total"], 1)
+
+            # 单 IP 扫描可能瞬间完成（响应返回前），轮询到终态再校验
+            for _ in range(100):
+                status = client.get("/api/probe/discover/status", headers=headers).json()
+                if not status["running"]:
+                    break
+                time.sleep(0.05)
+            self.assertFalse(status["running"])
+            self.assertEqual(status["total"], 1)
+            self.assertEqual(status["scanned"], 1)
+            self.assertEqual([hit["ip"] for hit in status["found"]], ["127.0.0.1"])
+
+            # 导入：必选分组 + 只接受扫描命中的 IP
+            self.assertEqual(client.post("/api/probe/discover/import",
+                                         json={"ips": ["127.0.0.1"], "group": ""},
+                                         headers=headers).status_code, 400)
+            self.assertEqual(client.post("/api/probe/discover/import",
+                                         json={"ips": ["8.8.8.8"], "group": "发现"},
+                                         headers=headers).status_code, 400)
+            imported = client.post("/api/probe/discover/import", json={
+                "ips": ["127.0.0.1"], "group": "发现",
+            }, headers=headers).json()
+            self.assertEqual(imported, {"inserted": 1, "skipped": 0})
+
+            # 再导一次：去重跳过
+            again = client.post("/api/probe/discover/import", json={
+                "ips": ["127.0.0.1"], "group": "发现",
+            }, headers=headers).json()
+            self.assertEqual(again, {"inserted": 0, "skipped": 1})
+
+            # 服务器库能看到 + 审计
+            from app.probe.store import ProbeStore
+            servers = ProbeStore(self.db_path).list_servers()
+            self.assertEqual([(s.ip, s.server_group) for s in servers], [("127.0.0.1", "发现")])
+            actions = {log["action"] for log in client.get("/api/audit-logs?limit=50", headers=headers).json()}
+            self.assertIn("probe_discover_start", actions)
+            self.assertIn("probe_discover_import", actions)
+        finally:
+            server.close()
+
+        # 停止端点：无运行任务时返回 False
+        stopped = client.post("/api/probe/discover/stop", headers=headers).json()
+        self.assertFalse(stopped["stopped"])
 
 
 if __name__ == "__main__":
