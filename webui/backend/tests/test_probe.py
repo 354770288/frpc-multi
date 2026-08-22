@@ -906,45 +906,6 @@ class RunnerParallelTests(unittest.TestCase):
         self.assertEqual(self.store.list_connectivity_history(), [])
 
 
-class FakeFrpsListener(threading.Thread):
-    """按 frp 帧协议应答 LoginResp 的假 frps（8 字节大端长度 + JSON），供发现链路测试。"""
-
-    def __init__(self, version: str = "0.68.1"):
-        super().__init__(daemon=True)
-        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server.bind(("127.0.0.1", 0))
-        self.server.listen(16)
-        self.port = self.server.getsockname()[1]
-        self.version = version
-
-    def run(self):
-        while True:
-            try:
-                conn, _ = self.server.accept()
-            except OSError:
-                return
-            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
-
-    def _serve(self, conn: socket.socket):
-        try:
-            header = conn.recv(8, socket.MSG_WAITALL)
-            if len(header) != 8:
-                return
-            body = conn.recv(int.from_bytes(header, "big"), socket.MSG_WAITALL)
-            if json.loads(body).get("type") != "Login":
-                return
-            resp = json.dumps({"type": "LoginResp", "version": self.version, "run_id": "",
-                               "error": "token mismatch"}).encode() + b"\n"
-            conn.sendall(len(resp).to_bytes(8, "big") + resp)
-        except OSError:
-            pass
-        finally:
-            conn.close()
-
-    def close(self):
-        self.server.close()
-
-
 class DiscoverApiTests(unittest.TestCase):
     """网段发现 API：start → status → import 生命周期 + 校验/审计。"""
 
@@ -981,9 +942,10 @@ class DiscoverApiTests(unittest.TestCase):
     def test_discover_lifecycle_and_import(self):
         client, headers = self.make_client()
 
-        server = FakeFrpsListener(version="0.68.1")
-        server.start()
-        port = server.port
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(8)
+        port = server.getsockname()[1]
         try:
             # 空目标 / 非法端口拒绝
             self.assertEqual(client.post("/api/probe/discover/start",
@@ -1007,16 +969,13 @@ class DiscoverApiTests(unittest.TestCase):
             self.assertFalse(status["running"])
             self.assertEqual(status["total"], 1)
             self.assertEqual(status["scanned"], 1)
-            self.assertEqual(status["others"], 0)
-            self.assertEqual([(hit["ip"], hit["frpsVersion"]) for hit in status["found"]],
-                             [("127.0.0.1", "0.68.1")])
+            self.assertEqual([hit["ip"] for hit in status["found"]], ["127.0.0.1"])
 
             # 导入：按结果行 id；重复导入去重
             results = client.get("/api/probe/discover/results", headers=headers).json()
             self.assertEqual(len(results["items"]), 1)
             row = results["items"][0]
             self.assertEqual(row["ip"], "127.0.0.1")
-            self.assertEqual(row["frpsVersion"], "0.68.1")
             self.assertFalse(row["inLibrary"])
 
             self.assertEqual(client.post("/api/probe/discover/import",

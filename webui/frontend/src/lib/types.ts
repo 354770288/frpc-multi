@@ -280,7 +280,6 @@ export type DiscoverHit = {
   ip: string;
   port: number;
   latencyMs: number;
-  frpsVersion: string;
 };
 
 export type DiscoverResult = {
@@ -288,7 +287,6 @@ export type DiscoverResult = {
   ip: string;
   port: number;
   latencyMs: number;
-  frpsVersion: string;
   group: string;
   label: string;
   inLibrary: boolean;
@@ -314,7 +312,6 @@ export type DiscoverStatus = {
   total: number;
   scanned: number;
   found: DiscoverHit[];
-  others: number;
   startedAt: string | null;
   finishedAt: string | null;
   error: string;

@@ -522,8 +522,8 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
     )
     store = probe_store()
 
-    def persist_hit(ip: str, hit_port: int, latency_ms: float, frps_version: str = "") -> None:
-        store.upsert_discover_result(ip, hit_port, latency_ms, frps_version)
+    def persist_hit(ip: str, hit_port: int, latency_ms: float) -> None:
+        store.upsert_discover_result(ip, hit_port, latency_ms)
 
     try:
         discover_runner.start(params, on_hit=persist_hit)
@@ -560,7 +560,6 @@ def discover_results():
         "ip": row["ip"],
         "port": row["port"],
         "latencyMs": round(row["latency_ms"], 1),
-        "frpsVersion": row["frps_version"],
         "group": row["server_group"],
         "label": row["label"],
         "inLibrary": bool(row["in_library"]),
