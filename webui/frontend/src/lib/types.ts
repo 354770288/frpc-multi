@@ -282,6 +282,24 @@ export type DiscoverHit = {
   latencyMs: number;
 };
 
+export type DiscoverResult = {
+  id: number;
+  ip: string;
+  port: number;
+  latencyMs: number;
+  group: string;
+  label: string;
+  inLibrary: boolean;
+  discoveredAt: string;
+};
+
+export type LabelCount = { label: string; count: number };
+
+export type DiscoverResults = {
+  items: DiscoverResult[];
+  labels: LabelCount[];
+};
+
 export type DiscoverStatus = {
   running: boolean;
   params: {

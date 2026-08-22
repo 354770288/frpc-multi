@@ -124,7 +124,8 @@ class DiscoverRunner:
 
     # ---- 控制 ----
 
-    def start(self, params: DiscoverParams) -> DiscoverState:
+    def start(self, params: DiscoverParams, on_hit=None) -> DiscoverState:
+        """启动扫描；on_hit(ip, port, latency_ms) 在每次命中时回调（落库用，可空）。"""
         with self._lock:
             if self._state and self._state.running:
                 raise RuntimeError("已有扫描在进行中")
@@ -134,7 +135,7 @@ class DiscoverRunner:
         state = DiscoverState(params=params, total=len(ips))
         self._cancel.clear()
         self._state = state
-        threading.Thread(target=self._run, args=(state, ips), daemon=True,
+        threading.Thread(target=self._run, args=(state, ips, on_hit), daemon=True,
                          name="probe-discover").start()
         return state
 
@@ -146,11 +147,11 @@ class DiscoverRunner:
 
     # ---- 执行 ----
 
-    def _run(self, state: DiscoverState, ips: list[str]) -> None:
+    def _run(self, state: DiscoverState, ips: list[str], on_hit=None) -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(self._scan(state, ips))
+            loop.run_until_complete(self._scan(state, ips, on_hit))
         except Exception as exc:  # noqa: BLE001 - 后台线程不能静默吞异常
             state.error = str(exc)
         finally:
@@ -158,7 +159,7 @@ class DiscoverRunner:
             state.finished_at = now_iso()
             loop.close()
 
-    async def _scan(self, state: DiscoverState, ips: list[str]) -> None:
+    async def _scan(self, state: DiscoverState, ips: list[str], on_hit=None) -> None:
         semaphore = asyncio.Semaphore(state.params.concurrency)
 
         async def probe(ip: str) -> None:
@@ -176,7 +177,13 @@ class DiscoverRunner:
                     )
                     latency = (time.monotonic() - started) * 1000
                     writer.close()
-                    state.found.append(DiscoverHit(ip, state.params.port, latency))
+                    hit = DiscoverHit(ip, state.params.port, latency)
+                    state.found.append(hit)
+                    if on_hit is not None:
+                        try:
+                            on_hit(ip, state.params.port, latency)
+                        except Exception:  # noqa: BLE001 - 落库失败不中断扫描
+                            pass
                 except (OSError, asyncio.TimeoutError, ValueError):
                     pass
                 finally:

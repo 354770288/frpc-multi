@@ -3,9 +3,11 @@ import type {
   AuditLog,
   CloudflareInfo,
   CloudflareZone,
+  DiscoverResults,
   DiscoverStatus,
   Instance,
   InstanceDetail,
+  LabelCount,
   LbDomain,
   LbDnsRecord,
   LbHealth,
@@ -201,6 +203,11 @@ export const probeApi = {
       body: JSON.stringify({ values })
     }),
   dashboard: () => api<ProbeDashboard>('/api/probe/dashboard'),
+  labels: () => api<LabelCount[]>('/api/probe/servers/labels'),
+  renameGroup: (old: string, name: string) =>
+    api<{ renamed: string }>('/api/probe/servers/groups/rename', {
+      method: 'PATCH', body: JSON.stringify({ old, new: name })
+    }),
   discoverStart: (payload: {
     targets: string; exclude?: string; port?: number; concurrency?: number; timeout?: number;
   }) => api<DiscoverStatus>('/api/probe/discover/start', {
@@ -208,9 +215,18 @@ export const probeApi = {
   }),
   discoverStatus: () => api<DiscoverStatus>('/api/probe/discover/status'),
   discoverStop: () => api<{ stopped: boolean }>('/api/probe/discover/stop', { method: 'POST' }),
-  discoverImport: (ips: string[], group: string) =>
+  discoverResults: () => api<DiscoverResults>('/api/probe/discover/results'),
+  discoverUpdateBatch: (ids: number[], group?: string, label?: string) =>
+    api<{ updated: number }>('/api/probe/discover/results/batch', {
+      method: 'PATCH', body: JSON.stringify({ ids, group: group ?? null, label: label ?? null })
+    }),
+  discoverDelete: (ids: number[] | null) =>
+    api<{ deleted: number }>('/api/probe/discover/results', {
+      method: 'DELETE', body: JSON.stringify({ ids })
+    }),
+  discoverImport: (ids: number[], group?: string) =>
     api<{ inserted: number; skipped: number }>('/api/probe/discover/import', {
-      method: 'POST', body: JSON.stringify({ ips, group })
+      method: 'POST', body: JSON.stringify({ ids, group: group ?? '' })
     })
 };
 

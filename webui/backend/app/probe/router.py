@@ -260,6 +260,12 @@ def list_server_groups():
     return probe_store().list_groups()
 
 
+@router.get("/servers/labels")
+def list_server_labels():
+    """标签云数据源：服务器 + 网段发现结果的 distinct 标签及计数。"""
+    return probe_store().list_labels()
+
+
 class GroupCreate(BaseModel):
     name: str
 
@@ -473,8 +479,23 @@ class DiscoverStart(BaseModel):
 
 
 class DiscoverImport(BaseModel):
-    ips: list[str]
-    group: str
+    ids: list[int]
+    group: str = ""
+
+
+class DiscoverBatchUpdate(BaseModel):
+    ids: list[int]
+    group: str | None = None
+    label: str | None = None
+
+
+class DiscoverDelete(BaseModel):
+    ids: list[int] | None = None
+
+
+class GroupRename(BaseModel):
+    old: str
+    new: str
 
 
 @router.post("/discover/start")
@@ -499,8 +520,13 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
         concurrency=payload.concurrency,
         timeout=payload.timeout,
     )
+    store = probe_store()
+
+    def persist_hit(ip: str, hit_port: int, latency_ms: float) -> None:
+        store.upsert_discover_result(ip, hit_port, latency_ms)
+
     try:
-        discover_runner.start(params)
+        discover_runner.start(params, on_hit=persist_hit)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -526,21 +552,72 @@ def discover_stop(user: Annotated[str, Depends(require_auth)]):
     return {"stopped": stopped}
 
 
+@router.get("/discover/results")
+def discover_results():
+    store = probe_store()
+    items = [{
+        "id": row["id"],
+        "ip": row["ip"],
+        "port": row["port"],
+        "latencyMs": round(row["latency_ms"], 1),
+        "group": row["server_group"],
+        "label": row["label"],
+        "inLibrary": bool(row["in_library"]),
+        "discoveredAt": row["discovered_at"],
+    } for row in store.list_discover_results()]
+    return {"items": items, "labels": store.list_labels()}
+
+
+@router.patch("/discover/results/batch")
+def discover_results_batch(payload: DiscoverBatchUpdate, user: Annotated[str, Depends(require_auth)]):
+    if not payload.ids:
+        raise HTTPException(status_code=400, detail="请勾选要修改的记录")
+    try:
+        updated = probe_store().update_discover_batch(
+            payload.ids, group=payload.group, label=payload.label)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    change = "分组" if payload.group is not None else "标签"
+    audit(user, "probe_update_discover", message=f"{change} × {updated}")
+    return {"updated": updated}
+
+
+@router.delete("/discover/results")
+def discover_results_delete(payload: DiscoverDelete, user: Annotated[str, Depends(require_auth)]):
+    deleted = probe_store().delete_discover_results(payload.ids)
+    audit(user, "probe_delete_discover",
+          message=f"删除 {deleted} 条" + ("" if payload.ids else "（清空）"))
+    return {"deleted": deleted}
+
+
 @router.post("/discover/import")
 def discover_import(payload: DiscoverImport, user: Annotated[str, Depends(require_auth)]):
-    from .discover import discover_runner
-
+    if not payload.ids:
+        raise HTTPException(status_code=400, detail="请勾选要导入的记录")
+    store = probe_store()
+    rows = {row["id"]: row for row in store.list_discover_results()}
     group = payload.group.strip()
-    if not group:
-        raise HTTPException(status_code=400, detail="请选择导入分组")
-    ips = [ip.strip() for ip in payload.ips if ip.strip()]
-    if not ips:
-        raise HTTPException(status_code=400, detail="请勾选要导入的 IP")
-    valid_hits = discover_runner.found_ips()
-    items = [{"ip": ip, "group": group} for ip in ips if ip in valid_hits]
+    items = []
+    for row_id in payload.ids:
+        row = rows.get(row_id)
+        if row is None:
+            continue
+        items.append({"ip": row["ip"], "group": group or row["server_group"], "label": row["label"]})
     if not items:
-        raise HTTPException(status_code=400, detail="所选 IP 不在当前扫描结果中")
-    inserted, skipped = probe_store().import_servers(items)
+        raise HTTPException(status_code=400, detail="所选记录不存在")
+    inserted, skipped = store.import_servers(items)
     audit(user, "probe_discover_import",
-          message=f"分组「{group}」新增 {inserted} 台（跳过已在库 {skipped}）")
+          message=f"新增 {inserted} 台（跳过已在库 {skipped}）")
     return {"inserted": inserted, "skipped": skipped}
+
+
+@router.patch("/servers/groups/rename")
+def rename_group(payload: GroupRename, user: Annotated[str, Depends(require_auth)]):
+    try:
+        new_name = probe_store().rename_group(payload.old, payload.new)
+    except ValueError as exc:
+        audit(user, "probe_rename_group", success=False,
+              message=f"{payload.old} → {payload.new}: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit(user, "probe_rename_group", message=f"{payload.old} → {new_name}（服务器/发现结果/负载均衡绑定已同步）")
+    return {"renamed": new_name}

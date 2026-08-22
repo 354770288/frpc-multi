@@ -74,6 +74,17 @@ CREATE TABLE IF NOT EXISTS probe_groups (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS probe_discover_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    latency_ms REAL NOT NULL DEFAULT 0,
+    server_group TEXT NOT NULL DEFAULT '',
+    label TEXT NOT NULL DEFAULT '',
+    discovered_at TEXT NOT NULL,
+    UNIQUE (ip, port)
+);
+
 CREATE TABLE IF NOT EXISTS lb_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

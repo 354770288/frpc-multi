@@ -239,6 +239,126 @@ class ProbeStore:
 
         return self._with_connection(write)
 
+    def rename_group(self, old: str, new: str) -> str:
+        """重命名分组：预创建记录、服务器、网段发现结果、负载均衡域名绑定一并级联。"""
+        old_value = (old or "").strip()
+        new_value = (new or "").strip()
+        if not old_value:
+            raise ValueError("原分组名不能为空")
+        if not new_value:
+            raise ValueError("新分组名不能为空")
+        if len(new_value) > 64:
+            raise ValueError("分组名过长（最多 64 字符）")
+        if old_value == new_value:
+            return new_value
+
+        def write(connection):
+            exists = connection.execute(
+                "SELECT 1 FROM probe_groups WHERE name = ?", (new_value,)
+            ).fetchone()
+            if exists:
+                raise ValueError(f"分组「{new_value}」已存在")
+            connection.execute("UPDATE probe_groups SET name = ? WHERE name = ?",
+                               (new_value, old_value))
+            connection.execute("UPDATE probe_servers SET server_group = ? WHERE server_group = ?",
+                               (new_value, old_value))
+            connection.execute("UPDATE probe_discover_results SET server_group = ? WHERE server_group = ?",
+                               (new_value, old_value))
+            connection.execute("UPDATE lb_domains SET group_name = ? WHERE group_name = ?",
+                               (new_value, old_value))
+            connection.commit()
+
+        self._with_connection(write)
+        return new_value
+
+    def list_labels(self) -> list[dict]:
+        """服务器 + 网段发现结果的 distinct 标签及计数（标签云数据源）。"""
+
+        def read(connection):
+            rows = connection.execute(
+                """
+                SELECT label, COUNT(*) AS count FROM (
+                    SELECT label FROM probe_servers WHERE label != ''
+                    UNION ALL
+                    SELECT label FROM probe_discover_results WHERE label != ''
+                ) GROUP BY label ORDER BY count DESC, label
+                """
+            ).fetchall()
+            return [{"label": row[0], "count": row[1]} for row in rows]
+
+        return self._with_connection(read)
+
+    # ---- 网段发现结果 ----
+
+    def upsert_discover_result(self, ip: str, port: int, latency_ms: float) -> None:
+        """扫描命中入库：重复命中只更新延迟与时间，保留已改的分组/标签。"""
+
+        def write(connection):
+            connection.execute(
+                "INSERT INTO probe_discover_results (ip, port, latency_ms, discovered_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(ip, port) DO UPDATE SET latency_ms = excluded.latency_ms, "
+                "discovered_at = excluded.discovered_at",
+                (ip, port, latency_ms, now_iso()),
+            )
+            connection.commit()
+
+        self._with_connection(write)
+
+    def list_discover_results(self) -> list[dict]:
+        """发现结果 + 是否已在服务器库（按 ip 关联）。"""
+
+        def read(connection):
+            rows = connection.execute(
+                """
+                SELECT d.id, d.ip, d.port, d.latency_ms, d.server_group, d.label,
+                       d.discovered_at, (s.id IS NOT NULL) AS in_library
+                FROM probe_discover_results d
+                LEFT JOIN probe_servers s ON s.ip = d.ip
+                ORDER BY d.discovered_at DESC, d.ip
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+        return self._with_connection(read)
+
+    def update_discover_batch(self, ids: list[int], *, group: str | None, label: str | None) -> int:
+        """批量覆盖发现结果的分组/标签，返回更新行数。"""
+        if group is None and label is None:
+            raise ValueError("至少提供分组或标签之一")
+        clean_group = (group or "").strip() if group is not None else None
+        if group is not None and not clean_group:
+            raise ValueError("分组不能为空")
+        clean_label = (label or "").strip() if label is not None else None
+
+        def write(connection):
+            cursor = connection.execute(
+                "UPDATE probe_discover_results SET server_group = COALESCE(?, server_group), "
+                "label = COALESCE(?, label) WHERE id IN (%s)" % ",".join("?" * len(ids)),
+                (clean_group, clean_label, *ids),
+            )
+            connection.commit()
+            return cursor.rowcount
+
+        return self._with_connection(write)
+
+    def delete_discover_results(self, ids: list[int] | None = None) -> int:
+        """删除勾选的发现结果；ids 为空表示清空全部。"""
+
+        def write(connection):
+            if ids:
+                cursor = connection.execute(
+                    "DELETE FROM probe_discover_results WHERE id IN (%s)"
+                    % ",".join("?" * len(ids)),
+                    ids,
+                )
+            else:
+                cursor = connection.execute("DELETE FROM probe_discover_results")
+            connection.commit()
+            return cursor.rowcount
+
+        return self._with_connection(write)
+
     def update_servers_batch(self, ids: list[int], *, group: str | None, label: str | None) -> int:
         """批量覆盖服务器的分组/标签，返回更新行数。"""
         if group is None and label is None:

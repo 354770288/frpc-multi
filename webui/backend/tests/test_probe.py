@@ -349,6 +349,80 @@ class ProbeStoreTests(unittest.TestCase):
         self.assertEqual((inserted, skipped), (2, 1))
         self.assertEqual(self.store.list_groups(), ["g1"])
 
+    def test_rename_group_cascades_all_tables(self):
+        from app.lb.store import LbStore
+
+        lb = LbStore(Path(self.tmpdir) / "probe.db")
+        self.store.create_group("旧组")
+        self.store.create_group("别的组")
+        self.store.import_servers([{"ip": "10.0.0.1", "group": "旧组"}])
+        self.store.upsert_discover_result("10.0.0.2", 7000, 3.2)
+        self.store.update_discover_batch(
+            [row["id"] for row in self.store.list_discover_results()], group="旧组", label=None)
+        lb.create_domain(name="frps.example.com", zone_id="z", zone_name="example.com",
+                         group_name="旧组")
+
+        self.store.rename_group("旧组", "新组")
+        self.assertIn("新组", self.store.list_groups())
+        self.assertNotIn("旧组", self.store.list_groups())
+        self.assertEqual(self.store.list_servers()[0].server_group, "新组")
+        self.assertEqual(self.store.list_discover_results()[0]["server_group"], "新组")
+        self.assertEqual(lb.list_domains()[0].group_name, "新组")
+
+        with self.assertRaises(ValueError):
+            self.store.rename_group("新组", "别的组")  # 重名拒绝
+        with self.assertRaises(ValueError):
+            self.store.rename_group("新组", "  ")  # 空名拒绝
+
+    def test_discover_results_upsert_and_library_flag(self):
+        self.store.upsert_discover_result("10.0.0.9", 7000, 8.0)
+        self.store.update_discover_batch(
+            [row["id"] for row in self.store.list_discover_results()],
+            group="池A", label="快",
+        )
+        # 重复命中：更新延迟与时间，保留分组/标签
+        self.store.upsert_discover_result("10.0.0.9", 7000, 1.5)
+        rows = self.store.list_discover_results()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["server_group"], "池A")
+        self.assertEqual(rows[0]["label"], "快")
+        self.assertEqual(rows[0]["latency_ms"], 1.5)
+        self.assertFalse(rows[0]["in_library"])
+
+        # 同 IP 导入服务器库后在库标记翻真
+        self.store.import_servers([{"ip": "10.0.0.9", "group": "池A"}])
+        self.assertTrue(self.store.list_discover_results()[0]["in_library"])
+
+    def test_discover_batch_label_semantics(self):
+        self.store.upsert_discover_result("10.0.0.1", 7000, 1.0)
+        self.store.upsert_discover_result("10.0.0.2", 7000, 2.0)
+        ids = [row["id"] for row in self.store.list_discover_results()]
+        self.store.update_discover_batch(ids, group="G", label="L1")
+        # 只改分组（label=None 保留）
+        self.store.update_discover_batch(ids[:1], group="G2", label=None)
+        rows = {row["ip"]: row for row in self.store.list_discover_results()}
+        self.assertEqual((rows["10.0.0.1"]["server_group"], rows["10.0.0.1"]["label"]), ("G2", "L1"))
+        # 空串清除标签
+        self.store.update_discover_batch(ids[1:], group=None, label="")
+        rows = {row["ip"]: row for row in self.store.list_discover_results()}
+        self.assertEqual(rows["10.0.0.2"]["label"], "")
+
+    def test_discover_delete_and_labels(self):
+        self.store.upsert_discover_result("10.0.0.1", 7000, 1.0)
+        self.store.upsert_discover_result("10.0.0.2", 7000, 2.0)
+        self.store.import_servers([{"ip": "10.0.0.3", "label": "共用"}])
+        self.store.update_discover_batch(
+            [row["id"] for row in self.store.list_discover_results() if row["ip"] == "10.0.0.1"],
+            group=None, label="共用")
+        labels = {item["label"]: item["count"] for item in self.store.list_labels()}
+        self.assertEqual(labels, {"共用": 2})  # 服务器 + 发现结果合并计数
+
+        rows = self.store.list_discover_results()
+        self.assertEqual(self.store.delete_discover_results([rows[0]["id"]]), 1)
+        self.assertEqual(len(self.store.list_discover_results()), 1)
+        self.assertEqual(self.store.delete_discover_results(), 1)  # 清空
+        self.assertEqual(self.store.list_discover_results(), [])
+
     def test_results_history_and_with_status(self):
         from app.control.database import connect_database  # noqa: F401 - 确保 SCHEMA 生效
         self.store.import_servers([{"ip": "10.0.0.1"}, {"ip": "10.0.0.2"}])
@@ -897,23 +971,38 @@ class DiscoverApiTests(unittest.TestCase):
             self.assertEqual(status["scanned"], 1)
             self.assertEqual([hit["ip"] for hit in status["found"]], ["127.0.0.1"])
 
-            # 导入：必选分组 + 只接受扫描命中的 IP
+            # 导入：按结果行 id；重复导入去重
+            results = client.get("/api/probe/discover/results", headers=headers).json()
+            self.assertEqual(len(results["items"]), 1)
+            row = results["items"][0]
+            self.assertEqual(row["ip"], "127.0.0.1")
+            self.assertFalse(row["inLibrary"])
+
             self.assertEqual(client.post("/api/probe/discover/import",
-                                         json={"ips": ["127.0.0.1"], "group": ""},
-                                         headers=headers).status_code, 400)
-            self.assertEqual(client.post("/api/probe/discover/import",
-                                         json={"ips": ["8.8.8.8"], "group": "发现"},
+                                         json={"ids": [99999], "group": "发现"},
                                          headers=headers).status_code, 400)
             imported = client.post("/api/probe/discover/import", json={
-                "ips": ["127.0.0.1"], "group": "发现",
+                "ids": [row["id"]], "group": "发现",
             }, headers=headers).json()
             self.assertEqual(imported, {"inserted": 1, "skipped": 0})
 
-            # 再导一次：去重跳过
+            # 再导一次：去重跳过；在库标记翻真
             again = client.post("/api/probe/discover/import", json={
-                "ips": ["127.0.0.1"], "group": "发现",
+                "ids": [row["id"]], "group": "发现",
             }, headers=headers).json()
             self.assertEqual(again, {"inserted": 0, "skipped": 1})
+            results = client.get("/api/probe/discover/results", headers=headers).json()
+            self.assertTrue(results["items"][0]["inLibrary"])
+
+            # 批量改分组/标签 + 删除
+            patched = client.patch("/api/probe/discover/results/batch", json={
+                "ids": [row["id"]], "group": "发现2", "label": "低延迟",
+            }, headers=headers).json()
+            self.assertEqual(patched, {"updated": 1})
+            deleted = client.request("DELETE", "/api/probe/discover/results",
+                                     json={"ids": [row["id"]]}, headers=headers).json()
+            self.assertEqual(deleted, {"deleted": 1})
+            self.assertEqual(client.get("/api/probe/discover/results", headers=headers).json()["items"], [])
 
             # 服务器库能看到 + 审计
             from app.probe.store import ProbeStore
@@ -922,12 +1011,42 @@ class DiscoverApiTests(unittest.TestCase):
             actions = {log["action"] for log in client.get("/api/audit-logs?limit=50", headers=headers).json()}
             self.assertIn("probe_discover_start", actions)
             self.assertIn("probe_discover_import", actions)
+            self.assertIn("probe_update_discover", actions)
+            self.assertIn("probe_delete_discover", actions)
         finally:
             server.close()
 
         # 停止端点：无运行任务时返回 False
         stopped = client.post("/api/probe/discover/stop", headers=headers).json()
         self.assertFalse(stopped["stopped"])
+
+    def test_rename_group_endpoint_cascades(self):
+        from app.lb.store import LbStore
+        from app.probe.store import ProbeStore
+
+        client, headers = self.make_client()
+        client.post("/api/probe/servers/groups", json={"name": "旧组"}, headers=headers)
+        client.post("/api/probe/servers/groups", json={"name": "占位组"}, headers=headers)
+        client.post("/api/probe/servers/batch", json={
+            "text": "10.0.0.1 旧组", "group": "旧组",
+        }, headers=headers)
+        LbStore(self.db_path).create_domain(
+            name="frps.example.com", zone_id="z", zone_name="example.com", group_name="旧组")
+
+        ok = client.patch("/api/probe/servers/groups/rename", json={
+            "old": "旧组", "new": "新组",
+        }, headers=headers)
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(ok.json(), {"renamed": "新组"})
+        store = ProbeStore(self.db_path)
+        self.assertIn("新组", store.list_groups())
+        self.assertEqual(store.list_servers()[0].server_group, "新组")
+        self.assertEqual(LbStore(self.db_path).list_domains()[0].group_name, "新组")
+
+        conflict = client.patch("/api/probe/servers/groups/rename", json={
+            "old": "新组", "new": "占位组",
+        }, headers=headers)
+        self.assertEqual(conflict.status_code, 400)
 
 
 if __name__ == "__main__":
