@@ -2,5 +2,5 @@ fastapi==0.124.0
 uvicorn[standard]==0.38.0
 pydantic==2.12.5
 websockets==14.1
-# 仅测试需要：fastapi.testclient.TestClient 依赖 httpx。运行时不再用它（HTTP 转发已被 WebSocket 取代）。
+# Cloudflare API 客户端（负载均衡 DDNS）与 fastapi.testclient 均依赖 httpx。
 httpx==0.28.1

@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 
 from .auth import (
@@ -24,20 +25,28 @@ from .control.hub import hub
 from .control.node_store import NodeStore
 from .control.router import audit_router, router as control_router
 from .control.ws_router import ws_router
+from .lb.router import router as lb_router
 from .models import now_iso
+from .probe.router import router as probe_router
 from .settings import settings
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Agent 角色：启动出站 WS 客户端连回主控。Console 角色：无后台任务。"""
+    """Agent 角色：启动出站 WS 客户端连回主控。
+    Console 角色：启动负载均衡定时同步线程。"""
     agent_task: asyncio.Task | None = None
     agent_client = None
+    scheduler_stop = None
     if settings.is_agent:
         from .agent.client import AgentWsClient
 
         agent_client = AgentWsClient()
         agent_task = asyncio.create_task(agent_client.run_forever())
+    if settings.is_console:
+        from .lb.scheduler import start_scheduler
+
+        scheduler_stop = start_scheduler(settings)
     try:
         yield
     finally:
@@ -47,6 +56,8 @@ async def lifespan(app: FastAPI):
             agent_task.cancel()
             with suppress(asyncio.CancelledError):
                 await agent_task
+        if scheduler_stop is not None:
+            scheduler_stop.set()
 
 
 app = FastAPI(title="frpc 多实例管理面板", version="0.2.0", lifespan=lifespan)
@@ -218,8 +229,27 @@ if settings.include_console_api:
     app.include_router(console_router)
     app.include_router(control_router)
     app.include_router(audit_router)
+    app.include_router(probe_router)
+    app.include_router(lb_router)
     app.include_router(ws_router)
+
+class SpaStaticFiles(StaticFiles):
+    """SPA 静态服务：非文件路径（如刷新 /workspace、/probe）回退到 index.html，
+    交给前端路由接管。已注册的 API/WS 路由先于本 mount 匹配；未注册的
+    /api、/ws 路径必须保持 404，不能被回退吞掉。"""
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            full_path = scope.get("path", "")
+            if full_path == "/api" or full_path.startswith("/api/") or full_path.startswith("/ws/"):
+                raise
+            return await super().get_response("index.html", scope)
+
 
 static_dir = Path(__file__).resolve().parents[1] / "static"
 if settings.serve_frontend and static_dir.exists():
-    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+    app.mount("/", SpaStaticFiles(directory=static_dir, html=True), name="static")

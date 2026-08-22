@@ -26,6 +26,87 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     message TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS probe_servers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL DEFAULT '',
+    server_group TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS probe_connectivity_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_ip TEXT NOT NULL,
+    frps_reachable INTEGER NOT NULL DEFAULT 0,
+    tunnel_established INTEGER NOT NULL DEFAULT 0,
+    firewall_open INTEGER NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL DEFAULT '',
+    test_time TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_probe_conn_ip ON probe_connectivity_results (server_ip, id);
+
+CREATE TABLE IF NOT EXISTS probe_speed_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_ip TEXT NOT NULL,
+    frps_reachable INTEGER NOT NULL DEFAULT 0,
+    tunnel_ok INTEGER NOT NULL DEFAULT 0,
+    dl_ok INTEGER NOT NULL DEFAULT 0,
+    dl_speed_mbps REAL NOT NULL DEFAULT 0,
+    dl_speed_mbs REAL NOT NULL DEFAULT 0,
+    dl_bytes INTEGER NOT NULL DEFAULT 0,
+    dl_sec REAL NOT NULL DEFAULT 0,
+    ul_ok INTEGER NOT NULL DEFAULT 0,
+    ul_speed_mbps REAL NOT NULL DEFAULT 0,
+    ul_speed_mbs REAL NOT NULL DEFAULT 0,
+    ul_bytes INTEGER NOT NULL DEFAULT 0,
+    ul_sec REAL NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL DEFAULT '',
+    test_time TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS probe_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS probe_groups (
+    name TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lb_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lb_domains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    zone_id TEXT NOT NULL,
+    zone_name TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    ttl INTEGER NOT NULL DEFAULT 60,
+    sync_mode TEXT NOT NULL DEFAULT 'manual',
+    interval_seconds INTEGER NOT NULL DEFAULT 300,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_sync_at TEXT,
+    last_sync_ok INTEGER,
+    last_sync_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lb_sync_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_id INTEGER NOT NULL,
+    added TEXT NOT NULL DEFAULT '[]',
+    removed TEXT NOT NULL DEFAULT '[]',
+    kept INTEGER NOT NULL DEFAULT 0,
+    success INTEGER NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_probe_speed_ip ON probe_speed_results (server_ip, id);
 """
 
 

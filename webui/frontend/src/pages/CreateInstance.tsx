@@ -11,7 +11,7 @@ import {
   Settings2,
   XCircle
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { api, nodesApi } from '../lib/api';
 import { shortNodeUuid } from '../lib/format';
@@ -31,6 +31,12 @@ import {
 import { Switch } from '../components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Badge } from '../components/ui/badge';
+import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from '../components/ui/toggle-group';
+import { lbApi } from '../lib/api';
+import type { LbDomain } from '../lib/types';
 import { EmptyState } from '../components/EmptyState';
 import { ProxyList } from '../components/ProxyList';
 import { useConsole } from '../context/ConsoleContext';
@@ -51,9 +57,18 @@ type EditorMode = 'structured' | 'raw';
 export function CreateInstance() {
   const { instances, nodes, workspaceNodeId, refreshAll } = useConsole();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const initialNodeId = workspaceNodeId === 'all' ? undefined : workspaceNodeId;
   const defaultName = useMemo(() => nextClientName(instances), [instances]);
-  const initialConfigText = useMemo(() => serializeFrpcConfig(emptyFrpcConfig()), []);
+  // 穿透测试页联动：/create?server=<ip>&port=<port> 预填 frps 地址
+  const initialConfigText = useMemo(() => {
+    const draft = emptyFrpcConfig();
+    const server = searchParams.get('server')?.trim();
+    const port = searchParams.get('port')?.trim();
+    if (server) draft.serverAddr = server;
+    if (server && port && /^\d+$/.test(port)) draft.serverPort = port;
+    return serializeFrpcConfig(draft);
+  }, [searchParams]);
   const resolvedInitialNodeId = useMemo(
     () =>
       initialNodeId && nodes.some((node) => node.id === initialNodeId)
@@ -74,6 +89,15 @@ export function CreateInstance() {
   const [nodeId, setNodeId] = useState<number>(resolvedInitialNodeId);
   const [nodeDirty, setNodeDirty] = useState(false);
 
+  // 负载均衡候选域名（地址来源切换）
+  const [addrSource, setAddrSource] = useState<'manual' | 'lb'>('manual');
+  const [lbDomains, setLbDomains] = useState<LbDomain[]>([]);
+  useEffect(() => {
+    lbApi.domains()
+      .then((list) => setLbDomains(list.filter((domain) => domain.enabled)))
+      .catch(() => { /* 未配置 Cloudflare 时静默，手动输入不受影响 */ });
+  }, []);
+
   useEffect(() => {
     if (!nameDirty) setName(nextClientName(instances));
   }, [instances, nameDirty]);
@@ -90,6 +114,10 @@ export function CreateInstance() {
   }, [nodeDirty, nodeId, nodes, resolvedInitialNodeId]);
 
   const structured = useMemo(() => parseFrpcConfig(configText), [configText]);
+  const selectedLbDomain = useMemo(
+    () => lbDomains.find((domain) => domain.name === structured.serverAddr) || null,
+    [lbDomains, structured.serverAddr]
+  );
   const structuredErrors = useMemo(() => validateFrpcDraft(structured), [structured]);
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === nodeId) || null,
@@ -306,15 +334,56 @@ export function CreateInstance() {
               </FormSection>
 
               <FormSection title={<SectionTitle icon={<Network size={14} />} title="2. frps 连接" />}>
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted-foreground">地址来源</span>
+                  <ToggleGroup
+                    type="single"
+                    value={addrSource}
+                    onValueChange={(value) => {
+                      if (value) setAddrSource(value as 'manual' | 'lb');
+                    }}
+                  >
+                    <ToggleGroupItem value="manual" className="text-xs">手动输入</ToggleGroupItem>
+                    <ToggleGroupItem value="lb" className="text-xs" disabled={!lbDomains.length}
+                      title={lbDomains.length ? undefined : '暂无负载均衡域名'}>负载均衡域名</ToggleGroupItem>
+                  </ToggleGroup>
+                  {addrSource === 'lb' && selectedLbDomain && (
+                    <Badge tone="success">
+                      {selectedLbDomain.name} · 池 {selectedLbDomain.poolSize} 台
+                    </Badge>
+                  )}
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_140px] gap-4">
-                  <Field label="服务器地址">
-                    <Input
-                      value={structured.serverAddr}
-                      onChange={(event) => updateStructured({ serverAddr: event.target.value })}
-                      placeholder="frps.example.com"
-                      aria-invalid={!structured.serverAddr.trim()}
-                    />
-                  </Field>
+                  {addrSource === 'manual' ? (
+                    <Field label="服务器地址">
+                      <Input
+                        value={structured.serverAddr}
+                        onChange={(event) => updateStructured({ serverAddr: event.target.value })}
+                        placeholder="frps.example.com"
+                        aria-invalid={!structured.serverAddr.trim()}
+                      />
+                    </Field>
+                  ) : (
+                    <Field label="候选域名（DNS 轮询负载均衡）">
+                      <Select
+                        value={lbDomains.some((d) => d.name === structured.serverAddr) ? structured.serverAddr : ''}
+                        onValueChange={(value) => updateStructured({ serverAddr: value })}
+                      >
+                        <SelectTrigger aria-invalid={!structured.serverAddr.trim()}>
+                          <SelectValue placeholder="选择候选域名" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            {lbDomains.map((domain) => (
+                              <SelectItem key={domain.id} value={domain.name}>
+                                {domain.name}（池 {domain.poolSize} 台）
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                  )}
                   <Field label="端口">
                     <Input
                       value={structured.serverPort}

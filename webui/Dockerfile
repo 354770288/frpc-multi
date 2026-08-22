@@ -10,6 +10,7 @@ FROM python:3.14-slim AS runtime
 
 ARG DOCKER_VERSION=27.5.1
 ARG COMPOSE_VERSION=2.32.4
+ARG FRP_VERSION=0.68.1
 
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1
@@ -26,6 +27,16 @@ RUN set -eux; \
     curl -fsSL "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${arch}" \
          -o /usr/libexec/docker/cli-plugins/docker-compose; \
     chmod +x /usr/libexec/docker/cli-plugins/docker-compose; \
+    case "${arch}" in \
+        x86_64) frp_arch=amd64 ;; \
+        aarch64) frp_arch=arm64 ;; \
+        *) echo "unsupported arch: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${frp_arch}.tar.gz" -o /tmp/frp.tgz; \
+    tar -xzf /tmp/frp.tgz -C /tmp; \
+    mv "/tmp/frp_${FRP_VERSION}_linux_${frp_arch}/frpc" /usr/local/bin/frpc; \
+    chmod +x /usr/local/bin/frpc; \
+    rm -rf /tmp/frp*; \
     apt-get purge -y --auto-remove curl; \
     rm -rf /var/lib/apt/lists/*
 

@@ -1,11 +1,23 @@
 import { getAuthToken, notifyUnauthorized, AuthError } from './auth';
 import type {
   AuditLog,
+  CloudflareInfo,
+  CloudflareZone,
   Instance,
   InstanceDetail,
+  LbDomain,
+  LbDnsRecord,
+  LbSyncLog,
+  LbSyncResult,
   Node,
   NodeInstall,
   NodeWithInstall,
+  ProbeConnectivityHistory,
+  ProbeDashboard,
+  ProbeServer,
+  ProbeSpeedHistory,
+  ProbeTestConfig,
+  ProbeTestStatus,
   SystemInfo,
   ValidationData
 } from './types';
@@ -121,4 +133,97 @@ export const nodesApi = {
 
 export const auditLogsApi = {
   list: (limit = 100) => api<AuditLog[]>(`/api/audit-logs?limit=${limit}`)
+};
+
+export type ProbeServerPayload = {
+  ip?: string;
+  label?: string;
+  group?: string;
+};
+
+export const probeApi = {
+  servers: () => api<ProbeServer[]>('/api/probe/servers'),
+  groups: () => api<string[]>('/api/probe/servers/groups'),
+  createGroup: (name: string) =>
+    api<{ ok: boolean; name: string }>('/api/probe/servers/groups', {
+      method: 'POST',
+      body: JSON.stringify({ name })
+    }),
+  deleteGroup: (name: string) =>
+    api<{ ok: boolean }>(`/api/probe/servers/groups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  batchUpdateServers: (ids: number[], changes: { group?: string; label?: string }) =>
+    api<{ updated: number }>('/api/probe/servers/batch-update', {
+      method: 'POST',
+      body: JSON.stringify({ ids, ...changes })
+    }),
+  createServer: (payload: ProbeServerPayload) =>
+    api<{ id: number; ip: string; label: string; group: string }>('/api/probe/servers', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+  updateServer: (id: number, payload: ProbeServerPayload) =>
+    api<{ id: number; ip: string; label: string; group: string }>(`/api/probe/servers/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    }),
+  deleteServer: (id: number) => api<{ ok: boolean }>(`/api/probe/servers/${id}`, { method: 'DELETE' }),
+  importServers: (payload: { text: string; group?: string }) =>
+    api<{ inserted: number; skipped: number }>('/api/probe/servers/batch', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+  startTest: (payload: { mode: 'connectivity' | 'speed' | 'full'; ips?: string[]; group?: string }) =>
+    api<{ ok: boolean; mode: string; count: number }>('/api/probe/test', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+  testStatus: () => api<ProbeTestStatus>('/api/probe/test/status'),
+  skipCurrent: () => api<{ ok: boolean }>('/api/probe/test/skip', { method: 'POST' }),
+  stopTest: () => api<{ ok: boolean }>('/api/probe/test/stop', { method: 'POST' }),
+  connectivityHistory: (ip?: string, limit = 200) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (ip) params.set('ip', ip);
+    return api<ProbeConnectivityHistory[]>(`/api/probe/history/connectivity?${params.toString()}`);
+  },
+  speedHistory: (ip?: string, limit = 200) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (ip) params.set('ip', ip);
+    return api<ProbeSpeedHistory[]>(`/api/probe/history/speed?${params.toString()}`);
+  },
+  clearHistory: (kind: 'connectivity' | 'speed') =>
+    api<{ deleted: number }>(`/api/probe/history/${kind}`, { method: 'DELETE' }),
+  getConfig: () => api<ProbeTestConfig>('/api/probe/config'),
+  updateConfig: (values: Record<string, string | number>) =>
+    api<ProbeTestConfig>('/api/probe/config', {
+      method: 'POST',
+      body: JSON.stringify({ values })
+    }),
+  dashboard: () => api<ProbeDashboard>('/api/probe/dashboard')
+};
+
+export const lbApi = {
+  cloudflare: () => api<CloudflareInfo>('/api/lb/cloudflare'),
+  saveCloudflareToken: (token: string) =>
+    api<CloudflareInfo>('/api/lb/cloudflare', { method: 'PUT', body: JSON.stringify({ token }) }),
+  verifyCloudflare: (token?: string) =>
+    api<{ ok: boolean; zones: CloudflareZone[] }>('/api/lb/cloudflare/verify', {
+      method: 'POST',
+      body: JSON.stringify(token ? { token } : {})
+    }),
+  domains: () => api<LbDomain[]>('/api/lb/domains'),
+  createDomain: (payload: {
+    name: string; zoneId: string; zoneName: string; group: string;
+    ttl?: number; syncMode?: 'manual' | 'scheduled'; intervalSeconds?: number; enabled?: boolean;
+  }) => api<LbDomain>('/api/lb/domains', { method: 'POST', body: JSON.stringify(payload) }),
+  updateDomain: (id: number, payload: {
+    group?: string; ttl?: number; syncMode?: 'manual' | 'scheduled'; intervalSeconds?: number; enabled?: boolean;
+  }) => api<LbDomain>(`/api/lb/domains/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteDomain: (id: number, removeRecords: boolean) =>
+    api<{ ok: boolean; removedRecords: string[] }>(`/api/lb/domains/${id}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ removeRecords })
+    }),
+  syncDomain: (id: number) => api<LbSyncResult>(`/api/lb/domains/${id}/sync`, { method: 'POST' }),
+  domainRecords: (id: number) => api<LbDnsRecord[]>(`/api/lb/domains/${id}/records`),
+  domainLogs: (id: number, limit = 50) => api<LbSyncLog[]>(`/api/lb/domains/${id}/logs?limit=${limit}`)
 };

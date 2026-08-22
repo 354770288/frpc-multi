@@ -169,4 +169,166 @@ export type AuditLog = {
 };
 
 /** Page identifier — used to bridge old Console-style navigation with React Router. */
-export type Page = 'overview' | 'detail' | 'config' | 'nodes' | 'create' | 'audit' | 'system';
+export type Page = 'overview' | 'detail' | 'config' | 'nodes' | 'create' | 'audit' | 'system' | 'probe';
+
+// ---- 穿透测试（frps 验收） ----
+
+export type ProbeConnectivitySummary = {
+  frpsReachable: boolean;
+  tunnelEstablished: boolean;
+  firewallOpen: boolean;
+  detail: string;
+  testTime: string;
+};
+
+export type ProbeSpeedSummary = {
+  downloadOk: boolean;
+  uploadOk: boolean;
+  downloadMbps: number;
+  uploadMbps: number;
+  testTime: string;
+};
+
+export type ProbeServer = {
+  id: number;
+  ip: string;
+  label: string;
+  group: string;
+  createdAt: string;
+  latestConnectivity: ProbeConnectivitySummary | null;
+  latestSpeed: ProbeSpeedSummary | null;
+};
+
+export type ProbeConnectivityHistory = {
+  id: number;
+  serverIp: string;
+  frpsReachable: boolean;
+  tunnelEstablished: boolean;
+  firewallOpen: boolean;
+  detail: string;
+  testTime: string;
+};
+
+export type ProbeSpeedHistory = {
+  id: number;
+  serverIp: string;
+  frpsReachable: boolean;
+  tunnelOk: boolean;
+  downloadOk: boolean;
+  downloadMbps: number;
+  downloadMbs: number;
+  downloadBytes: number;
+  downloadSeconds: number;
+  uploadOk: boolean;
+  uploadMbps: number;
+  uploadMbs: number;
+  uploadBytes: number;
+  uploadSeconds: number;
+  detail: string;
+  testTime: string;
+};
+
+export type ProbeRecentEntry = {
+  ip: string;
+  kind: 'connectivity' | 'speed';
+  skipped: boolean;
+  ok: boolean;
+  summary: string;
+};
+
+export type ProbeWorker = {
+  ip: string;
+  step: string;
+  text: string;
+};
+
+export type ProbeTestStatus = {
+  running: boolean;
+  mode: 'connectivity' | 'speed' | 'full' | '';
+  phase: 'connectivity' | 'speed' | '';
+  workers: ProbeWorker[];
+  done: number;
+  total: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  stopped: boolean;
+  recent: ProbeRecentEntry[];
+};
+
+export type ProbeTestConfig = {
+  frpsPort: number;
+  basePort: number;
+  tcpingTimeout: number;
+  tcpingRetries: number;
+  tunnelWait: number;
+  speedDuration: number;
+  connConcurrency: number;
+  speedConcurrency: number;
+  hasOverride: boolean;
+  running: boolean;
+};
+
+export type ProbeDashboard = {
+  servers: number;
+  connectivity: { tested: number; reachable: number; tunnels: number; firewallOpen: number };
+  speed: { tested: number; avgDownloadMbps: number | null; avgUploadMbps: number | null; maxDownloadMbps: number | null };
+};
+
+// ---- 负载均衡（DDNS 域名池） ----
+
+export type CloudflareInfo = {
+  configured: boolean;
+  tokenMasked: string;
+};
+
+export type CloudflareZone = {
+  id: string;
+  name: string;
+};
+
+export type LbDomain = {
+  id: number;
+  name: string;
+  zoneId: string;
+  zoneName: string;
+  group: string;
+  ttl: number;
+  syncMode: 'manual' | 'scheduled';
+  intervalSeconds: number;
+  enabled: boolean;
+  lastSyncAt: string | null;
+  lastSyncOk: boolean | null;
+  lastSyncMessage: string;
+  createdAt: string;
+  poolSize: number;
+};
+
+export type LbSyncResult = {
+  ok: boolean;
+  added: string[];
+  removed: string[];
+  kept: number;
+  poolSize: number;
+  unmanagedCount: number;
+  errors: string[];
+  message: string;
+  syncedAt: string;
+};
+
+export type LbDnsRecord = {
+  id: string;
+  ip: string;
+  ttl: number;
+  managed: boolean;
+};
+
+export type LbSyncLog = {
+  id: number;
+  domainId: number;
+  added: string[];
+  removed: string[];
+  kept: number;
+  success: boolean;
+  message: string;
+  createdAt: string;
+};

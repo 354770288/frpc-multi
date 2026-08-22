@@ -35,6 +35,8 @@ import {
 const NAV_ITEMS = [
   { to: '/workspace', label: '工作台' },
   { to: '/nodes', label: '节点' },
+  { to: '/probe', label: '服务器库' },
+  { to: '/lb', label: '负载均衡' },
   { to: '/audit', label: '审计' },
 ] as const;
 
@@ -170,7 +172,7 @@ export function Topbar() {
               </DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => navigate('/login')} className="text-xs">
+            <DropdownMenuItem onClick={() => navigate('/logout')} className="text-xs">
               <LogOut size={13} />
               退出登录
             </DropdownMenuItem>

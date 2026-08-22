@@ -79,6 +79,21 @@ class Settings:
     agent_reconnect_min_seconds: float = float(os.getenv("AGENT_RECONNECT_MIN_SECONDS", "1"))
     agent_reconnect_max_seconds: float = float(os.getenv("AGENT_RECONNECT_MAX_SECONDS", "30"))
 
+    # ---- Probe：Console 内置的 frps 穿透测试 ----
+    # 测试在 Console 容器内拉起 frpc 子进程执行；本地 dev 无容器时把 PROBE_FRPC_BIN
+    # 指到本机 frpc 二进制即可。端口组：连通性=base，下载=base+1，上传=base+2。
+    probe_frpc_bin: str = os.getenv("PROBE_FRPC_BIN", "/usr/local/bin/frpc")
+    probe_frps_port: int = int(os.getenv("PROBE_FRPS_PORT", "7000"))
+    probe_base_port: int = int(os.getenv("PROBE_BASE_PORT", "11561"))
+    probe_tcping_timeout: float = float(os.getenv("PROBE_TCPING_TIMEOUT", "5"))
+    probe_tcping_retries: int = int(os.getenv("PROBE_TCPING_RETRIES", "2"))
+    probe_tunnel_wait: float = float(os.getenv("PROBE_TUNNEL_WAIT", "8"))
+    probe_speed_duration: float = float(os.getenv("PROBE_SPEED_DURATION", "30"))
+    # 并行 worker 数：连通性探测无带宽占用可较高；速率测试受本机出口带宽约束宜低
+    #（并发测速会分摊带宽，追求精确速率可把 PROBE_SPEED_CONCURRENCY 设为 1）。
+    probe_conn_concurrency: int = max(1, int(os.getenv("PROBE_CONNECTIVITY_CONCURRENCY", "6")))
+    probe_speed_concurrency: int = max(1, int(os.getenv("PROBE_SPEED_CONCURRENCY", "2")))
+
     @property
     def credentials_path(self) -> Path:
         return self.project_dir / ".webui" / "credentials.json"
@@ -105,6 +120,23 @@ class Settings:
         scheme = "wss" if self.agent_tls else "ws"
         server = self.agent_server.rstrip("/")
         return f"{scheme}://{server}/ws/agent"
+
+    def probe_options(self):
+        """构造穿透测试引擎参数（每次调用时读取，便于测试覆盖）。"""
+        from .probe.engine import ProbeOptions
+
+        return ProbeOptions(
+            frpc_bin=self.probe_frpc_bin,
+            frps_port=self.probe_frps_port,
+            local_base_port=self.probe_base_port,
+            remote_base_port=self.probe_base_port,
+            tcping_timeout=self.probe_tcping_timeout,
+            tcping_retries=self.probe_tcping_retries,
+            tunnel_wait=self.probe_tunnel_wait,
+            speed_duration=self.probe_speed_duration,
+            conn_concurrency=self.probe_conn_concurrency,
+            speed_concurrency=self.probe_speed_concurrency,
+        )
 
     @property
     def cors_origins(self) -> list[str]:

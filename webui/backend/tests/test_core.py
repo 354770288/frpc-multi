@@ -28,6 +28,8 @@ def load_main_app(**env: str):
         "app.control.router",
         "app.control.ws_router",
         "app.control.hub",
+        "app.probe.router",
+        "app.probe.runner",
         "app.settings",
         "app.auth",
     ]:
@@ -263,6 +265,8 @@ class LocalAgentServiceTests(unittest.TestCase):
             self.assertEqual(ctx.exception.status_code, 400)
 
     def test_summary_marks_instances_stopped_when_docker_unavailable(self):
+        from app.docker_service import DockerService
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             service = LocalAgentService(root)
@@ -275,7 +279,12 @@ class LocalAgentServiceTests(unittest.TestCase):
                 start_after_create=False,
             )
 
-            summary = service.get_summary()
+            # 宿主机上可能真的有同名遗留容器（docker 可用时 compose ps 能查到），
+            # 这里 mock 掉状态采集，固定表达「docker 不可用 / 无容器」的测试意图
+            with mock.patch.object(
+                DockerService, "collect_status", return_value={"containers": {}, "error": "docker unavailable"}
+            ):
+                summary = service.get_summary()
 
             self.assertEqual(summary["total"], 1)
             self.assertEqual(summary["stopped"], 1)
@@ -1122,6 +1131,31 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         second = await queue.get()
         self.assertEqual(first, "line-1")
         self.assertIsNone(second)
+
+
+class SpaFallbackTests(unittest.TestCase):
+    """SPA 深链接刷新（/workspace 等）应回退 index.html，API 404 不受影响。"""
+
+    def test_deep_link_serves_index_html(self):
+        static_index = Path(__file__).resolve().parents[1] / "static" / "index.html"
+        if not static_index.exists():
+            self.skipTest("前端构建产物不存在（先 npm run build）")
+        app = load_main_app(
+            WEBUI_USERNAME="admin",
+            WEBUI_PASSWORD="password",
+            DATABASE_PATH=str(Path(tempfile.mkdtemp()) / "console.db"),
+        )
+        client = TestClient(app)
+        headers = auth_headers(client)
+        for path in ["/workspace", "/nodes", "/probe", "/create", "/audit"]:
+            response = client.get(path, headers=headers, follow_redirects=False)
+            self.assertEqual(response.status_code, 200, path)
+            self.assertIn("text/html", response.headers.get("content-type", ""), path)
+        # API 层的 404 仍应原样返回，不能被 SPA 回退吞掉
+        response = client.get("/api/probe/history/bogus", headers=headers)
+        self.assertEqual(response.status_code, 404)
+        response = client.get("/api/nonexistent", headers=headers)
+        self.assertEqual(response.status_code, 404)
 
 
 if __name__ == "__main__":
