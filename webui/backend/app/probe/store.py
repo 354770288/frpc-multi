@@ -290,16 +290,17 @@ class ProbeStore:
 
     # ---- 网段发现结果 ----
 
-    def upsert_discover_result(self, ip: str, port: int, latency_ms: float) -> None:
-        """扫描命中入库：重复命中只更新延迟与时间，保留已改的分组/标签。"""
+    def upsert_discover_result(self, ip: str, port: int, latency_ms: float,
+                               frps_version: str = "") -> None:
+        """扫描命中入库：重复命中只更新延迟/版本与时间，保留已改的分组/标签。"""
 
         def write(connection):
             connection.execute(
-                "INSERT INTO probe_discover_results (ip, port, latency_ms, discovered_at) "
-                "VALUES (?, ?, ?, ?) "
+                "INSERT INTO probe_discover_results (ip, port, latency_ms, frps_version, discovered_at) "
+                "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(ip, port) DO UPDATE SET latency_ms = excluded.latency_ms, "
-                "discovered_at = excluded.discovered_at",
-                (ip, port, latency_ms, now_iso()),
+                "frps_version = excluded.frps_version, discovered_at = excluded.discovered_at",
+                (ip, port, latency_ms, frps_version, now_iso()),
             )
             connection.commit()
 
@@ -311,7 +312,7 @@ class ProbeStore:
         def read(connection):
             rows = connection.execute(
                 """
-                SELECT d.id, d.ip, d.port, d.latency_ms, d.server_group, d.label,
+                SELECT d.id, d.ip, d.port, d.latency_ms, d.frps_version, d.server_group, d.label,
                        d.discovered_at, (s.id IS NOT NULL) AS in_library
                 FROM probe_discover_results d
                 LEFT JOIN probe_servers s ON s.ip = d.ip

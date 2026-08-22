@@ -1,5 +1,6 @@
 """网段发现（discover）测试：目标解析、扫描引擎（本地监听端口）、API 生命周期。"""
 
+import json
 import os
 import socket
 import tempfile
@@ -12,6 +13,49 @@ os.environ.setdefault("PROJECT_DIR", tempfile.mkdtemp(prefix="frpc-multi-discove
 from app.probe.discover import (  # noqa: E402
     DiscoverParams, DiscoverRunner, MAX_TARGET_IPS, parse_target_item, parse_targets,
 )
+
+
+class FakeFrpsServer(threading.Thread):
+    """按 frp 帧协议应答 LoginResp 的假 frps：8 字节大端长度 + JSON。"""
+
+    def __init__(self, version: str = "9.9.9"):
+        super().__init__(daemon=True)
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen(16)
+        self.port = self.server.getsockname()[1]
+        self.version = version
+
+    def run(self):
+        while True:
+            try:
+                conn, _ = self.server.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.serve, args=(conn,), daemon=True).start()
+
+    def serve(self, conn: socket.socket):
+        try:
+            header = conn.recv(8, socket.MSG_WAITALL)
+            if len(header) != 8:
+                return
+            size = int.from_bytes(header, "big")
+            body = conn.recv(size, socket.MSG_WAITALL)
+            message = json.loads(body)
+            if message.get("type") != "Login":
+                return
+            resp = json.dumps({
+                "type": "LoginResp", "version": self.version,
+                "run_id": "", "error": "token in login doesn't match token from configuration",
+            }).encode() + b"\n"
+            conn.sendall(len(resp).to_bytes(8, "big") + resp)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def close(self):
+        self.server.close()
 
 
 class ParseTests(unittest.TestCase):
@@ -47,11 +91,35 @@ class ParseTests(unittest.TestCase):
 
 
 class EngineTests(unittest.TestCase):
-    def test_scan_finds_open_port(self):
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.bind(("127.0.0.1", 0))
-        server.listen(8)
-        port = server.getsockname()[1]
+    def test_scan_confirms_frps_with_version(self):
+        # 真 frps 特征：回 LoginResp → 命中并带版本；on_hit 收到版本参数
+        fake = FakeFrpsServer(version="0.68.1")
+        fake.start()
+        hits: list[tuple] = []
+        try:
+            runner = DiscoverRunner()
+            state = runner.start(DiscoverParams(
+                targets=["127.0.0.1"], exclude=[], port=fake.port,
+                concurrency=4, timeout=1.0,
+            ), on_hit=lambda ip, port, latency, version="": hits.append((ip, port, version)))
+            for _ in range(100):
+                if not state.running:
+                    break
+                time.sleep(0.05)
+            self.assertFalse(state.running)
+            self.assertEqual([(hit.ip, hit.frps_version) for hit in state.found],
+                             [("127.0.0.1", "0.68.1")])
+            self.assertEqual(state.others, 0)
+            self.assertEqual(hits, [("127.0.0.1", fake.port, "0.68.1")])
+        finally:
+            fake.close()
+
+    def test_open_but_not_frps_excluded(self):
+        # 端口开放但不会说 frp 协议（如 HTTP）→ 不命中，计入 others
+        plain = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        plain.bind(("127.0.0.1", 0))
+        plain.listen(8)
+        port = plain.getsockname()[1]
         try:
             runner = DiscoverRunner()
             state = runner.start(DiscoverParams(
@@ -62,13 +130,10 @@ class EngineTests(unittest.TestCase):
                 if not state.running:
                     break
                 time.sleep(0.05)
-            self.assertFalse(state.running)
-            self.assertEqual(state.total, 1)
-            self.assertEqual(state.scanned, 1)
-            self.assertEqual([hit.ip for hit in state.found], ["127.0.0.1"])
-            self.assertGreaterEqual(state.found[0].latency_ms, 0)
+            self.assertEqual(state.found, [])
+            self.assertEqual(state.others, 1)
         finally:
-            server.close()
+            plain.close()
 
     def test_closed_port_not_found_and_stop(self):
         # 占一个端口再立刻释放，拿到「几乎必然关闭」的本地端口

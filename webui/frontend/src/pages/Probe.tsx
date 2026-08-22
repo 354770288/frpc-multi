@@ -435,7 +435,7 @@ export function Probe() {
         <TabsContent value="discover" className="mt-4">
           <Card>
             <CardHeader className="flex-row flex-wrap items-center gap-2">
-              <CardTitle className="text-sm">网段内开放 frps 端口的设备</CardTitle>
+              <CardTitle className="text-sm">网段内确认为 frps 的设备</CardTitle>
               <Badge tone="muted">{discoverRows.length} 条</Badge>
               <div className="ml-auto flex flex-wrap items-center gap-2">
                 {scanStatus?.running ? (
@@ -444,7 +444,8 @@ export function Probe() {
                       <Square size={13} />停止扫描
                     </Button>
                     <span className="text-xs tabular-nums text-muted-foreground">
-                      {scanStatus.scanned} / {scanStatus.total} · 命中 {scanStatus.found.length}
+                      {scanStatus.scanned} / {scanStatus.total} · frps {scanStatus.found.length}
+                      {scanStatus.others > 0 && ` · 非 frps 开放 ${scanStatus.others}`}
                     </span>
                   </>
                 ) : (
@@ -524,6 +525,7 @@ export function Probe() {
                       <ThSort label="IP" sortKey="ip" activeKey={dSortKey} asc={dSortAsc} onSort={(key) => { setDSortKey(key as 'ip'); setDSortAsc(dSortKey === key ? !dSortAsc : true); }} />
                       <Th>端口</Th>
                       <ThSort label="延迟" sortKey="latency" activeKey={dSortKey} asc={dSortAsc} onSort={(key) => { setDSortKey(key as 'latency'); setDSortAsc(dSortKey === key ? !dSortAsc : true); }} />
+                      <Th>frps 版本</Th>
                       <Th>分组</Th>
                       <Th>标签</Th>
                       <Th>状态</Th>
@@ -543,6 +545,7 @@ export function Probe() {
                         <Td><span className="font-mono text-[12px] font-medium">{row.ip}</span></Td>
                         <Td><span className="font-mono text-xs text-muted-foreground">{row.port}</span></Td>
                         <Td><span className="font-mono text-xs tabular-nums text-muted-foreground">{row.latencyMs} ms</span></Td>
+                        <Td>{row.frpsVersion ? <Badge tone="muted">v{row.frpsVersion}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
                         <Td>{row.group ? <Badge tone="muted">{row.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
                         <Td>{row.label ? <Badge tone="muted">{row.label}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
                         <Td>{row.inLibrary ? <Badge tone="muted">已入库</Badge> : <Badge tone="success">未入库</Badge>}</Td>
@@ -559,7 +562,7 @@ export function Probe() {
                       </tr>
                     ))}
                     {!discoverFiltered.length && (
-                      <tr><td colSpan={9} className="px-4 py-10 text-center text-xs text-muted-foreground">
+                      <tr><td colSpan={10} className="px-4 py-10 text-center text-xs text-muted-foreground">
                         {discoverRows.length ? '当前筛选条件下没有匹配的记录' : '还没有发现记录，点「开始扫描」扫一段自有网段'}
                       </td></tr>
                     )}
@@ -1525,8 +1528,8 @@ function ScanDialog({ defaultPort, running, onClose, onStarted }: {
     <Overlay title="开始扫描（自有网段）" onClose={onClose} wide>
       <div className="flex flex-col gap-4">
         <p className="text-[11px] leading-4 text-muted-foreground">
-          扫描自己有权管理的网段（内网 / 自有 VPS 段），找出开放 frps 端口的设备；命中自动进入网段发现列表，勾选即可导入服务器库。
-          仅做资产发现，请勿扫描未授权网络。
+          扫描自己有权管理的网段（内网 / 自有 VPS 段）：探活 → 检查 frps 端口开放 → 协议指纹确认是否 frps（并发回版本号）。
+          只有确认为 frps 的设备才落入发现列表；勾选即可导入服务器库。仅做资产发现，请勿扫描未授权网络。
         </p>
         <div className="flex flex-col gap-1.5">
           <Label className="text-xs">目标网段（CIDR / IP 段 / 单 IP，逗号或换行分隔）</Label>

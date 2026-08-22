@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS probe_discover_results (
     ip TEXT NOT NULL,
     port INTEGER NOT NULL,
     latency_ms REAL NOT NULL DEFAULT 0,
+    frps_version TEXT NOT NULL DEFAULT '',
     server_group TEXT NOT NULL DEFAULT '',
     label TEXT NOT NULL DEFAULT '',
     discovered_at TEXT NOT NULL,
@@ -186,6 +187,13 @@ def _migrate_lb_domains(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE lb_domains ADD COLUMN current_ip TEXT")
 
 
+def _migrate_probe_discover(connection: sqlite3.Connection) -> None:
+    """probe_discover_results 补 frps_version 列（frps 指纹识别）。"""
+    columns = _column_names(connection, "probe_discover_results")
+    if columns and "frps_version" not in columns:
+        connection.execute("ALTER TABLE probe_discover_results ADD COLUMN frps_version TEXT NOT NULL DEFAULT ''")
+
+
 def connect_database(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)
@@ -194,5 +202,6 @@ def connect_database(path: Path) -> sqlite3.Connection:
     connection.executescript(SCHEMA)
     _migrate_nodes(connection)
     _migrate_lb_domains(connection)
+    _migrate_probe_discover(connection)
     connection.commit()
     return connection

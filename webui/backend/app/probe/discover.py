@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -40,9 +41,11 @@ class DiscoverHit:
     ip: str
     port: int
     latency_ms: float
+    frps_version: str = ""
 
     def to_view(self) -> dict:
-        return {"ip": self.ip, "port": self.port, "latencyMs": round(self.latency_ms, 1)}
+        return {"ip": self.ip, "port": self.port, "latencyMs": round(self.latency_ms, 1),
+                "frpsVersion": self.frps_version}
 
 
 @dataclass
@@ -55,6 +58,43 @@ class DiscoverState:
     finished_at: str | None = None
     error: str = ""
     found: list[DiscoverHit] = field(default_factory=list)
+    others: int = 0  # 端口开放但确认为非 frps 的数量
+
+
+# ---- frps 指纹识别：发一帧合法 frp Login，真 frps 必回 LoginResp（含版本）----
+# frp 私有协议帧：8 字节大端长度 + JSON 正文（json.Encoder 带 \n 结尾）
+_LOGIN_PAYLOAD = (
+    b'{"type":"Login","version":"0.68.1","user":"fingerprint",'
+    b'"privilege_key":"fingerprint","hostname":"","os":"linux","arch":"amd64"}\n'
+)
+_MAX_RESPONSE_BYTES = 8192
+
+
+def frp_frame(payload: bytes) -> bytes:
+    return len(payload).to_bytes(8, "big") + payload
+
+
+async def frps_fingerprint(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
+                           timeout: float) -> str | None:
+    """在已建立的连接上发送 frp Login 并等待 LoginResp。
+
+    返回 frps 版本号（可能为空串）；不是 frps 或无响应返回 None。
+    凭据错误不影响识别——frps 对无效登录同样回 LoginResp（带错误信息）。
+    """
+    try:
+        writer.write(frp_frame(_LOGIN_PAYLOAD))
+        await writer.drain()
+        header = await asyncio.wait_for(reader.readexactly(8), timeout)
+        size = int.from_bytes(header, "big")
+        if not 0 < size <= _MAX_RESPONSE_BYTES:
+            return None
+        body = await asyncio.wait_for(reader.readexactly(size), timeout)
+        message = json.loads(body)
+    except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError, ValueError):
+        return None
+    if message.get("type") == "LoginResp":
+        return str(message.get("version") or "")
+    return None
 
 
 def _iter_range(start: int, end: int):
@@ -161,6 +201,7 @@ class DiscoverRunner:
 
     async def _scan(self, state: DiscoverState, ips: list[str], on_hit=None) -> None:
         semaphore = asyncio.Semaphore(state.params.concurrency)
+        fingerprint_timeout = max(3.0, state.params.timeout)
 
         async def probe(ip: str) -> None:
             if self._cancel.is_set():
@@ -176,14 +217,18 @@ class DiscoverRunner:
                         timeout=state.params.timeout,
                     )
                     latency = (time.monotonic() - started) * 1000
+                    # 指纹识别复用同一连接：确认为 frps 才算命中
+                    version = await frps_fingerprint(reader, writer, fingerprint_timeout)
                     writer.close()
-                    hit = DiscoverHit(ip, state.params.port, latency)
-                    state.found.append(hit)
-                    if on_hit is not None:
-                        try:
-                            on_hit(ip, state.params.port, latency)
-                        except Exception:  # noqa: BLE001 - 落库失败不中断扫描
-                            pass
+                    if version is None:
+                        state.others += 1  # 端口开放但不是 frps
+                    else:
+                        state.found.append(DiscoverHit(ip, state.params.port, latency, version))
+                        if on_hit is not None:
+                            try:
+                                on_hit(ip, state.params.port, latency, version)
+                            except Exception:  # noqa: BLE001 - 落库失败不中断扫描
+                                pass
                 except (OSError, asyncio.TimeoutError, ValueError):
                     pass
                 finally:
@@ -197,7 +242,7 @@ class DiscoverRunner:
         state = self._state
         if state is None:
             return {"running": False, "params": None, "total": 0, "scanned": 0,
-                    "found": [], "startedAt": None, "finishedAt": None, "error": ""}
+                    "found": [], "others": 0, "startedAt": None, "finishedAt": None, "error": ""}
         return {
             "running": state.running,
             "params": {
@@ -210,6 +255,7 @@ class DiscoverRunner:
             "total": state.total,
             "scanned": state.scanned,
             "found": [hit.to_view() for hit in state.found],
+            "others": state.others,
             "startedAt": state.started_at,
             "finishedAt": state.finished_at,
             "error": state.error,
