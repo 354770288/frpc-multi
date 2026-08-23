@@ -68,12 +68,16 @@ def mtr_trace(ip: str) -> dict:
 
     hops = []
     is_cn2 = False
-    for hop in report.get("hops", []):
+    # mtr JSON 的跳数组键名是 "hubs"（mtr 内部把 hop 叫 hub），兼容个别版本的 "hops"
+    for hop in report.get("hubs") or report.get("hops") or []:
         host = str(hop.get("host", ""))
         if host.startswith(CN2_PREFIX):
             is_cn2 = True
         hops.append({"hop": hop.get("count"), "host": host,
                      "loss": hop.get("Loss%"), "avg": hop.get("Avg")})
+    if not hops:
+        # 成功的 mtr 至少有目标本身一跳；0 跳说明 JSON 结构变了，按失败回报而非误判非 CN2
+        return {"ok": False, "isCn2": False, "error": "mtr 输出无跳数（JSON 结构异常）", "hops": []}
     return {"ok": True, "isCn2": is_cn2, "error": "", "hops": hops}
 
 
