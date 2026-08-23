@@ -27,6 +27,7 @@ from .control.router import audit_router, router as control_router
 from .control.ws_router import ws_router
 from .lb.router import router as lb_router
 from .models import now_iso
+from .probe.router import node_router as probe_node_router
 from .probe.router import router as probe_router
 from .settings import settings
 
@@ -230,6 +231,7 @@ if settings.include_console_api:
     app.include_router(control_router)
     app.include_router(audit_router)
     app.include_router(probe_router)
+    app.include_router(probe_node_router)
     app.include_router(lb_router)
     app.include_router(ws_router)
 

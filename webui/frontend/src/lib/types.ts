@@ -308,6 +308,23 @@ export type DiscoverResults = {
   labels: LabelCount[];
 };
 
+// ---- CN2 路由追踪（节点轮询模型） ----
+
+export type RouteStatusView = {
+  active: boolean;
+  pending: number;
+  running: number;
+  done: number;
+  failed: number;
+  runningTasks: { taskId: number; ip: string; node: string }[];
+};
+
+export type RouteNodeInfo = {
+  name: string;
+  tokenMasked: string;
+  online: boolean;
+};
+
 export type DiscoverStatus = {
   running: boolean;
   params: {

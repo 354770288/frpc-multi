@@ -20,6 +20,11 @@ T = TypeVar("T")
 # 分组颜色标记：给不同情况的分组做视觉区分（'' = 无色）
 GROUP_COLORS = {"red", "yellow", "blue", "green"}
 
+# 路由测试系统保留标签（承载 CN2 结论；新发现行默认「未路由测试」）
+ROUTE_LABEL_UNTESTED = "未路由测试"
+ROUTE_LABEL_CN2 = "CN2"
+ROUTE_LABEL_NON_CN2 = "非CN2"
+
 
 def _clean_group_color(color: str) -> str:
     value = (color or "").strip()
@@ -327,15 +332,58 @@ class ProbeStore:
     # ---- 网段发现结果 ----
 
     def upsert_discover_result(self, ip: str, port: int, latency_ms: float) -> None:
-        """扫描命中入库：重复命中只更新延迟与时间，保留已改的分组/标签。"""
+        """扫描命中入库：新行默认打「未路由测试」标签；重复命中只更新延迟与时间，保留分组/标签。"""
 
         def write(connection):
             connection.execute(
-                "INSERT INTO probe_discover_results (ip, port, latency_ms, discovered_at) "
-                "VALUES (?, ?, ?, ?) "
+                "INSERT INTO probe_discover_results (ip, port, latency_ms, label, discovered_at) "
+                "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(ip, port) DO UPDATE SET latency_ms = excluded.latency_ms, "
                 "discovered_at = excluded.discovered_at",
-                (ip, port, latency_ms, now_iso()),
+                (ip, port, latency_ms, ROUTE_LABEL_UNTESTED, now_iso()),
+            )
+            connection.commit()
+
+        self._with_connection(write)
+
+    def set_route_label(self, ip: str, label: str) -> int:
+        """路由测试结论写回该 IP 的全部发现行标签，返回更新行数。"""
+
+        def write(connection):
+            cursor = connection.execute(
+                "UPDATE probe_discover_results SET label = ? WHERE ip = ?", (label, ip))
+            connection.commit()
+            return cursor.rowcount
+
+        return self._with_connection(write)
+
+    def discover_row_needs_route(self, ip: str) -> bool:
+        """该 IP 是否存在待路由测试的发现行（标签为未路由测试或空）。"""
+
+        def read(connection):
+            row = connection.execute(
+                "SELECT 1 FROM probe_discover_results "
+                "WHERE ip = ? AND (label = '' OR label = ?) LIMIT 1",
+                (ip, ROUTE_LABEL_UNTESTED),
+            ).fetchone()
+            return row is not None
+
+        return self._with_connection(read)
+
+    def get_setting(self, key: str) -> str | None:
+        def read(connection):
+            row = connection.execute(
+                "SELECT value FROM probe_settings WHERE key = ?", (key,)).fetchone()
+            return row[0] if row else None
+
+        return self._with_connection(read)
+
+    def set_setting(self, key: str, value: str) -> None:
+        def write(connection):
+            connection.execute(
+                "INSERT INTO probe_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
             )
             connection.commit()
 

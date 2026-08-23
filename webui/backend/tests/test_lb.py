@@ -450,7 +450,8 @@ class LbApiTests(unittest.TestCase):
         previous = {key: os.environ.get(key) for key in env}
         os.environ.update(env)
         for module_name in [
-            "app.main", "app.lb.router", "app.probe.router", "app.probe.runner",
+            "app.main", "app.lb.router", "app.probe.router",
+        "app.probe.route", "app.probe.runner",
             "app.control.router", "app.control.hub", "app.settings", "app.auth",
         ]:
             sys.modules.pop(module_name, None)

@@ -1,0 +1,17 @@
+[Unit]
+Description=frpc-multi route test node (CN2 mtr)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 按实际部署修改下面两行（Token 在面板「服务器库 → 网段发现 → 路由节点」里生成）
+Environment=CONSOLE_URL=http://23.19.228.204:8081
+Environment=ROUTE_TOKEN=replace-with-your-token
+ExecStart=/usr/bin/python3 /opt/frpc-route/route_node.py
+# mtr 需要原始套接字权限，保持 root 运行
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

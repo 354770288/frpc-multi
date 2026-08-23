@@ -11,16 +11,20 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from ..auth import require_auth
 from ..settings import settings
 from .engine import ProbeOptions
+from .route import load_route_nodes, route_hub, save_route_nodes
 from .runner import MODES, ProbeRunner
 from .store import ProbeStore, validate_probe_addr
 
 router = APIRouter(prefix="/api/probe", dependencies=[Depends(require_auth)])
+
+# 路由测试节点专用（Token 鉴权，不走面板登录）：claim / report
+node_router = APIRouter(prefix="/api/probe/route")
 
 
 def probe_store() -> ProbeStore:
@@ -493,6 +497,7 @@ class DiscoverStart(BaseModel):
     port: int | None = None
     concurrency: int = 500
     timeout: float = 1.5
+    autoRoute: bool = False
 
 
 class DiscoverImport(BaseModel):
@@ -541,6 +546,10 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
 
     def persist_hit(ip: str, hit_port: int, latency_ms: float) -> None:
         store.upsert_discover_result(ip, hit_port, latency_ms)
+        # 扫描联动：开启自动路由时，命中且尚未测过路由的 IP 即入队（与扫描并行）
+        if payload.autoRoute and store.discover_row_needs_route(ip):
+            from .route import route_hub
+            route_hub.enqueue(ip)
 
     try:
         discover_runner.start(params, on_hit=persist_hit)
@@ -550,7 +559,8 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
         audit(user, "probe_discover_start", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(user, "probe_discover_start",
-          message=f"目标 {payload.targets.strip()[:120]} 端口 {port} 并发 {payload.concurrency}")
+          message=f"目标 {payload.targets.strip()[:120]} 端口 {port} 并发 {payload.concurrency}"
+                  + (" · 自动路由追踪" if payload.autoRoute else ""))
     return discover_runner.status()
 
 
@@ -638,3 +648,143 @@ def rename_group(payload: GroupRename, user: Annotated[str, Depends(require_auth
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(user, "probe_rename_group", message=f"{payload.old} → {new_name}（服务器/发现结果/负载均衡绑定已同步）")
     return {"renamed": new_name}
+
+
+# ---------------------------------------------------------------------------
+# CN2 路由追踪（节点轮询模型：claim / report + 面板管理）
+# ---------------------------------------------------------------------------
+class RouteReport(BaseModel):
+    taskId: int
+    ok: bool = True
+    isCn2: bool = False
+    error: str = ""
+
+
+class RouteStart(BaseModel):
+    ids: list[int]
+
+
+class RouteNodeCreate(BaseModel):
+    name: str
+
+
+def _route_node_by_token(token: str) -> dict | None:
+    import hmac as _hmac
+
+    for node in load_route_nodes(probe_store()):
+        if node.get("token") and _hmac.compare_digest(node["token"], token):
+            return node
+    return None
+
+
+def _mask_route_token(token: str) -> str:
+    if len(token) <= 8:
+        return "*" * len(token)
+    return f"{token[:4]}…{token[-4:]}"
+
+
+def _require_route_node(x_route_token: str) -> dict:
+    node = _route_node_by_token(x_route_token or "")
+    if node is None:
+        raise HTTPException(status_code=401, detail="路由节点 Token 无效")
+    from .route import route_hub
+    route_hub.touch(node["name"])
+    return node
+
+
+@node_router.post("/claim")
+def route_claim(x_route_token: str = Header(default="")):
+    """测试节点轮询领任务（原子领取；掉线超时任务已自动回收重派）。"""
+    node = _require_route_node(x_route_token)
+    task = route_hub.claim(node["name"])
+    if task is None:
+        return {"task": None}
+    return {"task": task}
+
+
+@node_router.post("/report")
+def route_report(payload: RouteReport, x_route_token: str = Header(default="")):
+    """测试节点回报结果 → 写入发现行保留标签（CN2/非CN2/未路由测试）。"""
+    from .route import route_label, route_hub
+
+    node = _require_route_node(x_route_token)
+    task = route_hub.report(payload.taskId, ok=payload.ok, is_cn2=payload.isCn2)
+    if task is None:
+        return {"ok": True, "applied": False}  # 未知/已完成任务幂等接受
+    label = route_label(payload.ok, payload.isCn2)
+    probe_store().set_route_label(task.ip, label)
+    return {"ok": True, "applied": True, "ip": task.ip, "label": label}
+
+
+@router.get("/route/status")
+def route_status_view():
+    from .route import route_hub
+    return route_hub.status()
+
+
+@router.post("/route/stop")
+def route_stop(user: Annotated[str, Depends(require_auth)]):
+    from .route import route_hub
+    cleared = route_hub.stop()
+    audit(user, "probe_route_stop", message=f"清除待测任务 {cleared} 个")
+    return {"cleared": cleared}
+
+
+@router.post("/route/start")
+def route_start(payload: RouteStart, user: Annotated[str, Depends(require_auth)]):
+    from .route import route_hub
+
+    if not payload.ids:
+        raise HTTPException(status_code=400, detail="请勾选要测试的记录")
+    rows = {row["id"]: row for row in probe_store().list_discover_results()}
+    enqueued = 0
+    for row_id in payload.ids:
+        row = rows.get(row_id)
+        if row and route_hub.enqueue(row["ip"]):
+            enqueued += 1
+    audit(user, "probe_route_start", message=f"入队 {enqueued} 台（勾选 {len(payload.ids)}）")
+    return {"enqueued": enqueued}
+
+
+@router.get("/route/nodes")
+def route_nodes_list():
+    from .route import route_hub
+
+    return [{
+        "name": node["name"],
+        "tokenMasked": _mask_route_token(node.get("token", "")),
+        "online": route_hub.is_online(node["name"]),
+    } for node in load_route_nodes(probe_store())]
+
+
+@router.post("/route/nodes")
+def route_nodes_create(payload: RouteNodeCreate, user: Annotated[str, Depends(require_auth)]):
+    from .route import generate_node_token
+
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="节点名称不能为空")
+    if len(name) > 64:
+        raise HTTPException(status_code=400, detail="节点名称过长（最多 64 字符）")
+    store = probe_store()
+    nodes = load_route_nodes(store)
+    if any(node["name"] == name for node in nodes):
+        raise HTTPException(status_code=400, detail=f"节点「{name}」已存在")
+    token = generate_node_token()
+    nodes.append({"name": name, "token": token})
+    save_route_nodes(store, nodes)
+    audit(user, "probe_route_node_create", message=name)
+    # Token 只在创建时完整返回一次
+    return {"name": name, "token": token}
+
+
+@router.delete("/route/nodes/{name}")
+def route_nodes_delete(name: str, user: Annotated[str, Depends(require_auth)]):
+    store = probe_store()
+    nodes = load_route_nodes(store)
+    remaining = [node for node in nodes if node["name"] != name]
+    if len(remaining) == len(nodes):
+        raise HTTPException(status_code=404, detail=f"节点「{name}」不存在")
+    save_route_nodes(store, remaining)
+    audit(user, "probe_route_node_delete", message=name)
+    return {"ok": True}

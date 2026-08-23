@@ -29,6 +29,7 @@ def load_main_app(**env: str):
         "app.control.ws_router",
         "app.control.hub",
         "app.probe.router",
+        "app.probe.route",
         "app.probe.runner",
         "app.probe.discover",
         "app.settings",

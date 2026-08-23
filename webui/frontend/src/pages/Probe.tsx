@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowDown, ArrowRight, ArrowUp, ArrowUpDown, Download, FolderCog, Gauge, ListPlus,
-  Pencil, Play, Plus, Radar, RefreshCw, Rocket, Settings2, Square, Tag, Trash2, Upload, X, Zap,
+  Network, Pencil, Play, Plus, Radar, RefreshCw, Rocket, Route, Settings2, Square, Tag,
+  Trash2, Upload, X, Zap,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { probeApi } from '../lib/api';
@@ -24,8 +25,22 @@ import { cn } from '../lib/utils';
 import type {
   DiscoverResult, DiscoverStatus, GroupColor, GroupInfo, LabelCount,
   ProbeConnectivityHistory, ProbeConnectivitySummary, ProbeDashboard, ProbeServer,
-  ProbeSpeedHistory, ProbeTestConfig, ProbeTestStatus,
+  ProbeSpeedHistory, ProbeTestConfig, ProbeTestStatus, RouteNodeInfo, RouteStatusView,
 } from '../lib/types';
+
+/** 路由测试系统保留标签 → Badge variant（灰/红/绿三态）。 */
+function labelVariant(label: string): 'destructive' | 'success' | 'muted' {
+  switch (label) {
+    case '非CN2': return 'destructive';
+    case 'CN2': return 'success';
+    case '未路由测试': return 'muted';
+    default: return 'muted';
+  }
+}
+
+function isRouteLabel(label: string): boolean {
+  return label === 'CN2' || label === '非CN2' || label === '未路由测试';
+}
 
 type TestScope = 'all' | 'selected' | string; // 'all' | 'selected' | 分组名
 type SortKey = 'none' | 'ip' | 'group' | 'conn' | 'speed' | 'time';
@@ -129,6 +144,8 @@ export function Probe() {
   const [dBatchEdit, setDBatchEdit] = useState<'group' | 'label' | null>(null);
   const [dDeleting, setDDeleting] = useState(false);
   const [importSelOpen, setImportSelOpen] = useState(false);
+  const [routeStatus, setRouteStatus] = useState<RouteStatusView | null>(null);
+  const [routeNodesOpen, setRouteNodesOpen] = useState(false);
 
   // 测试
   const [scope, setScope] = useState<TestScope>('all');
@@ -200,6 +217,31 @@ export function Probe() {
     }, 1500);
     return () => clearInterval(timer);
   }, [scanStatus?.running, loadDiscover]);
+
+  // 路由队列活跃时：轮询进度并刷新表格（保留标签随回报更新）
+  useEffect(() => {
+    probeApi.routeStatus().then(setRouteStatus).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!routeStatus?.active) return;
+    const timer = setInterval(() => {
+      probeApi.routeStatus().then(setRouteStatus).catch(() => {});
+      loadDiscover();
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [routeStatus?.active, loadDiscover]);
+
+  const startRouteTest = async () => {
+    const ids = [...dSelected];
+    if (!ids.length) return;
+    try {
+      const result = await probeApi.routeStart(ids);
+      toast.success(`已入队 ${result.enqueued} 台，等待路由节点领取测试`);
+      setRouteStatus(await probeApi.routeStatus());
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '入队失败');
+    }
+  };
 
   const loadHistory = useCallback(async (ip: string) => {
     try {
@@ -493,8 +535,31 @@ export function Probe() {
                 <Button size="sm" variant="outline" onClick={loadDiscover}>
                   <RefreshCw size={13} />刷新
                 </Button>
+                <Button size="sm" variant="outline" onClick={() => setRouteNodesOpen(true)}>
+                  <Network size={13} />路由节点
+                </Button>
               </div>
             </CardHeader>
+            {(routeStatus?.active || (routeStatus && routeStatus.done + routeStatus.failed > 0)) && (
+              <div className="flex flex-wrap items-center gap-2 border-b bg-muted/30 px-4 py-2">
+                <Badge tone="muted">路由追踪</Badge>
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  待测 {routeStatus!.pending} · 进行 {routeStatus!.running} · 完成 {routeStatus!.done}
+                  {routeStatus!.failed > 0 && ` · 失败 ${routeStatus!.failed}`}
+                </span>
+                {routeStatus!.runningTasks.slice(0, 2).map((task) => (
+                  <span key={task.taskId} className="font-mono text-[11px] text-muted-foreground">
+                    {task.ip}@{task.node}
+                  </span>
+                ))}
+                {routeStatus!.active && (
+                  <Button size="sm" variant="outline" className="ml-auto h-6 px-2 text-[11px]"
+                    onClick={() => probeApi.routeStop().then(() => probeApi.routeStatus().then(setRouteStatus)).catch(() => {})}>
+                    停止（清空队列）
+                  </Button>
+                )}
+              </div>
+            )}
             {scanStatus?.running && (
               <div className="px-4 pb-3">
                 <Progress value={scanStatus.total > 0 ? Math.round((scanStatus.scanned / scanStatus.total) * 100) : 0} className="h-1.5" />
@@ -546,6 +611,9 @@ export function Probe() {
                 <Button size="sm" variant="outline" onClick={() => setDBatchEdit('label')}>
                   <Tag size={13} />改标签
                 </Button>
+                <Button size="sm" onClick={startRouteTest}>
+                  <Route size={13} />路由测试
+                </Button>
                 <Button size="sm" variant="destructive" onClick={() => setDDeleting(true)}>
                   <Trash2 size={13} />删除
                 </Button>
@@ -584,7 +652,7 @@ export function Probe() {
                         <Td><span className="font-mono text-xs text-muted-foreground">{row.port}</span></Td>
                         <Td><span className="font-mono text-xs tabular-nums text-muted-foreground">{row.latencyMs} ms</span></Td>
                         <Td>{row.group ? <Badge variant={groupVariant(groupColorMap.get(row.group))} dot>{row.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
-                        <Td>{row.label ? <Badge tone="muted">{row.label}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
+                        <Td>{row.label ? <Badge variant={labelVariant(row.label)} dot={isRouteLabel(row.label)}>{row.label}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
                         <Td>{row.inLibrary ? <Badge tone="muted">已入库</Badge> : <Badge tone="success">未入库</Badge>}</Td>
                         <Td><span className="whitespace-nowrap text-[11px] text-muted-foreground">{formatLastSeen(row.discoveredAt)}</span></Td>
                         <Td align="right">
@@ -1017,6 +1085,9 @@ export function Probe() {
           onClose={() => setImportSelOpen(false)}
           onDone={() => { setImportSelOpen(false); setDSelected(new Set()); loadDiscover(); loadServers(); }}
         />
+      )}
+      {routeNodesOpen && (
+        <RouteNodesDialog onClose={() => setRouteNodesOpen(false)} />
       )}
       {dDeleting && (
         <ConfirmOverlay
@@ -1537,7 +1608,11 @@ function LabelCloud({ labels, active, onToggle }: {
             'rounded-full px-2.5 py-0.5 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             active === label
               ? 'bg-primary text-primary-foreground'
-              : 'bg-muted text-muted-foreground hover:text-foreground',
+              : isRouteLabel(label)
+                ? (label === 'CN2'
+                    ? 'bg-primary/15 text-primary'
+                    : label === '非CN2' ? 'bg-destructive/15 text-destructive' : 'bg-muted text-muted-foreground')
+                : 'bg-muted text-muted-foreground hover:text-foreground',
           )}
           aria-pressed={active === label}
         >
@@ -1566,11 +1641,13 @@ function ScanDialog({ defaultPort, running, onClose, onStarted }: {
   const [port, setPort] = useState(String(defaultPort));
   const [concurrency, setConcurrency] = useState('500');
   const [probeTimeout, setProbeTimeout] = useState('1.5');
+  const [autoRoute, setAutoRoute] = useState(() => localStorage.getItem('discover_auto_route') === '1');
   const [starting, setStarting] = useState(false);
 
   const start = async () => {
     if (!targets.trim()) { toast.error('请填写目标网段'); return; }
     setStarting(true);
+    localStorage.setItem('discover_auto_route', autoRoute ? '1' : '0');
     try {
       const status = await probeApi.discoverStart({
         targets,
@@ -1578,6 +1655,7 @@ function ScanDialog({ defaultPort, running, onClose, onStarted }: {
         port: port.trim() ? Number(port) : undefined,
         concurrency: concurrency.trim() ? Number(concurrency) : undefined,
         timeout: probeTimeout.trim() ? Number(probeTimeout) : undefined,
+        autoRoute,
       });
       toast.success(`扫描已启动（目标 ${status.total} 个 IP）`);
       onStarted(status);
@@ -1622,6 +1700,15 @@ function ScanDialog({ defaultPort, running, onClose, onStarted }: {
             <Input value={probeTimeout} onChange={(e) => setProbeTimeout(e.target.value)} inputMode="decimal" disabled={running || starting} />
           </div>
         </div>
+        <label className="flex items-center gap-2 rounded-md bg-muted px-3 py-2">
+          <input
+            type="checkbox" checked={autoRoute}
+            onChange={(e) => setAutoRoute(e.target.checked)}
+            disabled={running || starting}
+            className="size-3.5 accent-[var(--primary)]"
+          />
+          <span className="text-xs">扫描后自动路由追踪（新发现的设备立即入队测 CN2，需已部署路由节点）</span>
+        </label>
       </div>
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>取消</Button>
@@ -1686,6 +1773,107 @@ function ImportSelectedDialog({ ids, count, groups, defaultGroup, onClose, onDon
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>取消</Button>
         <Button onClick={submit} disabled={importing}>{importing ? '导入中…' : '导入'}</Button>
+      </div>
+    </Overlay>
+  );
+}
+
+/** 路由节点管理弹窗：多节点部署（各自 Token）、在线状态、删除吊销。 */
+function RouteNodesDialog({ onClose }: { onClose: () => void }) {
+  const [nodes, setNodes] = useState<RouteNodeInfo[]>([]);
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [created, setCreated] = useState<{ name: string; token: string } | null>(null);
+
+  const load = useCallback(() => {
+    probeApi.routeNodes().then(setNodes).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 5000);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  const create = async () => {
+    if (!name.trim()) { toast.error('请填写节点名称'); return; }
+    setBusy(true);
+    try {
+      const node = await probeApi.routeNodeCreate(name.trim());
+      setCreated(node);
+      setName('');
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '创建失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (target: string) => {
+    setBusy(true);
+    try {
+      await probeApi.routeNodeDelete(target);
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '删除失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Overlay title="路由节点（国内服务器 · CN2 测试）" onClose={onClose} wide>
+      <div className="flex flex-col gap-4">
+        <p className="text-[11px] leading-4 text-muted-foreground">
+          节点无需公网 IP：部署 scripts/route_node 的脚本后，它主动轮询主控领任务，用本机 mtr 测去程路由并判定 CN2（任一跳 59.43.*）。
+          多节点自动负载均衡；某节点掉线，其任务 2 分钟内自动转派其他节点。
+        </p>
+
+        <div className="flex items-end gap-2">
+          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+            <Label className="text-xs">新增节点（如：杭州节点）</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)}
+              placeholder="节点名称" onKeyDown={(e) => { if (e.key === 'Enter') create(); }} />
+          </div>
+          <Button onClick={create} disabled={busy || !name.trim()}><Plus size={13} />生成 Token</Button>
+        </div>
+
+        {created && (
+          <div className="flex flex-col gap-1.5 rounded-md border border-primary/40 bg-primary/5 px-3 py-2">
+            <div className="text-xs font-medium">节点「{created.name}」的 Token（只显示这一次，请立即复制）：</div>
+            <div className="flex items-center gap-2">
+              <code className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 font-mono text-[12px]">{created.token}</code>
+              <Button size="sm" variant="outline" onClick={() => navigator.clipboard.writeText(created.token).then(() => toast.success('已复制'))}>复制</Button>
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              节点机环境变量：CONSOLE_URL=主控地址、ROUTE_TOKEN=上面的 Token（部署见 scripts/route_node/README.md）
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-col gap-1.5">
+          <div className="text-[11px] font-medium text-muted-foreground">已部署节点</div>
+          {nodes.length ? (
+            <div className="flex max-h-48 flex-col gap-1 overflow-y-auto">
+              {nodes.map((node) => (
+                <div key={node.name} className="flex items-center gap-2 rounded-md bg-muted/60 px-2.5 py-1.5">
+                  <Badge tone={node.online ? 'success' : 'muted'} dot>{node.online ? '在线' : '离线'}</Badge>
+                  <span className="min-w-0 flex-1 truncate text-[12px]">{node.name}</span>
+                  <span className="font-mono text-[11px] text-muted-foreground">{node.tokenMasked}</span>
+                  <Button size="icon-sm" variant="ghost" onClick={() => remove(node.name)} disabled={busy}
+                    aria-label={`删除节点 ${node.name}`} title="删除节点（Token 即时吊销）">
+                    <Trash2 size={13} />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed border-input p-4 text-center text-xs text-muted-foreground">
+              还没有节点——生成 Token 后按 README 部署到国内服务器
+            </div>
+          )}
+        </div>
       </div>
     </Overlay>
   );

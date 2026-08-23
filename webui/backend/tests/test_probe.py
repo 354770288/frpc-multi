@@ -442,7 +442,8 @@ class ProbeStoreTests(unittest.TestCase):
             [row["id"] for row in self.store.list_discover_results() if row["ip"] == "10.0.0.1"],
             group=None, label="共用")
         labels = {item["label"]: item["count"] for item in self.store.list_labels()}
-        self.assertEqual(labels, {"共用": 2})  # 服务器 + 发现结果合并计数
+        # 服务器 + 发现结果合并计数；发现行默认带「未路由测试」保留标签
+        self.assertEqual(labels, {"共用": 2, "未路由测试": 1})
 
         rows = self.store.list_discover_results()
         self.assertEqual(self.store.delete_discover_results([rows[0]["id"]]), 1)
@@ -556,6 +557,7 @@ class ProbeApiTests(unittest.TestCase):
         for module_name in [
             "app.main",
             "app.probe.router",
+        "app.probe.route",
             "app.probe.runner",
             "app.probe.discover",
             "app.control.router",
@@ -1078,3 +1080,185 @@ class DiscoverApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RouteHubTests(unittest.TestCase):
+    """CN2 路由队列状态机：入队去重 / 原子领取 / 超时重派 / 幂等回报。"""
+
+    def setUp(self):
+        from app.probe.route import RouteHub
+        self.hub = RouteHub()
+
+    def test_enqueue_dedup_and_claim_order(self):
+        self.assertTrue(self.hub.enqueue("1.1.1.1"))
+        self.assertFalse(self.hub.enqueue("1.1.1.1"))  # 待处理中不重复入队
+        self.assertTrue(self.hub.enqueue("2.2.2.2"))
+        first = self.hub.claim("节点A")
+        self.assertEqual(first, {"taskId": 1, "ip": "1.1.1.1"})
+        second = self.hub.claim("节点B")
+        self.assertEqual(second, {"taskId": 2, "ip": "2.2.2.2"})
+        self.assertIsNone(self.hub.claim("节点A"))  # 队列空
+
+    def test_claim_timeout_requeues(self):
+        self.hub.enqueue("3.3.3.3")
+        task = self.hub.claim("节点A")
+        # 模拟领取超时
+        with self.hub._lock:
+            for item in self.hub._tasks:
+                if item.id == task["taskId"]:
+                    item.claimed_at -= 999
+        again = self.hub.claim("节点B")  # 掉线切换：节点B 接手
+        self.assertEqual(again["taskId"], task["taskId"])
+
+    def test_report_idempotent_and_states(self):
+        self.hub.enqueue("4.4.4.4")
+        task = self.hub.claim("节点A")
+        found = self.hub.report(task["taskId"], ok=True, is_cn2=True)
+        self.assertEqual((found.ip, found.state), ("4.4.4.4", "done"))
+        self.assertIsNone(self.hub.report(task["taskId"], ok=True, is_cn2=True))  # 幂等
+        # 失败回报
+        self.hub.enqueue("5.5.5.5")
+        task2 = self.hub.claim("节点A")
+        failed = self.hub.report(task2["taskId"], ok=False, is_cn2=False)
+        self.assertEqual(failed.state, "failed")
+
+    def test_stop_clears_pending_only(self):
+        self.hub.enqueue("6.6.6.6")
+        self.hub.enqueue("7.7.7.7")
+        self.hub.claim("节点A")  # 6.6.6.6 变 running
+        cleared = self.hub.stop()
+        self.assertEqual(cleared, 1)  # 只清 pending（7.7.7.7）
+        status = self.hub.status()
+        self.assertEqual(status["running"], 1)
+        self.assertEqual(status["pending"], 0)
+
+
+class RouteApiTests(unittest.TestCase):
+    """CN2 路由 API：节点 Token 鉴权 / claim+report 回写标签 / 联动入队。"""
+
+    def make_client(self):
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        previous = {
+            key: os.environ.get(key)
+            for key in ("WEBUI_USERNAME", "WEBUI_PASSWORD", "DATABASE_PATH")
+        }
+        self.db_path = Path(tempfile.mkdtemp(prefix="frpc-route-api-")) / "console.db"
+        os.environ.update(
+            WEBUI_USERNAME="admin", WEBUI_PASSWORD="password", DATABASE_PATH=str(self.db_path),
+        )
+        for module_name in [
+            "app.main", "app.probe.router", "app.probe.route", "app.probe.runner",
+            "app.probe.discover", "app.control.router", "app.control.hub",
+            "app.settings", "app.auth",
+        ]:
+            sys.modules.pop(module_name, None)
+        try:
+            app = importlib.import_module("app.main").app
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        client = TestClient(app)
+        token = client.post("/api/auth/login", json={"username": "admin", "password": "password"}).json()["token"]
+        return client, {"Authorization": f"Bearer {token}"}
+
+    def test_route_full_flow(self):
+        from app.probe.route import route_hub
+        from app.probe.store import ProbeStore
+
+        client, headers = self.make_client()
+        store = ProbeStore(self.db_path)
+        store.upsert_discover_result("10.0.0.1", 7000, 5.0)
+        row_id = store.list_discover_results()[0]["id"]
+
+        # 新发现行默认「未路由测试」
+        self.assertEqual(store.list_discover_results()[0]["label"], "未路由测试")
+
+        # 节点管理：创建（Token 只回一次）→ 列表（掩码、离线）
+        created = client.post("/api/probe/route/nodes", json={"name": "杭州节点"}, headers=headers).json()
+        self.assertEqual(created["name"], "杭州节点")
+        self.assertEqual(len(created["token"]), 32)
+        node_headers = {"X-Route-Token": created["token"]}
+        listed = client.get("/api/probe/route/nodes", headers=headers).json()
+        self.assertEqual(listed[0]["name"], "杭州节点")
+        self.assertIn("…", listed[0]["tokenMasked"])
+        self.assertFalse(listed[0]["online"])
+        self.assertEqual(client.post("/api/probe/route/nodes",
+                                     json={"name": "杭州节点"}, headers=headers).status_code, 400)
+
+        # 鉴权：坏 Token 拒绝
+        self.assertEqual(client.post("/api/probe/route/claim",
+                                     headers={"X-Route-Token": "bad"}).status_code, 401)
+
+        # 空队列 claim → task None（同时刷新心跳 → 在线）
+        self.assertEqual(client.post("/api/probe/route/claim", headers=node_headers).json(),
+                         {"task": None})
+        self.assertTrue(client.get("/api/probe/route/nodes", headers=headers).json()[0]["online"])
+
+        # 面板启动：勾选发现行入队
+        started = client.post("/api/probe/route/start", json={"ids": [row_id]}, headers=headers).json()
+        self.assertEqual(started, {"enqueued": 1})
+
+        # 节点领取 → 回报 CN2 → 标签写入
+        task = client.post("/api/probe/route/claim", headers=node_headers).json()["task"]
+        self.assertEqual(task["ip"], "10.0.0.1")
+        report = client.post("/api/probe/route/report", json={
+            "taskId": task["taskId"], "ok": True, "isCn2": True,
+        }, headers=node_headers).json()
+        self.assertEqual(report["applied"], True)
+        self.assertEqual(store.list_discover_results()[0]["label"], "CN2")
+
+        # 重复回报幂等；状态端点
+        self.assertEqual(client.post("/api/probe/route/report", json={
+            "taskId": task["taskId"], "ok": True, "isCn2": False,
+        }, headers=node_headers).json()["applied"], False)
+        status = client.get("/api/probe/route/status", headers=headers).json()
+        self.assertEqual((status["done"], status["pending"]), (1, 0))
+
+        # 失败回报 → 回退「未路由测试」
+        client.post("/api/probe/route/start", json={"ids": [row_id]}, headers=headers)
+        task2 = client.post("/api/probe/route/claim", headers=node_headers).json()["task"]
+        client.post("/api/probe/route/report", json={
+            "taskId": task2["taskId"], "ok": False,
+        }, headers=node_headers)
+        self.assertEqual(store.list_discover_results()[0]["label"], "未路由测试")
+
+        # 已测 CN2 的行不再需要路由（联动入队的过滤条件）
+        store.set_route_label("10.0.0.1", "CN2")
+        self.assertFalse(store.discover_row_needs_route("10.0.0.1"))
+
+        # 审计
+        actions = {log["action"] for log in client.get("/api/audit-logs?limit=50", headers=headers).json()}
+        self.assertIn("probe_route_node_create", actions)
+        self.assertIn("probe_route_start", actions)
+
+    def test_scan_auto_route_enqueues(self):
+        client, headers = self.make_client()
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(8)
+        port = server.getsockname()[1]
+        try:
+            client.post("/api/probe/discover/start", json={
+                "targets": "127.0.0.1", "port": port, "concurrency": 4, "timeout": 1.0,
+                "autoRoute": True,
+            }, headers=headers)
+            for _ in range(50):
+                status = client.get("/api/probe/discover/status", headers=headers).json()
+                if not status["running"]:
+                    break
+                time.sleep(0.1)
+            # 命中已落库且自动入队路由任务
+            from app.probe.store import ProbeStore
+            rows = ProbeStore(self.db_path).list_discover_results()
+            self.assertEqual([(r["ip"], r["label"]) for r in rows], [("127.0.0.1", "未路由测试")])
+            queue = client.get("/api/probe/route/status", headers=headers).json()
+            self.assertEqual(queue["pending"] + queue["running"], 1)
+            client.post("/api/probe/route/stop", headers=headers)
+        finally:
+            server.close()

@@ -17,6 +17,8 @@ import type {
   LbSyncResult,
   Node,
   NodeInstall,
+  RouteNodeInfo,
+  RouteStatusView,
   NodeWithInstall,
   ProbeConnectivityHistory,
   ProbeDashboard,
@@ -217,6 +219,7 @@ export const probeApi = {
     }),
   discoverStart: (payload: {
     targets: string; exclude?: string; port?: number; concurrency?: number; timeout?: number;
+    autoRoute?: boolean;
   }) => api<DiscoverStatus>('/api/probe/discover/start', {
     method: 'POST', body: JSON.stringify(payload)
   }),
@@ -234,7 +237,20 @@ export const probeApi = {
   discoverImport: (ids: number[], group?: string) =>
     api<{ inserted: number; skipped: number }>('/api/probe/discover/import', {
       method: 'POST', body: JSON.stringify({ ids, group: group ?? '' })
-    })
+    }),
+  routeStart: (ids: number[]) =>
+    api<{ enqueued: number }>('/api/probe/route/start', {
+      method: 'POST', body: JSON.stringify({ ids })
+    }),
+  routeStatus: () => api<RouteStatusView>('/api/probe/route/status'),
+  routeStop: () => api<{ cleared: number }>('/api/probe/route/stop', { method: 'POST' }),
+  routeNodes: () => api<RouteNodeInfo[]>('/api/probe/route/nodes'),
+  routeNodeCreate: (name: string) =>
+    api<{ name: string; token: string }>('/api/probe/route/nodes', {
+      method: 'POST', body: JSON.stringify({ name })
+    }),
+  routeNodeDelete: (name: string) =>
+    api<{ ok: boolean }>(`/api/probe/route/nodes/${encodeURIComponent(name)}`, { method: 'DELETE' })
 };
 
 export const lbApi = {
