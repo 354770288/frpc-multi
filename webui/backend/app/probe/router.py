@@ -257,7 +257,7 @@ def list_servers():
 
 @router.get("/servers/groups")
 def list_server_groups():
-    return probe_store().list_groups()
+    return probe_store().list_groups_with_colors()
 
 
 @router.get("/servers/labels")
@@ -268,17 +268,34 @@ def list_server_labels():
 
 class GroupCreate(BaseModel):
     name: str
+    color: str = ""
 
 
 @router.post("/servers/groups")
 def create_server_group(payload: GroupCreate, user: Annotated[str, Depends(require_auth)]):
     try:
-        name = probe_store().create_group(payload.name)
+        name = probe_store().create_group(payload.name, payload.color)
     except ValueError as exc:
         audit(user, "probe_create_group", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(user, "probe_create_group", message=name)
     return {"ok": True, "name": name}
+
+
+class GroupColor(BaseModel):
+    name: str
+    color: str
+
+
+@router.patch("/servers/groups/color")
+def set_server_group_color(payload: GroupColor, user: Annotated[str, Depends(require_auth)]):
+    try:
+        color = probe_store().set_group_color(payload.name, payload.color)
+    except ValueError as exc:
+        audit(user, "probe_set_group_color", success=False, message=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit(user, "probe_set_group_color", message=f"{payload.name} → {color or '无色'}")
+    return {"ok": True, "color": color}
 
 
 @router.delete("/servers/groups/{name}")

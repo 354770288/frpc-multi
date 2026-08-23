@@ -349,6 +349,33 @@ class ProbeStoreTests(unittest.TestCase):
         self.assertEqual((inserted, skipped), (2, 1))
         self.assertEqual(self.store.list_groups(), ["g1"])
 
+    def test_group_color(self):
+        # 预创建分组带色 / 改色 / 清色；非法颜色拒绝
+        self.store.create_group("红组", "red")
+        with self.assertRaises(ValueError):
+            self.store.create_group("坏组", "pink")
+        colors = {item["name"]: item["color"] for item in self.store.list_groups_with_colors()}
+        self.assertEqual(colors["红组"], "red")
+        self.store.set_group_color("红组", "green")
+        self.assertEqual(
+            {item["name"]: item["color"] for item in self.store.list_groups_with_colors()}["红组"],
+            "green")
+        # 仅服务器在用（未预创建）的分组设色 → 自动补预创建记录
+        self.store.import_servers([{"ip": "10.9.9.9", "group": "虚拟组"}])
+        self.store.set_group_color("虚拟组", "blue")
+        self.assertEqual(
+            {item["name"]: item["color"] for item in self.store.list_groups_with_colors()}["虚拟组"],
+            "blue")
+        self.store.set_group_color("虚拟组", "")  # 清色
+        self.assertEqual(
+            {item["name"]: item["color"] for item in self.store.list_groups_with_colors()}["虚拟组"],
+            "")
+        # 重命名保留颜色
+        self.store.rename_group("红组", "绿组")
+        self.assertEqual(
+            {item["name"]: item["color"] for item in self.store.list_groups_with_colors()}["绿组"],
+            "green")
+
     def test_rename_group_cascades_all_tables(self):
         from app.lb.store import LbStore
 
@@ -599,7 +626,7 @@ class ProbeApiTests(unittest.TestCase):
         servers = client.get("/api/probe/servers", headers=headers).json()
         self.assertEqual(len(servers), 3)
         groups = client.get("/api/probe/servers/groups", headers=headers).json()
-        self.assertEqual(groups, ["g"])
+        self.assertEqual(groups, [{"name": "g", "color": ""}])
         # 启动测试（frps 不可达 → 每个 IP 快速失败）
         response = client.post(
             "/api/probe/test", json={"mode": "connectivity", "ips": ["127.0.0.1"]}, headers=headers,

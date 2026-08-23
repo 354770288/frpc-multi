@@ -22,7 +22,20 @@ import {
   Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import { ConfirmOverlay, Overlay } from '../components/Overlay';
-import type { CloudflareZone, LbDomain, LbDnsRecord, LbHealth, LbSyncLog } from '../lib/types';
+import type { CloudflareZone, GroupInfo, LbDomain, LbDnsRecord, LbHealth, LbSyncLog } from '../lib/types';
+
+type GroupBadgeVariant = 'destructive' | 'warning' | 'info' | 'success' | 'muted';
+
+/** 分组颜色 → Badge variant（红=危险/黄=警告/蓝=信息/绿=成功，无色=灰）。 */
+function groupVariant(color: GroupInfo['color'] | undefined): GroupBadgeVariant {
+  switch (color) {
+    case 'red': return 'destructive';
+    case 'yellow': return 'warning';
+    case 'blue': return 'info';
+    case 'green': return 'success';
+    default: return 'muted';
+  }
+}
 
 export function LbPage() {
   const [domains, setDomains] = useState<LbDomain[]>([]);
@@ -30,7 +43,7 @@ export function LbPage() {
   const [tokenConfigured, setTokenConfigured] = useState(false);
   const [tokenMasked, setTokenMasked] = useState('');
   const [zones, setZones] = useState<CloudflareZone[]>([]);
-  const [groups, setGroups] = useState<string[]>([]);
+  const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [editing, setEditing] = useState<LbDomain | 'new' | null>(null);
@@ -147,7 +160,7 @@ export function LbPage() {
                       <Td><span className="text-xs text-muted-foreground">{domain.zoneName}</span></Td>
                       <Td>
                         <div className="flex items-center gap-1.5">
-                          <Badge tone="muted">{domain.group}</Badge>
+                          <Badge variant={groupVariant(groups.find((g) => g.name === domain.group)?.color)} dot>{domain.group}</Badge>
                           {domain.poolSize === 0 && (
                             <>
                               <Badge tone="warning">空池</Badge>
@@ -268,7 +281,7 @@ export function LbPage() {
         <DomainDialog
           domain={editing === 'new' ? null : editing}
           zones={zones}
-          groups={groups}
+          groups={groups.map((group) => group.name)}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); load(); }}
           onNeedZones={async () => {

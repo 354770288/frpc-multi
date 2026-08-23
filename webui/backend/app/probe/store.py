@@ -17,6 +17,16 @@ from .engine import speed_mbs, speed_mbps
 
 T = TypeVar("T")
 
+# 分组颜色标记：给不同情况的分组做视觉区分（'' = 无色）
+GROUP_COLORS = {"red", "yellow", "blue", "green"}
+
+
+def _clean_group_color(color: str) -> str:
+    value = (color or "").strip()
+    if value not in GROUP_COLORS and value != "":
+        raise ValueError("分组颜色必须是 red/yellow/blue/green 或留空")
+    return value
+
 # 服务器地址会嵌入生成的 frpc TOML（serverAddr = "<addr>"），
 # 只放行 IPv4/IPv6/域名的安全字符，杜绝引号等注入 TOML 的可能。
 _SAFE_ADDR = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._:-]{0,253}[A-Za-z0-9])?$")
@@ -197,37 +207,63 @@ class ProbeStore:
         return inserted, len(cleaned) - inserted
 
     def list_groups(self) -> list[str]:
-        """预创建分组 ∪ 服务器上实际使用的分组。"""
+        """预创建分组 ∪ 服务器上实际使用的分组（仅名称）。"""
+        return [item["name"] for item in self.list_groups_with_colors()]
+
+    def list_groups_with_colors(self) -> list[dict]:
+        """预创建分组（含颜色）∪ 服务器上实际使用的分组（未预创建的颜色为空）。"""
 
         def read(connection):
             predefined = {
-                row[0] for row in connection.execute("SELECT name FROM probe_groups").fetchall()
+                row["name"]: (row["color"] or "")
+                for row in connection.execute("SELECT name, color FROM probe_groups").fetchall()
             }
             in_use = {
                 row[0] for row in connection.execute(
                     "SELECT DISTINCT server_group FROM probe_servers WHERE server_group != ''"
                 ).fetchall()
             }
-            return sorted(predefined | in_use)
+            names = sorted(set(predefined) | in_use)
+            return [{"name": name, "color": predefined.get(name, "")} for name in names]
 
         return self._with_connection(read)
 
-    def create_group(self, name: str) -> str:
+    def create_group(self, name: str, color: str = "") -> str:
         value = (name or "").strip()
         if not value:
             raise ValueError("分组名不能为空")
         if len(value) > 64:
             raise ValueError("分组名过长（最多 64 字符）")
+        clean_color = _clean_group_color(color)
 
         def write(connection):
             connection.execute(
-                "INSERT OR IGNORE INTO probe_groups (name, created_at) VALUES (?, ?)",
-                (value, now_iso()),
+                "INSERT OR IGNORE INTO probe_groups (name, color, created_at) VALUES (?, ?, ?)",
+                (value, clean_color, now_iso()),
             )
             connection.commit()
 
         self._with_connection(write)
         return value
+
+    def set_group_color(self, name: str, color: str) -> str:
+        """设置分组颜色；分组尚不存在（仅服务器在用）时自动补预创建记录。"""
+        value = (name or "").strip()
+        if not value:
+            raise ValueError("分组名不能为空")
+        clean_color = _clean_group_color(color)
+
+        def write(connection):
+            connection.execute(
+                "INSERT OR IGNORE INTO probe_groups (name, color, created_at) VALUES (?, ?, ?)",
+                (value, clean_color, now_iso()),
+            )
+            connection.execute(
+                "UPDATE probe_groups SET color = ? WHERE name = ?", (clean_color, value))
+            connection.commit()
+
+        self._with_connection(write)
+        return clean_color
 
     def delete_group(self, name: str) -> bool:
         """删除预创建分组记录；服务器行上的分组值不受影响。"""

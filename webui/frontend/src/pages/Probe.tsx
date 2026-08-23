@@ -22,13 +22,44 @@ import { ConnBadge, ProbeStatCards, RecentList, SpeedText } from './probe/ProbeP
 import { ConfirmOverlay, Overlay } from '../components/Overlay';
 import { cn } from '../lib/utils';
 import type {
-  DiscoverResult, DiscoverStatus, LabelCount, ProbeConnectivityHistory,
-  ProbeConnectivitySummary, ProbeDashboard, ProbeServer, ProbeSpeedHistory,
-  ProbeTestConfig, ProbeTestStatus,
+  DiscoverResult, DiscoverStatus, GroupColor, GroupInfo, LabelCount,
+  ProbeConnectivityHistory, ProbeConnectivitySummary, ProbeDashboard, ProbeServer,
+  ProbeSpeedHistory, ProbeTestConfig, ProbeTestStatus,
 } from '../lib/types';
 
 type TestScope = 'all' | 'selected' | string; // 'all' | 'selected' | 分组名
 type SortKey = 'none' | 'ip' | 'group' | 'conn' | 'speed' | 'time';
+
+type GroupBadgeVariant = 'destructive' | 'warning' | 'info' | 'success' | 'muted';
+
+/** 分组颜色 → Badge variant（红=危险/黄=警告/蓝=信息/绿=成功，无色=灰）。 */
+function groupVariant(color: GroupColor | undefined): GroupBadgeVariant {
+  switch (color) {
+    case 'red': return 'destructive';
+    case 'yellow': return 'warning';
+    case 'blue': return 'info';
+    case 'green': return 'success';
+    default: return 'muted';
+  }
+}
+
+/** 颜色圆点（筛选下拉等小空间用）。 */
+function GroupDot({ color, className }: { color: GroupColor | undefined; className?: string }) {
+  return <span className={cn('inline-block size-2 shrink-0 rounded-full', GroupDotClass(color), className)} aria-hidden="true" />;
+}
+
+const COLOR_LABELS: Record<string, string> = { red: '红', yellow: '黄', blue: '蓝', green: '绿' };
+
+/** 颜色圆点的背景类（选择器色块复用）。 */
+function GroupDotClass(color: GroupColor | undefined): string {
+  const dot: Record<string, string> = {
+    red: 'bg-destructive',
+    yellow: 'bg-warning',
+    blue: 'bg-blue-500',
+    green: 'bg-primary',
+  };
+  return color ? dot[color] : 'bg-muted-foreground/40';
+}
 
 /** IPv4 按段数值比较（10.0.0.2 < 10.0.0.10），其他按字典序。 */
 function compareIp(a: string, b: string): number {
@@ -56,7 +87,7 @@ function connScore(latest: ProbeConnectivitySummary | null): number {
 export function Probe() {
   const navigate = useNavigate();
   const [servers, setServers] = useState<ProbeServer[]>([]);
-  const [groups, setGroups] = useState<string[]>([]);
+  const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [stats, setStats] = useState<ProbeDashboard | null>(null);
   const [status, setStatus] = useState<ProbeTestStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -217,10 +248,17 @@ export function Probe() {
     return counts;
   }, [servers]);
 
+  /** 分组名 → 颜色（徽章着色）。 */
+  const groupColorMap = useMemo(() => {
+    const map = new Map<string, GroupColor>();
+    for (const group of groups) map.set(group.name, group.color);
+    return map;
+  }, [groups]);
+
   // ---- 网段发现表：分组/标签/状态过滤 + 排序 ----
   const discoverGroups = useMemo(() => {
     const extra = new Set(discoverRows.map((row) => row.group).filter(Boolean));
-    return Array.from(new Set([...groups, ...extra])).sort();
+    return Array.from(new Set([...groups.map((group) => group.name), ...extra])).sort();
   }, [groups, discoverRows]);
 
   const discoverFiltered = useMemo(() => {
@@ -470,7 +508,9 @@ export function Probe() {
                     <SelectGroup>
                       <SelectItem value="all">全部分组</SelectItem>
                       {discoverGroups.map((group) => (
-                        <SelectItem key={group} value={group}>{group}</SelectItem>
+                        <SelectItem key={group} value={group}>
+                          <span className="flex items-center gap-1.5"><GroupDot color={groupColorMap.get(group)} />{group}</span>
+                        </SelectItem>
                       ))}
                     </SelectGroup>
                   </SelectContent>
@@ -543,7 +583,7 @@ export function Probe() {
                         <Td><span className="font-mono text-[12px] font-medium">{row.ip}</span></Td>
                         <Td><span className="font-mono text-xs text-muted-foreground">{row.port}</span></Td>
                         <Td><span className="font-mono text-xs tabular-nums text-muted-foreground">{row.latencyMs} ms</span></Td>
-                        <Td>{row.group ? <Badge tone="muted">{row.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
+                        <Td>{row.group ? <Badge variant={groupVariant(groupColorMap.get(row.group))} dot>{row.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
                         <Td>{row.label ? <Badge tone="muted">{row.label}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
                         <Td>{row.inLibrary ? <Badge tone="muted">已入库</Badge> : <Badge tone="success">未入库</Badge>}</Td>
                         <Td><span className="whitespace-nowrap text-[11px] text-muted-foreground">{formatLastSeen(row.discoveredAt)}</span></Td>
@@ -584,7 +624,9 @@ export function Probe() {
                       <SelectGroup>
                         <SelectItem value="all">全部分组</SelectItem>
                         {groups.map((group) => (
-                          <SelectItem key={group} value={group}>{group}</SelectItem>
+                          <SelectItem key={group.name} value={group.name}>
+                            <span className="flex items-center gap-1.5"><GroupDot color={group.color} />{group.name}</span>
+                          </SelectItem>
                         ))}
                       </SelectGroup>
                     </SelectContent>
@@ -685,7 +727,7 @@ export function Probe() {
                           <div className="font-mono text-[12px] font-medium">{item.ip}</div>
                           {item.label && <div className="text-[11px] text-muted-foreground">{item.label}</div>}
                         </Td>
-                        <Td>{item.group ? <Badge tone="muted">{item.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
+                        <Td>{item.group ? <Badge variant={groupVariant(groupColorMap.get(item.group))} dot>{item.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
                         <Td><ConnBadge latest={item.latestConnectivity} /></Td>
                         <Td><SpeedText latest={item.latestSpeed} /></Td>
                         <Td>
@@ -795,7 +837,9 @@ export function Probe() {
                             勾选的服务器（{selectedIps.length}）
                           </SelectItem>
                           {groups.map((group) => (
-                            <SelectItem key={group} value={group}>分组：{group}</SelectItem>
+                            <SelectItem key={group.name} value={group.name}>
+                              <span className="flex items-center gap-1.5"><GroupDot color={group.color} />分组：{group.name}</span>
+                            </SelectItem>
                           ))}
                         </SelectGroup>
                       </SelectContent>
@@ -907,14 +951,14 @@ export function Probe() {
       {editing && (
         <ServerDialog
           server={editing === 'new' ? null : editing}
-          groups={groups}
+          groups={groups.map((group) => group.name)}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); loadServers(); }}
         />
       )}
       {importOpen && (
         <ImportDialog
-          groups={groups}
+          groups={groups.map((group) => group.name)}
           onClose={() => setImportOpen(false)}
           onImported={() => { setImportOpen(false); loadServers(); }}
         />
@@ -940,7 +984,7 @@ export function Probe() {
           kind={batchEdit}
           ids={[...selectedIds]}
           count={selectedIps.length}
-          groups={groups}
+          groups={groups.map((group) => group.name)}
           onClose={() => setBatchEdit(null)}
           onSaved={() => { setBatchEdit(null); loadServers(); }}
         />
@@ -1138,9 +1182,9 @@ function ImportDialog({ groups, onClose, onImported }: {
   );
 }
 
-/** 分组管理弹窗：提前创建分组（导入时必选），删除预创建记录；空分组提示入组步骤。 */
+/** 分组管理弹窗：创建/重命名/删除 + 颜色标记（红黄蓝绿，区分不同情况的服务器分组）。 */
 function GroupDialog({ groups, groupCounts, onClose, onChanged }: {
-  groups: string[];
+  groups: GroupInfo[];
   groupCounts: Map<string, number>;
   onClose: () => void;
   onChanged: () => void;
@@ -1199,6 +1243,18 @@ function GroupDialog({ groups, groupCounts, onClose, onChanged }: {
     }
   };
 
+  const setColor = async (groupName: string, color: GroupColor) => {
+    setBusy(true);
+    try {
+      await probeApi.setGroupColor(groupName, color);
+      onChanged();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '设置颜色失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <Overlay title="分组管理" onClose={onClose}>
       <div className="flex flex-col gap-4">
@@ -1210,14 +1266,15 @@ function GroupDialog({ groups, groupCounts, onClose, onChanged }: {
           <Button onClick={create} disabled={busy || !name.trim()}><Plus size={13} />创建</Button>
         </div>
         <div className="flex flex-col gap-1.5">
-          <div className="text-[11px] font-medium text-muted-foreground">已有分组（含服务器正在使用的分组）</div>
+          <div className="text-[11px] font-medium text-muted-foreground">已有分组（含服务器正在使用的分组）· 点色点设置颜色</div>
           {groups.length ? (
-            <div className="flex max-h-60 flex-col gap-1 overflow-y-auto">
-              {groups.map((item) => {
+            <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
+              {groups.map(({ name: item, color }) => {
                 const count = groupCounts.get(item) ?? 0;
                 const isRenaming = renaming === item;
+                const swatches: GroupColor[] = ['red', 'yellow', 'blue', 'green'];
                 return (
-                  <div key={item} className="flex items-center gap-2 rounded-md bg-muted/60 px-2.5 py-1.5">
+                  <div key={item} className="flex flex-wrap items-center gap-2 rounded-md bg-muted/60 px-2.5 py-1.5">
                     {isRenaming ? (
                       <>
                         <Input
@@ -1230,10 +1287,20 @@ function GroupDialog({ groups, groupCounts, onClose, onChanged }: {
                       </>
                     ) : (
                       <>
-                        <span className="min-w-0 flex-1 truncate text-[12px]">{item}</span>
-                        {count > 0
-                          ? <span className="whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">{count} 台</span>
-                          : <span className="whitespace-nowrap text-[11px] text-muted-foreground" title="测通服务器后勾选批量改入该分组（即入池），再到负载均衡绑定域名">空 · 待入组</span>}
+                        <Badge variant={groupVariant(color)} dot className="max-w-36">{item}</Badge>
+                        <div className="flex items-center gap-1" role="group" aria-label={`分组 ${item} 颜色`}>
+                          <button type="button" onClick={() => setColor(item, '')} disabled={busy}
+                            className={cn('grid size-4 place-items-center rounded-full border border-border text-[9px] text-muted-foreground hover:border-foreground/40', color === '' && 'ring-2 ring-ring/50')}
+                            title="无色" aria-label="无色">✕</button>
+                          {swatches.map((swatch) => (
+                            <button key={swatch} type="button" onClick={() => setColor(item, swatch)} disabled={busy}
+                              className={cn('size-4 rounded-full border border-black/10 dark:border-white/10', GroupDotClass(swatch), color === swatch && 'ring-2 ring-ring/50 ring-offset-1 ring-offset-card')}
+                              title={COLOR_LABELS[swatch]} aria-label={`${COLOR_LABELS[swatch]}色`} />
+                          ))}
+                        </div>
+                        <span className="ml-auto whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">
+                          {count > 0 ? `${count} 台` : <span title="测通服务器后勾选批量改入该分组（即入池），再到负载均衡绑定域名">空 · 待入组</span>}
+                        </span>
                         <Button size="icon-sm" variant="ghost" onClick={() => startRename(item)} disabled={busy}
                           aria-label={`重命名分组 ${item}`} title="重命名分组（服务器/发现记录/负载均衡绑定同步更新）">
                           <Pencil size={13} />
@@ -1251,7 +1318,7 @@ function GroupDialog({ groups, groupCounts, onClose, onChanged }: {
             <div className="rounded-md border border-dashed border-input p-4 text-center text-xs text-muted-foreground">还没有分组</div>
           )}
         </div>
-        <p className="text-[11px] leading-4 text-muted-foreground">重命名会同步更新服务器、网段发现结果与负载均衡的分组绑定；删除分组只移除预创建记录，已归入的服务器保持不变。</p>
+        <p className="text-[11px] leading-4 text-muted-foreground">颜色用于在服务器库 / 网段发现 / 负载均衡中快速区分不同情况的分组；重命名会同步更新服务器、发现结果与负载均衡绑定；删除只移除预创建记录。</p>
       </div>
     </Overlay>
   );

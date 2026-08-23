@@ -276,6 +276,14 @@ export type ProbeDashboard = {
 
 // ---- 网段发现（portpilot 整合） ----
 
+// 分组颜色标记：给不同情况的分组做视觉区分（'' = 无色）
+export type GroupColor = '' | 'red' | 'yellow' | 'blue' | 'green';
+
+export type GroupInfo = {
+  name: string;
+  color: GroupColor;
+};
+
 export type DiscoverHit = {
   ip: string;
   port: number;

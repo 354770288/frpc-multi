@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS probe_settings (
 
 CREATE TABLE IF NOT EXISTS probe_groups (
     name TEXT PRIMARY KEY,
+    color TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 
@@ -186,6 +187,13 @@ def _migrate_lb_domains(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE lb_domains ADD COLUMN current_ip TEXT")
 
 
+def _migrate_probe_groups(connection: sqlite3.Connection) -> None:
+    """probe_groups 补 color 列（分组颜色标记：red/yellow/blue/green，空=无色）。"""
+    columns = _column_names(connection, "probe_groups")
+    if columns and "color" not in columns:
+        connection.execute("ALTER TABLE probe_groups ADD COLUMN color TEXT NOT NULL DEFAULT ''")
+
+
 def connect_database(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)
@@ -194,5 +202,6 @@ def connect_database(path: Path) -> sqlite3.Connection:
     connection.executescript(SCHEMA)
     _migrate_nodes(connection)
     _migrate_lb_domains(connection)
+    _migrate_probe_groups(connection)
     connection.commit()
     return connection

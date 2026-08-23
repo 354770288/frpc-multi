@@ -5,6 +5,8 @@ import type {
   CloudflareZone,
   DiscoverResults,
   DiscoverStatus,
+  GroupColor,
+  GroupInfo,
   Instance,
   InstanceDetail,
   LabelCount,
@@ -147,11 +149,16 @@ export type ProbeServerPayload = {
 
 export const probeApi = {
   servers: () => api<ProbeServer[]>('/api/probe/servers'),
-  groups: () => api<string[]>('/api/probe/servers/groups'),
-  createGroup: (name: string) =>
+  groups: () => api<GroupInfo[]>('/api/probe/servers/groups'),
+  createGroup: (name: string, color?: GroupColor) =>
     api<{ ok: boolean; name: string }>('/api/probe/servers/groups', {
       method: 'POST',
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name, color: color ?? '' })
+    }),
+  setGroupColor: (name: string, color: GroupColor) =>
+    api<{ ok: boolean; color: GroupColor }>('/api/probe/servers/groups/color', {
+      method: 'PATCH',
+      body: JSON.stringify({ name, color })
     }),
   deleteGroup: (name: string) =>
     api<{ ok: boolean }>(`/api/probe/servers/groups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
