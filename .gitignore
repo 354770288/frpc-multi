@@ -22,8 +22,9 @@ compose.agent.local.yaml
 .claude/
 .kiro/
 .vscode/
-# 本地记忆/笔记（跨会话记忆文档，不进版本库）
-chat/
+# 本地记忆/笔记（跨会话记忆文档，默认不进版本库；交接文档按名放行随仓库走）
+chat/*
+!chat/PERF_OPT_HANDOFF_2026-08-29.md
 chat.md
 前端优化-*.md
 
