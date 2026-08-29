@@ -99,7 +99,7 @@ function ProxyRow({ d, ex, cd, ve, onT, onChange, onAD, onCD, onConfD }: {
                 </SelectContent>
               </Select>
             </FR>
-            <FR label="本地 IP"><Input value={d.localIP} onChange={(e) => onChange({ localIP: e.target.value })} placeholder="127.0.0.1" /></FR>
+            <FR label="本地 IP" hint="127.0.0.1 / localhost 自动指向宿主机"><Input value={d.localIP} onChange={(e) => onChange({ localIP: e.target.value })} placeholder="127.0.0.1" /></FR>
             <FR label="本地端口"><Input value={d.localPort} onChange={(e) => onChange({ localPort: e.target.value })} inputMode="numeric" placeholder="22" /></FR>
             <FR label="远端端口" hint={d.type === 'tcp' || d.type === 'udp' ? '必填' : 'http/https 可不填'}>
               <Input value={d.remotePort} onChange={(e) => onChange({ remotePort: e.target.value })} inputMode="numeric" placeholder="6001" /></FR>

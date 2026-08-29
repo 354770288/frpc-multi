@@ -17,7 +17,7 @@ from app.agent.service import LocalAgentService
 from app.compose_generator import generate_compose
 from app.config_validator import validate_config_text
 from app.control.node_store import NodeStore
-from app.instance_store import InstanceStore, validate_instance_name
+from app.instance_store import InstanceStore, rewrite_loopback_local_ip, validate_instance_name
 
 
 def load_main_app(**env: str):
@@ -153,6 +153,50 @@ class InstanceStoreTests(unittest.TestCase):
 
             updated = store.update_meta("client-001", display_name="   ")
             self.assertEqual(updated.display_name, "client-001")
+
+
+class LoopbackLocalIpRewriteTests(unittest.TestCase):
+    def test_rewrite_loopback_values(self):
+        text = (
+            '[[proxies]]\nlocalIP = "127.0.0.1"\n'
+            '[[proxies]]\nlocalIP = "localhost" # 本机服务\n'
+            "[[proxies]]\nlocalIP = '::1'\n"
+            '[[proxies]]\nlocalIP = 127.0.0.1\n'
+        )
+        rewritten = rewrite_loopback_local_ip(text)
+        self.assertIn('localIP = "host.docker.internal"\n', rewritten)
+        self.assertIn('localIP = "host.docker.internal" # 本机服务\n', rewritten)
+        self.assertEqual(rewritten.count("host.docker.internal"), 4)
+        self.assertNotIn("127.0.0.1", rewritten)
+        self.assertNotIn("localhost", rewritten)
+        self.assertNotIn("::1", rewritten)
+
+    def test_rewrite_keeps_non_loopback_and_other_keys(self):
+        text = (
+            '[[proxies]]\nlocalIP = "192.168.1.10"\nserverName = "localhost"\n'
+            '# localIP = "127.0.0.1"\nxlocalIP = "127.0.0.1"\n'
+        )
+        rewritten = rewrite_loopback_local_ip(text)
+        self.assertIn('localIP = "192.168.1.10"', rewritten)
+        self.assertIn('serverName = "localhost"', rewritten)
+        # 注释行与其他键名不动
+        self.assertIn('# localIP = "127.0.0.1"', rewritten)
+        self.assertIn('xlocalIP = "127.0.0.1"', rewritten)
+
+    def test_create_and_update_rewrite_loopback_local_ip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = InstanceStore(Path(tmp))
+            store.create_instance(
+                name="client-001",
+                display_name="d",
+                config_text='[[proxies]]\nname = "ssh"\nlocalIP = "127.0.0.1"\n',
+            )
+            text = (Path(tmp) / "instances" / "client-001" / "frpc.toml").read_text()
+            self.assertIn('localIP = "host.docker.internal"', text)
+
+            store.update_config("client-001", '[[proxies]]\nname = "web"\nlocalIP = "localhost"\n')
+            text = (Path(tmp) / "instances" / "client-001" / "frpc.toml").read_text()
+            self.assertIn('localIP = "host.docker.internal"', text)
 
 
 class ConfigValidatorTests(unittest.TestCase):

@@ -8,6 +8,27 @@ from .models import InstanceRecord, now_iso
 
 INSTANCE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$")
 
+# frpc 实例容器跑在独立 bridge 网络里，容器内的 127.0.0.1 是容器自身而非宿主机；
+# compose 已为容器注入 host.docker.internal → host-gateway（宿主机网关，与网段无关）。
+# 写入配置时把回环 localIP 统一改写为 host.docker.internal，用户填的「本机」即宿主机。
+HOST_LOCAL_IP = "host.docker.internal"
+LOOPBACK_LOCAL_IPS = frozenset({"127.0.0.1", "localhost", "::1"})
+_LOCAL_IP_LINE_RE = re.compile(
+    r'^(?P<prefix>\s*localIP\s*=\s*)(?P<quote>["\']?)(?P<value>[^"\'\s#]+)(?P=quote)(?P<suffix>.*)$',
+    re.MULTILINE,
+)
+
+
+def rewrite_loopback_local_ip(config_text: str) -> str:
+    """把回环 localIP（127.0.0.1 / localhost / ::1）改写为 host.docker.internal。"""
+
+    def replace(match: re.Match) -> str:
+        if match.group("value") not in LOOPBACK_LOCAL_IPS:
+            return match.group(0)
+        return f'{match.group("prefix")}"{HOST_LOCAL_IP}"{match.group("suffix")}'
+
+    return _LOCAL_IP_LINE_RE.sub(replace, config_text)
+
 
 def validate_instance_name(name: str) -> str:
     normalized = name.strip()
@@ -81,13 +102,14 @@ class InstanceStore:
             "enabled": enabled,
             "description": description,
         }
-        (instance_dir / "frpc.toml").write_text(config_text, encoding="utf-8")
+        (instance_dir / "frpc.toml").write_text(
+            rewrite_loopback_local_ip(config_text), encoding="utf-8")
         (instance_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return self.get_instance(name)
 
     def update_config(self, name: str, config_text: str) -> InstanceRecord:
         record = self.get_instance(name)
-        record.config_path.write_text(config_text, encoding="utf-8")
+        record.config_path.write_text(rewrite_loopback_local_ip(config_text), encoding="utf-8")
         meta = json.loads(record.meta_path.read_text(encoding="utf-8"))
         meta["updatedAt"] = now_iso()
         record.meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
