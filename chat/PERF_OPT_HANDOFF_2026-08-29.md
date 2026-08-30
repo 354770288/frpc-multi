@@ -20,8 +20,33 @@ e2b1f6a perf(database): initialize SQLite once per path
 0e5b2c3 perf(probe): page and batch discovery results
 dd42848 perf(probe): bound discovery persistence
 2e84ea1 perf(probe): 前端网段发现迁移服务端分页（Task 5）
-<final> docs: Task 6 证据与收尾（含 Minor#1/#2 修复）
+5fe70ff perf(probe): Task 6 收尾——综合审查修复 + 证据文档
+1d1df03 docs(handoff): 性能优化上线记录与冒烟证据
+6875687 perf(probe): 服务器库迁移服务端分页（2215 台全量 693KB→单页）
 ```
+
+### 1.1 服务器库分页追加（6875687，2026-08-30）
+
+用户实测「候选 frps 服务器」Tab 打开 2215 台要 30s。根因同网段发现：全量 693KB
+JSON 跨洋传输 + 2215 行全量 DOM + 10s 全量轮询（后端本机仅 0.08s）。照同一模式改造：
+
+- 后端：probe_servers 补 ip_sort（SCHEMA + 迁移回填 + 4 索引）；`query_servers`
+  服务端筛选/排序/分页（conn 五档 CASE 与 ConnBadge 对齐：未测=0/fail=1..3/
+  partial=2..3/pass=4）；`server_facets`；退休 list_labels + /servers/labels；
+  四条插入路径（create/import/batch/发现导入）全写 ip_sort，update 改 IP 恒重算；
+  `_ip_sort_for()`：域名/IPv6 → NULL（null-last）
+- 前端：`useServers.ts` hook（跨页勾选 Map<id,ip>、10s 轮询仅 Tab 激活+页面可见、
+  隐藏 abort/回前台刷新、300ms 防抖搜索）；服务器库 Tab 接 hook + 分页条；
+  退休 filtered/displayList/compareIp/SortKey/connScore
+- 审查：两轮独立审查。首轮 2C+2I+6M 全修（C1 跨页勾选被 alive 过滤清空——
+  「按当前页裁剪勾选」是错误模式，勾选只能被显式操作移除；C2 域名服务器入库
+  崩溃——`_ipv4_sort_key` 对域名抛异常）；复审再抓第四插入路径（发现→导入）
+  漏写 ip_sort。**教训：所有 INSERT 路径都要枚举，别只改显眼的两条**
+- 上线验证（VPS 2215 台）：分页响应 16.6KB（42 倍缩小）、8-13ms；迁移回填
+  2213 行（2 条 IPv6 NULL 属设计）；数值排序正确（1.32.216.28 < 1.32.216.134，
+  点分字符串序会排反）；浏览器切 Tab 到数据可见 59ms（30s→59ms）
+- 已知非问题：浏览器验证时总数乱跳（485/0）是 IAB 旧缓存 bundle 混合渲染假象，
+  破缓存后 2215/45 页正确
 
 ## 2. 验证证据（全部已执行）
 
