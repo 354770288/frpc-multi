@@ -1,9 +1,9 @@
 # Todo Checkpoint
 
 - Completed: baseline/handoff audit; approved design/plan; Task 1 SQLite lifecycle; Task 2 bounded lazy scanner; Task 3 discovery migration/paging/facets/chunking/batch UPSERT; Task 4 paginated HTTP contracts, selected-ID consumers, and bounded persistence-writer orchestration; Task 1–4 specification and quality review loops; Task 5 frontend paged discovery workflow (spec + quality reviews passed).
-- Active slice: Task 5 scoped commit, then Task 6 integrated verification/review/docs.
-- Pending: Task 6 EXPLAIN/boundedness evidence, independent comprehensive review, doc closeout (checkpoint/evidence/handoff/99-reflection).
-- Evidence: Task 1 commit `e2b1f6a`; Task 2 commit `78cc4e4`; Task 3 commit `0e5b2c3`; Task 4 commit `dd42848`; Task 5 working-tree verification: `npx tsc -b && npm run build` exit 0; retirement greps clean (no discoverFiltered/loadDiscover/scanStatus.found/discovery setInterval in frontend discovery paths); first review verdict "With fixes" → fixed 1 Critical (terminal-transition miss via hook-level refs + nudge setters) + 4 Minor; second independent review verdict "Yes" with one consistency nit (import onDone recoverOutOfRange) fixed; `git diff --check` clean.
+- Active slice: Task 6 closeout (durable records + final commit).
+- Pending: push, deploy decision (explicitly out of plan scope).
+- Evidence: Task 1 commit `e2b1f6a`; Task 2 commit `78cc4e4`; Task 3 commit `0e5b2c3`; Task 4 commit `dd42848`; Task 5 commit `2e84ea1` (frontend paged discovery; spec+quality reviews approved). Task 6: EXPLAIN plans hit idx_probe_discover_time/_ip/_ip_desc with no TEMP B-TREE; 10M-target TargetPlan is a single lazy interval; concurrency 3/7 → queue 3/7 + tasks 4/8; focused 115 OK; full 195 OK; tsc/build exit 0. Independent comprehensive review verdict "Yes"; its Minor #1 (migration cursor) fix initially introduced an infinite loop on all-unparseable batches (full suite hung, killed) — root-caused and repaired with an `id > last_seen_id` cursor, regression green; Minor #2 (scan error overwritten by persistence error) fixed by first-cause concatenation.
 - Blocked on: nothing.
 - Next: create scoped Task 5 commit, then Task 6 per plan.
 

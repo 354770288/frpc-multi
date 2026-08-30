@@ -216,12 +216,22 @@ def _migrate_probe_discover_results(connection: sqlite3.Connection) -> None:
         if "ip_sort" not in columns:
             connection.execute("ALTER TABLE probe_discover_results ADD COLUMN ip_sort INTEGER")
 
-        cursor = connection.execute(
-            "SELECT id, ip FROM probe_discover_results WHERE ip_sort IS NULL"
-        )
-        while rows := cursor.fetchmany(DISCOVER_MIGRATION_BATCH_SIZE):
+        # 每轮先物化一批 id 再更新：避免「遍历游标的同时更新 WHERE 依赖的同一列」
+        # （SQLite 对未访问行被修改的行为未定义，极端情况会漏行且迁移永不重跑）。
+        # 无法解析的 legacy/IPv6 行（ip 永远算不出 ip_sort）用 id 游标跳过，
+        # 防止同一批被反复取回造成死循环；这些行永驻 NULL，由 null-last 排序兜底。
+        last_seen_id = 0
+        while True:
+            batch = connection.execute(
+                "SELECT id, ip FROM probe_discover_results "
+                "WHERE ip_sort IS NULL AND id > ? LIMIT ?",
+                (last_seen_id, DISCOVER_MIGRATION_BATCH_SIZE),
+            ).fetchall()
+            if not batch:
+                break
+            last_seen_id = max(row["id"] for row in batch)
             valid = []
-            for row in rows:
+            for row in batch:
                 try:
                     address = ipaddress.ip_address(row["ip"])
                 except ValueError:

@@ -308,9 +308,14 @@ class DiscoverRunner:
                     finish_callback()
                 except BaseException as exc:
                     detail = str(exc).strip()
+                    persistence_error = (
+                        f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+                    )
                     with self._lock:
+                        # 双故障时保留扫描首因，不静默覆盖
                         state.error = (
-                            f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+                            f"{state.error}; {persistence_error}" if state.error
+                            else persistence_error
                         )
             with self._lock:
                 state.running = False
