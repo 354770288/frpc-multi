@@ -253,6 +253,17 @@ class DiscoverRunner:
             thread.start()
             return state
 
+    @staticmethod
+    def _cancel_task(loop: asyncio.AbstractEventLoop, task: asyncio.Task) -> None:
+        """Cancel safely when finalization closes the loop before publication catches up."""
+        try:
+            loop.call_soon_threadsafe(task.cancel)
+        except RuntimeError:
+            # is_closed() is checked after the failed call so the check/call race
+            # cannot leak "Event loop is closed" from stop/reset callers.
+            if not loop.is_closed():
+                raise
+
     def stop(self) -> bool:
         with self._lock:
             state = self._state
@@ -261,7 +272,7 @@ class DiscoverRunner:
             self._cancel.set()
             loop, task = self._loop, self._scan_task
         if loop is not None and task is not None:
-            loop.call_soon_threadsafe(task.cancel)
+            self._cancel_task(loop, task)
         return True
 
     def _run(self, state: DiscoverState, plan: TargetPlan, on_hit: Callable | None) -> None:
@@ -291,6 +302,16 @@ class DiscoverRunner:
             if pending:
                 loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.close()
+            finish_callback = getattr(on_hit, "finish", None)
+            if finish_callback is not None:
+                try:
+                    finish_callback()
+                except BaseException as exc:
+                    detail = str(exc).strip()
+                    with self._lock:
+                        state.error = (
+                            f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+                        )
             with self._lock:
                 state.running = False
                 state.finished_at = now_iso()
@@ -410,7 +431,7 @@ class DiscoverRunner:
                 loop = task = None
         try:
             if loop is not None and task is not None:
-                loop.call_soon_threadsafe(task.cancel)
+                self._cancel_task(loop, task)
             if thread is not None and thread is not threading.current_thread():
                 thread.join()
             with self._lock:

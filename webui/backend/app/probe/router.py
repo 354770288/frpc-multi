@@ -9,17 +9,19 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from ..auth import require_auth
 from ..settings import settings
+from .discover import discover_runner
 from .engine import ProbeOptions
+from .persistence import DiscoverPersistenceError, DiscoverScanCoordinator
 from .route import load_route_nodes, route_hub, save_route_nodes
 from .runner import MODES, ProbeRunner
-from .store import ProbeStore, validate_probe_addr
+from .store import DiscoverPageQuery, ProbeStore, validate_probe_addr
 
 router = APIRouter(prefix="/api/probe", dependencies=[Depends(require_auth)])
 
@@ -41,6 +43,13 @@ def audit(username: str, action: str, *, success: bool = True, message: str = ""
 
 # 模块级单例：与进程同生命周期；store 每次 start 时重建（跟随 DATABASE_PATH）
 runner = ProbeRunner(probe_store)
+
+
+def _enqueue_discovered_route(ip: str) -> bool:
+    return route_hub.enqueue(ip)
+
+
+discover_scans = DiscoverScanCoordinator(discover_runner, probe_store, _enqueue_discovered_route)
 
 # 面板可调配置：snake（存储/引擎）↔ camel（API/前端）
 _CAMEL_KEYS = {
@@ -542,17 +551,10 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
         concurrency=payload.concurrency,
         timeout=payload.timeout,
     )
-    store = probe_store()
-
-    def persist_hit(ip: str, hit_port: int, latency_ms: float) -> None:
-        store.upsert_discover_result(ip, hit_port, latency_ms)
-        # 扫描联动：开启自动路由时，命中且尚未测过路由的 IP 即入队（与扫描并行）
-        if payload.autoRoute and store.discover_row_needs_route(ip):
-            from .route import route_hub
-            route_hub.enqueue(ip)
-
     try:
-        discover_runner.start(params, on_hit=persist_hit)
+        discover_scans.start(params, auto_route=payload.autoRoute)
+    except DiscoverPersistenceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -561,27 +563,38 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
     audit(user, "probe_discover_start",
           message=f"目标 {payload.targets.strip()[:120]} 端口 {port} 并发 {payload.concurrency}"
                   + (" · 自动路由追踪" if payload.autoRoute else ""))
-    return discover_runner.status()
+    return discover_scans.status()
 
 
 @router.get("/discover/status")
 def discover_status():
-    from .discover import discover_runner
-    return discover_runner.status()
+    return discover_scans.status()
 
 
 @router.post("/discover/stop")
 def discover_stop(user: Annotated[str, Depends(require_auth)]):
-    from .discover import discover_runner
-    stopped = discover_runner.stop()
+    stopped = discover_scans.stop()
     audit(user, "probe_discover_stop", success=stopped,
           message="已下发停止" if stopped else "当前没有运行中的扫描")
     return {"stopped": stopped}
 
 
 @router.get("/discover/results")
-def discover_results():
-    store = probe_store()
+def discover_results(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, alias="pageSize", ge=1, le=200),
+    q: str = "",
+    group: str | None = None,
+    label: str | None = None,
+    library: Literal["all", "imported", "new"] = "all",
+    sort: Literal["discoveredAt", "ip", "latency"] = "discoveredAt",
+    order: Literal["asc", "desc"] = "desc",
+):
+    store_sort = "time" if sort == "discoveredAt" else sort
+    result = probe_store().query_discover_results(DiscoverPageQuery(
+        page=page, page_size=page_size, q=q, group=group, label=label,
+        library=library, sort=store_sort, order=order,
+    ))
     items = [{
         "id": row["id"],
         "ip": row["ip"],
@@ -591,8 +604,16 @@ def discover_results():
         "label": row["label"],
         "inLibrary": bool(row["in_library"]),
         "discoveredAt": row["discovered_at"],
-    } for row in store.list_discover_results()]
-    return {"items": items, "labels": store.list_labels()}
+    } for row in result["items"]]
+    return {
+        "items": items, "page": result["page"], "pageSize": result["pageSize"],
+        "total": result["total"], "sort": sort, "order": result["order"],
+    }
+
+
+@router.get("/discover/facets")
+def discover_facets():
+    return probe_store().discover_facets()
 
 
 @router.patch("/discover/results/batch")
@@ -621,18 +642,11 @@ def discover_results_delete(payload: DiscoverDelete, user: Annotated[str, Depend
 def discover_import(payload: DiscoverImport, user: Annotated[str, Depends(require_auth)]):
     if not payload.ids:
         raise HTTPException(status_code=400, detail="请勾选要导入的记录")
-    store = probe_store()
-    rows = {row["id"]: row for row in store.list_discover_results()}
-    group = payload.group.strip()
-    items = []
-    for row_id in payload.ids:
-        row = rows.get(row_id)
-        if row is None:
-            continue
-        items.append({"ip": row["ip"], "group": group or row["server_group"], "label": row["label"]})
-    if not items:
+    selected_count, inserted, skipped = probe_store().import_discover_results(
+        payload.ids, group=payload.group
+    )
+    if selected_count == 0:
         raise HTTPException(status_code=400, detail="所选记录不存在")
-    inserted, skipped = store.import_servers(items)
     audit(user, "probe_discover_import",
           message=f"新增 {inserted} 台（跳过已在库 {skipped}）")
     return {"inserted": inserted, "skipped": skipped}
@@ -736,12 +750,8 @@ def route_start(payload: RouteStart, user: Annotated[str, Depends(require_auth)]
 
     if not payload.ids:
         raise HTTPException(status_code=400, detail="请勾选要测试的记录")
-    rows = {row["id"]: row for row in probe_store().list_discover_results()}
-    enqueued = 0
-    for row_id in payload.ids:
-        row = rows.get(row_id)
-        if row and route_hub.enqueue(row["ip"]):
-            enqueued += 1
+    rows = probe_store().get_discover_results_by_ids(payload.ids)
+    enqueued = sum(1 for row in rows if route_hub.enqueue(row["ip"]))
     audit(user, "probe_route_start", message=f"入队 {enqueued} 台（勾选 {len(payload.ids)}）")
     return {"enqueued": enqueued}
 

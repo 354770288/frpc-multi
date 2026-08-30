@@ -11,7 +11,7 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Literal, Sequence, TypeVar
+from typing import Callable, Iterable, Literal, NamedTuple, Sequence, TypeVar
 
 from ..models import now_iso
 from ..control.database import connect_database, initialize_database
@@ -24,6 +24,14 @@ DiscoverLibrary = Literal["all", "new", "imported"]
 DiscoverSort = Literal["time", "ip", "latency"]
 SortOrder = Literal["asc", "desc"]
 _SQL_VARIABLE_HEADROOM = 8
+
+
+class DiscoverImportResult(NamedTuple):
+    """Atomic discovery-import outcome; tuple-compatible for existing callers."""
+
+    selected_count: int
+    inserted: int
+    skipped: int
 
 
 @dataclass(frozen=True)
@@ -384,10 +392,6 @@ class ProbeStore:
 
     # ---- 网段发现结果 ----
 
-    def upsert_discover_result(self, ip: str, port: int, latency_ms: float) -> None:
-        """Compatibility wrapper for one scanner hit; batch writers should use the batch method."""
-        self.upsert_discover_results_batch([(ip, port, latency_ms)])
-
     def upsert_discover_results_batch(
         self, hits: Iterable[tuple[str, int, float]]
     ) -> list[str]:
@@ -466,23 +470,6 @@ class ProbeStore:
             connection.commit()
 
         self._with_connection(write)
-
-    def list_discover_results(self) -> list[dict]:
-        """Compatibility full-table reader retained until Task 4 migrates existing consumers."""
-
-        def read(connection):
-            rows = connection.execute(
-                """
-                SELECT d.id, d.ip, d.port, d.latency_ms, d.server_group, d.label,
-                       d.discovered_at,
-                       EXISTS (SELECT 1 FROM probe_servers s WHERE s.ip = d.ip) AS in_library
-                FROM probe_discover_results d
-                ORDER BY d.discovered_at DESC, d.ip
-                """
-            ).fetchall()
-            return [dict(row) for row in rows]
-
-        return self._with_connection(read)
 
     def query_discover_results(self, query: DiscoverPageQuery) -> dict:
         """Return one globally filtered/sorted discovery page and its metadata."""
@@ -588,15 +575,20 @@ class ProbeStore:
 
         return self._with_connection(read)
 
-    def import_discover_results(self, ids: Iterable[int], *, group: str = "") -> tuple[int, int]:
-        """Import unique IPs; the first normalized selected row supplies metadata."""
+    def import_discover_results(
+        self, ids: Iterable[int], *, group: str = ""
+    ) -> DiscoverImportResult:
+        """Atomically return selected, inserted, and skipped row counts."""
         normalized = _normalize_ids(ids)
         if not normalized:
-            return 0, 0
+            return DiscoverImportResult(0, 0, 0)
         override = group.strip()
 
         def write(connection):
             with connection:
+                # Reserve the write transaction before selecting so selected_count
+                # and the inserts are decided against one atomic database state.
+                connection.execute("BEGIN IMMEDIATE")
                 selected = {}
                 for chunk in _chunks(connection, normalized):
                     placeholders = ",".join("?" for _ in chunk)
@@ -618,14 +610,16 @@ class ProbeStore:
                             row["ip"], row["label"], override or row["server_group"], timestamp
                         )
                 if not candidates:
-                    return 0, 0
+                    return DiscoverImportResult(existing_selected, 0, 0)
                 cursor = connection.executemany(
                     "INSERT OR IGNORE INTO probe_servers "
                     "(ip, label, server_group, created_at) VALUES (?, ?, ?, ?)",
                     candidates.values(),
                 )
                 inserted = max(cursor.rowcount, 0)
-                return inserted, existing_selected - inserted
+                return DiscoverImportResult(
+                    existing_selected, inserted, existing_selected - inserted
+                )
 
         return self._with_connection(write)
 

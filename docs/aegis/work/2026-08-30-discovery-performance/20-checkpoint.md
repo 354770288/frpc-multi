@@ -1,25 +1,25 @@
 # Todo Checkpoint
 
-- Completed: baseline/handoff audit; approved design/plan; Task 1 SQLite lifecycle; Task 2 bounded lazy scanner; Task 3 discovery migration, paging/facets, ID chunking, selected import, and transactional batch UPSERT; Task 3 specification and quality review loops.
-- Active slice: Task 3 closeout and scoped commit, then Task 4 router contracts and bounded persistence-writer orchestration.
-- Pending: router orchestration; frontend paged workflow; integrated verification/review/docs.
-- Evidence: Task 1 commit `e2b1f6a`; Task 2 commit `78cc4e4`; Task 3 focused database/probe suite 69 passing; full backend suite 170 passing; production-shaped query-plan probe passed for group, label, and combined filters in ASC/DESC without `TEMP B-TREE`; `git diff --check` clean; specification and quality reviews approved with confidence A.
+- Completed: baseline/handoff audit; approved design/plan; Task 1 SQLite lifecycle; Task 2 bounded lazy scanner; Task 3 discovery migration/paging/facets/chunking/batch UPSERT; Task 4 paginated HTTP contracts, selected-ID consumers, and bounded persistence-writer orchestration; Task 1–4 specification and quality review loops.
+- Active slice: Task 4 closeout and scoped commit, then Task 5 frontend paged discovery workflow.
+- Pending: frontend paged workflow; integrated verification/review/docs.
+- Evidence: Task 1 commit `e2b1f6a`; Task 2 commit `78cc4e4`; Task 3 commit `0e5b2c3`; Task 4 focused discover/probe suite 103 passing; full backend suite 195 passing; `git diff --check` clean; Task 4 specification and final quality reviews approved with confidence A.
 - Blocked on: nothing.
-- Next: commit only Task 3-owned implementation/tests plus durable Aegis records, read back Git state, then open the Task 4 implementation gate.
+- Next: commit only Task 4-owned implementation/tests plus durable Aegis records, read back Git state, then implement Task 5 with a focused discovery hook and coordinated page/facet polling.
 
 ## ResumeStateHint
 
-Read the plan, this checkpoint, `chat/PERF_OPT_HANDOFF_2026-08-29.md`, and `git status`; do not touch production DB, deploy, or let subagents mutate Git lifecycle state.
+Read the plan, this checkpoint, `chat/PERF_OPT_HANDOFF_2026-08-29.md`, and `git status`; do not touch production DB, deploy, or let subagents mutate Git lifecycle state. Task 5 must keep its hook mounted above conditional tab content and must not restore browser-global discovery filtering/sorting.
 
 ## Slice Card
 
-- Goal: provide data-preserving numeric IPv4 ordering, globally correct paged queries/facets, bounded atomic ID operations, selected-row import, and transactional scanner batch UPSERT.
-- Parent plan/spec: Task 3 in `docs/aegis/plans/2026-08-30-discovery-performance.md`.
-- Files: `webui/backend/app/control/database.py`, `webui/backend/app/probe/store.py`, `webui/backend/tests/test_database.py`, and `webui/backend/tests/test_probe.py`.
-- Boundary: no router/API/frontend changes; persisted rows remain canonical truth; `list_discover_results()` survives only as the explicit Task 4 migration carrier.
-- Verification: focused database/probe tests, full backend regression, query-plan probes, diff/scope checks, then specification and quality reviews.
-- Stop: do not enter Task 4 until Task 3 reviews, fresh coordinator verification, durable records, and scoped commit pass.
+- Goal: expose bounded paginated discovery contracts and persist scanner hits through one scan-scoped bounded writer while preserving failure visibility, stop/start safety, transactional import authority, and commit-before-route ordering.
+- Parent plan/spec: Task 4 in `docs/aegis/plans/2026-08-30-discovery-performance.md`.
+- Files: `webui/backend/app/probe/discover.py`, `webui/backend/app/probe/persistence.py`, `webui/backend/app/probe/router.py`, `webui/backend/app/probe/store.py`, `webui/backend/tests/test_discover.py`, and `webui/backend/tests/test_probe.py`.
+- Boundary: no frontend changes; persisted discovery rows remain canonical truth; one `DiscoverScanCoordinator` and one writer/connection owner per scan; no router import preflight or old full-list/singular-upsert production path.
+- Verification: focused discover/probe tests, full backend regression, diff/scope checks, then specification and quality reviews.
+- Stop: do not enter Task 5 until Task 4 reviews, fresh coordinator verification, durable records, and scoped commit pass.
 
 ## DriftCheckDraft
 
-Tasks 1–3 match the intent lock, scope fence, baseline lock, canonical-owner rules, compatibility and retirement boundaries, test obligations, and review gates. Task 3 stayed inside the database/store owners: one atomic bounded backfill preserves invalid legacy rows with `ip_sort=NULL`; stable null-last numeric IP order and measured indexes support pages; facets remain global; normalized/chunked ID mutations are atomic; selected imports avoid full-table materialization; batch UPSERT preserves metadata and does not own route enqueueing. No router/API/frontend work, destructive live-state operation, fallback, adapter, or duplicate persistence owner appeared. The sole old full-result reader remains only as the explicit Task 4 migration carrier with a retirement trigger. Residual risks are migration write-lock duration, accepted offset-page movement during active scans, and SQLite single-writer serialization. Decision: continue.
+Tasks 1–4 match the intent lock, scope fence, baseline lock, canonical-owner rules, compatibility and retirement boundaries, test obligations, and review gates. Task 4 returns exactly the paginated results envelope and a separate facets contract; selected import is transactionally authoritative and route-start fetches requested IDs only. One scan-scoped bounded writer owns persistence, performs count/time batching and final drain, commits before auto-route enqueue, surfaces startup/runtime/final-drain failures, and handles stop-during-start without a second lifecycle owner. The closed-loop cancellation race was repaired at the canonical runner cancellation helper; unrelated open-loop `RuntimeError` remains visible. Old full-list and singular-upsert paths are retired. No frontend, destructive live-state operation, fallback, adapter, or duplicate persistence owner appeared. Residual risks remain accepted offset-page movement during active scans and SQLite single-writer serialization. Decision: continue.

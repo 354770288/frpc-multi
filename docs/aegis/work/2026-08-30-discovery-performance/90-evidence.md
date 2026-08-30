@@ -11,15 +11,22 @@
 - Task 2 affected integration verification: `.venv/bin/python -m unittest tests.test_probe -q` => 52 passed; only known pre-existing socket/file `ResourceWarning`s.
 - Task 2 full regression: `.venv/bin/python -m unittest discover -s tests -q` => 161 passed; two existing `FRPC_MULTI_ROLE=all` deprecation warnings and known `ResourceWarning`s only.
 - Task 2 structure: ten-million exact effective target cap; interval-sized lazy plan; queue maxsize equals concurrency; exactly one producer plus concurrency workers; `recentHits` bounded to 100; eager target expansion, per-target scheduling, unbounded `found`, and `found_ips()` retired without aliases.
-- Task 2 lifecycle evidence: deterministic cancellation accounting; callback `RuntimeError`, `ValueError`, `SystemExit`, `KeyboardInterrupt`, and `asyncio.CancelledError` surface in state; normal stop remains error-free; scanner-thread reset is rejected before mutation; external reset joins through blocked event-loop final cleanup before a new start is admitted.
-- Task 2 review: specification approved; quality approved with no Critical, Important, or Minor findings after final-cleanup publication-order remediation. Independent stress evidence covered callback reset and blocked final cleanup.
-- Task 2 repository checks: authorized three-file implementation/test scope before records; `git diff --check` clean.
+- Task 2 lifecycle evidence: deterministic cancellation accounting; callback failures surface in state; normal stop remains error-free; scanner-thread reset is rejected before mutation; external reset joins through blocked event-loop final cleanup before a new start is admitted.
+- Task 2 review: specification and quality approved after final-cleanup publication-order remediation.
 - Task 3 focused verification: `.venv/bin/python -m unittest tests.test_database tests.test_probe -q` => 69 passed; known pre-existing socket/file `ResourceWarning`s only.
 - Task 3 full regression: `.venv/bin/python -m unittest discover -s tests -q` => 170 passed; two existing `FRPC_MULTI_ROLE=all` deprecation warnings and known `ResourceWarning`s only.
 - Task 3 migration evidence: explicit `BEGIN IMMEDIATE` covers column addition, bounded `fetchmany(1000)` backfill, retired-index drops, replacement-index creation, commit, and rollback/retry; unexpected legacy/IPv6 rows remain with `ip_sort=NULL`.
-- Task 3 query evidence: stable null-last numeric IPv4 sorting in both directions; production-shaped `EXISTS ... AS in_library` page probes for group, label, and combined filters in ASC/DESC selected intended indexes and avoided `TEMP B-TREE` (`ACTUAL_PAGE_PLANS_OK`).
-- Task 3 store evidence: typed page/facet queries; normalized/deduplicated IDs chunked from the SQLite variable limit with headroom; atomic multi-chunk mutations and rollback; selected-ID import without full-table materialization; deterministic metadata precedence; one-transaction batch UPSERT preserving group/label and returning route-eligible addresses without enqueueing routes.
-- Task 3 reviews: final specification and quality reviews approved with confidence A and no Critical/Important findings. Optional test-depth suggestions were independently probed and are not implementation defects.
-- Task 3 repository checks: exactly four authorized implementation/test files before records; `git diff --check` clean.
-- Task 3 residual risks: first startup may hold a write reservation during a large legacy migration; offset pages may move during active scans; SQLite remains single-writer serialized.
-- Final cross-layer evidence remains pending Tasks 4–6.
+- Task 3 query evidence: stable null-last numeric IPv4 sorting in both directions; production-shaped page probes selected intended indexes and avoided `TEMP B-TREE`.
+- Task 3 store evidence: typed page/facet queries; normalized/deduplicated chunked IDs; atomic multi-chunk mutations and rollback; selected-ID import; one-transaction batch UPSERT preserving metadata and returning route-eligible addresses without enqueueing routes.
+- Task 3 reviews: final specification and quality reviews approved with confidence A.
+- Task 4 focused verification: `.venv/bin/python -m unittest tests.test_discover tests.test_probe -q` => 103 passed.
+- Task 4 full regression: `.venv/bin/python -m unittest discover -s tests -q` => 195 passed; only known socket/file `ResourceWarning`s and two `FRPC_MULTI_ROLE=all` deprecation warnings.
+- Task 4 API evidence: `/discover/results` returns exactly `{items,page,pageSize,total,sort,order}` with validated public sorts; `/discover/facets` is separate; route-start and import consumers use selected IDs only; zero existing selected rows maps to HTTP 400 `所选记录不存在` without router preflight.
+- Task 4 transaction evidence: `DiscoverImportResult` preserves selected/inserted/skipped semantics; `BEGIN IMMEDIATE` makes the transactional selected-row lookup the sole existence authority; `ids=[]` is a no-op and cannot clear all.
+- Task 4 persistence evidence: one `DiscoverScanCoordinator` owns startup/active/stop lifecycle; one bounded queue and writer thread/connection owner batches by count/time, drains on completion/stop, commits before auto-route enqueue, and surfaces startup/runtime/final-drain failures.
+- Task 4 lifecycle regression: final partial-batch persistence failure after event-loop close produces no uncaught `threading.excepthook`, remains visible as terminal `DiscoverPersistenceError` plus root disk error, and cleans coordinator writer state. The canonical `_cancel_task` absorbs only the closed-loop race and rethrows unrelated open-loop `RuntimeError`.
+- Task 4 retirement evidence: old full-list and singular-upsert production paths are absent; no duplicate scanner/persistence owner or fallback appeared.
+- Task 4 reviews: specification approved with confidence A; final independent quality re-review approved with confidence A and no Critical, Important, or Minor findings.
+- Task 4 repository checks: six authorized implementation/test files plus these durable records; `git diff --check` clean.
+- Residual risks: first startup migration may hold a write reservation; offset pages may move during active scans; SQLite remains single-writer serialized.
+- Final cross-layer evidence remains pending Tasks 5–6.

@@ -35,6 +35,15 @@ except ModuleNotFoundError:  # pragma: no cover - py3.14 自带
     tomllib = None
 
 
+def discover_rows(store):
+    from app.probe.store import DiscoverPageQuery
+
+    rows = store.query_discover_results(DiscoverPageQuery(page_size=200))["items"]
+    rows.sort(key=lambda row: row["ip"])
+    rows.sort(key=lambda row: row["discovered_at"], reverse=True)
+    return rows
+
+
 def free_port() -> int:
     """拿一个当前空闲的 TCP 端口（监听后立即释放）。"""
     sock = socket.socket()
@@ -384,9 +393,9 @@ class ProbeStoreTests(unittest.TestCase):
         self.store.create_group("旧组")
         self.store.create_group("别的组")
         self.store.import_servers([{"ip": "10.0.0.1", "group": "旧组"}])
-        self.store.upsert_discover_result("10.0.0.2", 7000, 3.2)
+        self.store.upsert_discover_results_batch([("10.0.0.2", 7000, 3.2)])
         self.store.update_discover_batch(
-            [row["id"] for row in self.store.list_discover_results()], group="旧组", label=None)
+            [row["id"] for row in discover_rows(self.store)], group="旧组", label=None)
         lb.create_domain(name="frps.example.com", zone_id="z", zone_name="example.com",
                          group_name="旧组")
 
@@ -394,7 +403,7 @@ class ProbeStoreTests(unittest.TestCase):
         self.assertIn("新组", self.store.list_groups())
         self.assertNotIn("旧组", self.store.list_groups())
         self.assertEqual(self.store.list_servers()[0].server_group, "新组")
-        self.assertEqual(self.store.list_discover_results()[0]["server_group"], "新组")
+        self.assertEqual(discover_rows(self.store)[0]["server_group"], "新组")
         self.assertEqual(lb.list_domains()[0].group_name, "新组")
 
         with self.assertRaises(ValueError):
@@ -403,14 +412,14 @@ class ProbeStoreTests(unittest.TestCase):
             self.store.rename_group("新组", "  ")  # 空名拒绝
 
     def test_discover_results_upsert_and_library_flag(self):
-        self.store.upsert_discover_result("10.0.0.9", 7000, 8.0)
+        self.store.upsert_discover_results_batch([("10.0.0.9", 7000, 8.0)])
         self.store.update_discover_batch(
-            [row["id"] for row in self.store.list_discover_results()],
+            [row["id"] for row in discover_rows(self.store)],
             group="池A", label="快",
         )
         # 重复命中：更新延迟与时间，保留分组/标签
-        self.store.upsert_discover_result("10.0.0.9", 7000, 1.5)
-        rows = self.store.list_discover_results()
+        self.store.upsert_discover_results_batch([("10.0.0.9", 7000, 1.5)])
+        rows = discover_rows(self.store)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["server_group"], "池A")
         self.assertEqual(rows[0]["label"], "快")
@@ -419,38 +428,42 @@ class ProbeStoreTests(unittest.TestCase):
 
         # 同 IP 导入服务器库后在库标记翻真
         self.store.import_servers([{"ip": "10.0.0.9", "group": "池A"}])
-        self.assertTrue(self.store.list_discover_results()[0]["in_library"])
+        self.assertTrue(discover_rows(self.store)[0]["in_library"])
 
     def test_discover_batch_label_semantics(self):
-        self.store.upsert_discover_result("10.0.0.1", 7000, 1.0)
-        self.store.upsert_discover_result("10.0.0.2", 7000, 2.0)
-        ids = [row["id"] for row in self.store.list_discover_results()]
+        self.store.upsert_discover_results_batch([
+            ("10.0.0.1", 7000, 1.0),
+            ("10.0.0.2", 7000, 2.0),
+        ])
+        ids = [row["id"] for row in discover_rows(self.store)]
         self.store.update_discover_batch(ids, group="G", label="L1")
         # 只改分组（label=None 保留）
         self.store.update_discover_batch(ids[:1], group="G2", label=None)
-        rows = {row["ip"]: row for row in self.store.list_discover_results()}
+        rows = {row["ip"]: row for row in discover_rows(self.store)}
         self.assertEqual((rows["10.0.0.1"]["server_group"], rows["10.0.0.1"]["label"]), ("G2", "L1"))
         # 空串清除标签
         self.store.update_discover_batch(ids[1:], group=None, label="")
-        rows = {row["ip"]: row for row in self.store.list_discover_results()}
+        rows = {row["ip"]: row for row in discover_rows(self.store)}
         self.assertEqual(rows["10.0.0.2"]["label"], "")
 
     def test_discover_delete_and_labels(self):
-        self.store.upsert_discover_result("10.0.0.1", 7000, 1.0)
-        self.store.upsert_discover_result("10.0.0.2", 7000, 2.0)
+        self.store.upsert_discover_results_batch([
+            ("10.0.0.1", 7000, 1.0),
+            ("10.0.0.2", 7000, 2.0),
+        ])
         self.store.import_servers([{"ip": "10.0.0.3", "label": "共用"}])
         self.store.update_discover_batch(
-            [row["id"] for row in self.store.list_discover_results() if row["ip"] == "10.0.0.1"],
+            [row["id"] for row in discover_rows(self.store) if row["ip"] == "10.0.0.1"],
             group=None, label="共用")
         labels = {item["label"]: item["count"] for item in self.store.list_labels()}
         # 服务器 + 发现结果合并计数；发现行默认带「未路由测试」保留标签
         self.assertEqual(labels, {"共用": 2, "未路由测试": 1})
 
-        rows = self.store.list_discover_results()
+        rows = discover_rows(self.store)
         self.assertEqual(self.store.delete_discover_results([rows[0]["id"]]), 1)
-        self.assertEqual(len(self.store.list_discover_results()), 1)
+        self.assertEqual(len(discover_rows(self.store)), 1)
         self.assertEqual(self.store.delete_discover_results(), 1)  # 清空
-        self.assertEqual(self.store.list_discover_results(), [])
+        self.assertEqual(discover_rows(self.store), [])
 
     def test_results_history_and_with_status(self):
         from app.control.database import connect_database  # noqa: F401 - 确保 SCHEMA 生效
@@ -555,7 +568,7 @@ class ProbeStoreTests(unittest.TestCase):
             ("10.0.0.2", 7000, 5.0),
             ("10.0.0.3", 7000, 1.0),
         ])
-        rows = {row["ip"]: row for row in self.store.list_discover_results()}
+        rows = {row["ip"]: row for row in discover_rows(self.store)}
         self.store.update_discover_batch(
             [rows["10.0.0.10"]["id"]], group="east", label="fast"
         )
@@ -647,7 +660,7 @@ class ProbeStoreTests(unittest.TestCase):
             ("10.0.0.2", 7000, 5.0),
         ])
         self.assertEqual(eligible, ["10.0.0.1", "10.0.0.2"])
-        rows = self.store.list_discover_results()
+        rows = discover_rows(self.store)
         by_key = {(row["ip"], row["port"]): row for row in rows}
         self.assertEqual(by_key[("10.0.0.1", 7000)]["latency_ms"], 2.0)
         self.store.update_discover_batch(
@@ -664,8 +677,10 @@ class ProbeStoreTests(unittest.TestCase):
             [row["id"] for row in selected],
             [selected_ids[0], selected_ids[2]],
         )
-        self.assertEqual(self.store.import_discover_results(selected_ids, group="override"), (2, 0))
-        self.assertEqual(self.store.import_discover_results(selected_ids), (0, 2))
+        first_import = self.store.import_discover_results(selected_ids, group="override")
+        self.assertEqual(first_import, (2, 2, 0))
+        second_import = self.store.import_discover_results(selected_ids)
+        self.assertEqual(second_import, (2, 0, 2))
         self.assertEqual({server.server_group for server in self.store.list_servers()}, {"override"})
 
         self.store.set_route_label("10.0.0.1", "CN2")
@@ -675,6 +690,14 @@ class ProbeStoreTests(unittest.TestCase):
         row = self.store.get_discover_results_by_ids([by_key[("10.0.0.1", 7000)]["id"]])[0]
         self.assertEqual((row["label"], row["server_group"]), ("CN2", "G"))
 
+    def test_import_discovery_empty_and_missing_ids_return_zero_selected(self):
+        empty = self.store.import_discover_results([])
+        missing = self.store.import_discover_results([999999])
+
+        self.assertEqual(empty, (0, 0, 0))
+        self.assertEqual(missing, (0, 0, 0))
+        self.assertEqual(self.store.list_servers(), [])
+
     def test_import_discovery_counts_selected_same_ip_rows_and_uses_first_metadata(self):
         self.store.upsert_discover_results_batch([
             ("10.0.2.1", 7000, 1.0),
@@ -682,7 +705,7 @@ class ProbeStoreTests(unittest.TestCase):
         ])
         rows = {
             row["port"]: row
-            for row in self.store.list_discover_results()
+            for row in discover_rows(self.store)
             if row["ip"] == "10.0.2.1"
         }
         self.store.update_discover_batch(
@@ -696,7 +719,7 @@ class ProbeStoreTests(unittest.TestCase):
             [rows[7001]["id"], rows[7000]["id"], rows[7001]["id"]]
         )
 
-        self.assertEqual(result, (1, 1))
+        self.assertEqual(result, (2, 1, 1))
         server = next(server for server in self.store.list_servers() if server.ip == "10.0.2.1")
         self.assertEqual((server.label, server.server_group), ("second-label", "second-group"))
 
@@ -706,7 +729,7 @@ class ProbeStoreTests(unittest.TestCase):
         self.store.upsert_discover_results_batch(
             [(f"10.0.0.{index}", 7000, float(index)) for index in range(1, 13)]
         )
-        ids = [row["id"] for row in self.store.list_discover_results()]
+        ids = [row["id"] for row in discover_rows(self.store)]
         real_connect = store_module.connect_database
 
         def limited_connect(path):
@@ -723,7 +746,7 @@ class ProbeStoreTests(unittest.TestCase):
             self.assertEqual(len(selected), 12)
             self.assertEqual(self.store.delete_discover_results([]), 0)
             self.assertEqual(self.store.delete_discover_results(ids[:7] + ids[:2]), 7)
-        self.assertEqual(len(self.store.list_discover_results()), 5)
+        self.assertEqual(len(discover_rows(self.store)), 5)
         self.assertEqual(self.store.delete_discover_results(None), 5)
 
     def test_batch_update_rolls_back_when_later_chunk_fails(self):
@@ -733,7 +756,7 @@ class ProbeStoreTests(unittest.TestCase):
         self.store.upsert_discover_results_batch(
             [(f"10.0.1.{index}", 7000, 1.0) for index in range(1, 8)]
         )
-        ids = [row["id"] for row in self.store.list_discover_results()]
+        ids = [row["id"] for row in discover_rows(self.store)]
         connection = connect_database(Path(self.tmpdir) / "probe.db")
         try:
             connection.execute(
@@ -753,7 +776,7 @@ class ProbeStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(Exception, "later chunk failed"):
                 self.store.update_discover_batch(ids, group="boom", label=None)
         self.assertEqual(
-            {row["server_group"] for row in self.store.list_discover_results()}, {""}
+            {row["server_group"] for row in discover_rows(self.store)}, {""}
         )
 
 
@@ -1180,6 +1203,71 @@ class DiscoverApiTests(unittest.TestCase):
         token = client.post("/api/auth/login", json={"username": "admin", "password": "password"}).json()["token"]
         return client, {"Authorization": f"Bearer {token}"}
 
+    def wait_discover_terminal(self, client, headers, timeout=3):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            status = client.get("/api/probe/discover/status", headers=headers).json()
+            if not status["running"]:
+                return status
+            time.sleep(0.01)
+        self.fail("discovery scan did not reach terminal status")
+
+    def test_discover_import_uses_atomic_store_result_without_preflight(self):
+        from app.probe.store import DiscoverImportResult
+
+        client, headers = self.make_client()
+        import sys
+        probe_router = sys.modules["app.probe.router"]
+        store = mock.Mock()
+        store.get_discover_results_by_ids.side_effect = AssertionError("preflight must not run")
+        store.import_discover_results.return_value = DiscoverImportResult(2, 1, 1)
+
+        with mock.patch.object(probe_router, "probe_store", return_value=store):
+            response = client.post(
+                "/api/probe/discover/import",
+                json={"ids": [7, 8], "group": "atomic"}, headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"inserted": 1, "skipped": 1})
+        store.import_discover_results.assert_called_once_with([7, 8], group="atomic")
+        store.get_discover_results_by_ids.assert_not_called()
+
+    def test_discover_import_empty_ids_preserves_validation_without_store_call(self):
+        client, headers = self.make_client()
+        import app.probe.router as probe_router
+        store = mock.Mock()
+
+        with mock.patch.object(probe_router, "probe_store", return_value=store):
+            response = client.post(
+                "/api/probe/discover/import", json={"ids": []}, headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "请勾选要导入的记录")
+        store.import_discover_results.assert_not_called()
+
+    def test_discover_import_atomic_zero_selected_maps_to_400(self):
+        from app.probe.store import DiscoverImportResult
+
+        client, headers = self.make_client()
+        import sys
+        probe_router = sys.modules["app.probe.router"]
+        store = mock.Mock()
+        store.get_discover_results_by_ids.side_effect = AssertionError("preflight must not run")
+        store.import_discover_results.return_value = DiscoverImportResult(0, 0, 0)
+
+        with mock.patch.object(probe_router, "probe_store", return_value=store):
+            response = client.post(
+                "/api/probe/discover/import",
+                json={"ids": [999999]}, headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "所选记录不存在")
+        store.import_discover_results.assert_called_once_with([999999], group="")
+        store.get_discover_results_by_ids.assert_not_called()
+
     def test_discover_lifecycle_and_import(self):
         client, headers = self.make_client()
 
@@ -1261,6 +1349,257 @@ class DiscoverApiTests(unittest.TestCase):
         # 停止端点：无运行任务时返回 False
         stopped = client.post("/api/probe/discover/stop", headers=headers).json()
         self.assertFalse(stopped["stopped"])
+
+    def test_router_terminal_status_waits_for_final_partial_flush(self):
+        client, headers = self.make_client()
+        from app.probe.persistence import DiscoverScanCoordinator
+        from app.probe.store import ProbeStore
+        import app.probe.router as probe_router
+        coordinator = DiscoverScanCoordinator(
+            probe_router.discover_runner,
+            lambda: ProbeStore(self.db_path),
+            lambda _ip: True,
+        )
+
+        async def succeeds(_ip, _port):
+            return object(), type("Writer", (), {
+                "close": lambda self: None,
+                "wait_closed": lambda self: self._wait_closed(),
+                "_wait_closed": lambda self: _completed_wait(),
+            })()
+
+        async def _completed_wait():
+            return None
+
+        with mock.patch.object(probe_router, "discover_scans", coordinator), \
+             mock.patch("app.probe.discover.asyncio.open_connection", new=succeeds):
+            response = client.post("/api/probe/discover/start", json={
+                "targets": "10.0.0.1", "port": 7000, "concurrency": 1, "timeout": 0.5,
+            }, headers=headers)
+            self.assertEqual(response.status_code, 200)
+            status = self.wait_discover_terminal(client, headers)
+            results = client.get("/api/probe/discover/results", headers=headers).json()
+
+        self.assertEqual(status["error"], "")
+        self.assertEqual([item["ip"] for item in results["items"]], ["10.0.0.1"])
+        self.assertIsNone(coordinator._writer)
+
+    def test_router_stop_drains_accepted_hit(self):
+        client, headers = self.make_client()
+        from app.probe.persistence import DiscoverScanCoordinator
+        from app.probe.store import ProbeStore
+        import app.probe.router as probe_router
+        coordinator = DiscoverScanCoordinator(
+            probe_router.discover_runner,
+            lambda: ProbeStore(self.db_path),
+            lambda _ip: True,
+        )
+        second_attempt = threading.Event()
+        attempts = 0
+
+        class Writer:
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        async def one_hit_then_hang(_ip, _port):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return object(), Writer()
+            second_attempt.set()
+            import asyncio
+            await asyncio.Event().wait()
+
+        with mock.patch.object(probe_router, "discover_scans", coordinator), \
+             mock.patch("app.probe.discover.asyncio.open_connection", new=one_hit_then_hang):
+            started = client.post("/api/probe/discover/start", json={
+                "targets": "10.0.0.1-10.0.0.20", "port": 7000,
+                "concurrency": 1, "timeout": 10.0,
+            }, headers=headers)
+            self.assertEqual(started.status_code, 200)
+            self.assertTrue(second_attempt.wait(2))
+            self.assertEqual(
+                client.post("/api/probe/discover/stop", headers=headers).json(),
+                {"stopped": True},
+            )
+            status = self.wait_discover_terminal(client, headers)
+            results = client.get("/api/probe/discover/results", headers=headers).json()
+
+        self.assertEqual(status["error"], "")
+        self.assertEqual([item["ip"] for item in results["items"]], ["10.0.0.1"])
+        self.assertIsNone(coordinator._writer)
+
+    def test_router_active_scan_conflict_remains_http_409(self):
+        client, headers = self.make_client()
+        import app.probe.router as probe_router
+
+        coordinator = mock.Mock()
+        coordinator.start.side_effect = RuntimeError("已有扫描在进行中")
+        with mock.patch.object(probe_router, "discover_scans", coordinator):
+            response = client.post("/api/probe/discover/start", json={
+                "targets": "127.0.0.2", "port": 7000,
+            }, headers=headers)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("已有扫描在进行中", response.json()["detail"])
+
+    def test_router_startup_persistence_failure_is_visible_and_reusable(self):
+        client, headers = self.make_client()
+        from app.probe.persistence import DiscoverScanCoordinator
+        from app.probe.store import ProbeStore
+        import app.probe.router as probe_router
+        fail = True
+
+        def store_factory():
+            if fail:
+                raise RuntimeError("database unavailable")
+            return ProbeStore(self.db_path)
+
+        coordinator = DiscoverScanCoordinator(
+            probe_router.discover_runner, store_factory, lambda _ip: True,
+        )
+
+        async def misses(_ip, _port):
+            raise OSError
+
+        with mock.patch.object(probe_router, "discover_scans", coordinator), \
+             mock.patch("app.probe.discover.asyncio.open_connection", new=misses):
+            failed = client.post("/api/probe/discover/start", json={
+                "targets": "127.0.0.2", "port": 7000,
+            }, headers=headers)
+            self.assertNotEqual(failed.status_code, 409)
+            self.assertEqual(failed.status_code, 500)
+            self.assertIn("database unavailable", failed.json()["detail"])
+            failed_status = client.get("/api/probe/discover/status", headers=headers).json()
+            self.assertFalse(failed_status["running"])
+            self.assertIn("database unavailable", failed_status["error"])
+
+            fail = False
+            restarted = client.post("/api/probe/discover/start", json={
+                "targets": "127.0.0.2", "port": 7000,
+            }, headers=headers)
+            self.assertEqual(restarted.status_code, 200)
+            status = self.wait_discover_terminal(client, headers)
+
+        self.assertEqual(status["error"], "")
+        self.assertIsNone(coordinator._writer)
+
+    def test_router_runtime_persistence_failure_terminates_and_surfaces(self):
+        client, headers = self.make_client()
+        from app.probe.persistence import DiscoverScanCoordinator
+        import app.probe.router as probe_router
+
+        class FailingStore:
+            def upsert_discover_results_batch(self, _hits):
+                raise RuntimeError("disk full")
+
+        coordinator = DiscoverScanCoordinator(
+            probe_router.discover_runner, FailingStore, lambda _ip: True,
+        )
+
+        class Writer:
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        async def succeeds(_ip, _port):
+            return object(), Writer()
+
+        with mock.patch.object(probe_router, "discover_scans", coordinator), \
+             mock.patch("app.probe.discover.asyncio.open_connection", new=succeeds):
+            started = client.post("/api/probe/discover/start", json={
+                "targets": "10.0.0.1-10.0.1.44", "port": 7000,
+                "concurrency": 1, "timeout": 0.5,
+            }, headers=headers)
+            self.assertEqual(started.status_code, 200)
+            status = self.wait_discover_terminal(client, headers)
+
+        self.assertIn("DiscoverPersistenceError", status["error"])
+        self.assertIn("disk full", status["error"])
+        self.assertLess(status["scanned"], status["total"])
+        self.assertIsNone(coordinator._writer)
+
+    def test_discover_results_contract_filters_facets_and_validation(self):
+        from app.probe.store import ProbeStore
+
+        client, headers = self.make_client()
+        store = ProbeStore(self.db_path)
+        store.upsert_discover_results_batch([
+            ("10.0.0.2", 7000, 2.0),
+            ("10.0.0.10", 7000, 10.0),
+        ])
+        rows = {row["ip"]: row for row in discover_rows(store)}
+        store.update_discover_batch([rows["10.0.0.2"]["id"]], group="east", label="fast")
+        store.import_discover_results([rows["10.0.0.2"]["id"]])
+
+        response = client.get(
+            "/api/probe/discover/results?page=1&pageSize=1&group=east&label=fast"
+            "&library=imported&sort=ip&order=asc",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(set(body), {"items", "page", "pageSize", "total", "sort", "order"})
+        self.assertEqual(
+            {key: body[key] for key in ("page", "pageSize", "total", "sort", "order")},
+            {"page": 1, "pageSize": 1, "total": 1, "sort": "ip", "order": "asc"},
+        )
+        self.assertEqual(
+            set(body["items"][0]),
+            {"id", "ip", "port", "latencyMs", "group", "label", "inLibrary", "discoveredAt"},
+        )
+        self.assertNotIn("labels", body)
+        facets = client.get("/api/probe/discover/facets", headers=headers).json()
+        self.assertEqual((facets["imported"], facets["new"]), (1, 1))
+        self.assertIn({"group": "east", "count": 1}, facets["groups"])
+        self.assertIn({"label": "fast", "count": 1}, facets["labels"])
+
+        for query in ("page=0", "pageSize=0", "pageSize=201", "library=bad", "sort=time", "order=sideways"):
+            with self.subTest(query=query):
+                self.assertEqual(
+                    client.get(f"/api/probe/discover/results?{query}", headers=headers).status_code,
+                    422,
+                )
+
+    def test_discover_results_latency_sort_is_global_and_preserves_public_metadata(self):
+        from app.probe.store import ProbeStore
+
+        client, headers = self.make_client()
+        ProbeStore(self.db_path).upsert_discover_results_batch([
+            ("10.0.0.1", 7000, 30.0),
+            ("10.0.0.2", 7000, 10.0),
+            ("10.0.0.3", 7000, 20.0),
+        ])
+
+        for order, expected in (
+            ("asc", [10.0, 20.0, 30.0]),
+            ("desc", [30.0, 20.0, 10.0]),
+        ):
+            with self.subTest(order=order):
+                pages = [
+                    client.get(
+                        f"/api/probe/discover/results?page={page}&pageSize=2&sort=latency&order={order}",
+                        headers=headers,
+                    ).json()
+                    for page in (1, 2)
+                ]
+                self.assertEqual(
+                    [{key: page[key] for key in ("page", "pageSize", "total", "sort", "order")}
+                     for page in pages],
+                    [
+                        {"page": 1, "pageSize": 2, "total": 3, "sort": "latency", "order": order},
+                        {"page": 2, "pageSize": 2, "total": 3, "sort": "latency", "order": order},
+                    ],
+                )
+                self.assertEqual(
+                    [item["latencyMs"] for page in pages for item in page["items"]],
+                    expected,
+                )
 
     def test_rename_group_endpoint_cascades(self):
         from app.lb.store import LbStore
@@ -1386,11 +1725,11 @@ class RouteApiTests(unittest.TestCase):
 
         client, headers = self.make_client()
         store = ProbeStore(self.db_path)
-        store.upsert_discover_result("10.0.0.1", 7000, 5.0)
-        row_id = store.list_discover_results()[0]["id"]
+        store.upsert_discover_results_batch([("10.0.0.1", 7000, 5.0)])
+        row_id = discover_rows(store)[0]["id"]
 
         # 新发现行默认「未路由测试」
-        self.assertEqual(store.list_discover_results()[0]["label"], "未路由测试")
+        self.assertEqual(discover_rows(store)[0]["label"], "未路由测试")
 
         # 节点管理：创建（Token 只回一次）→ 列表（掩码、离线）
         created = client.post("/api/probe/route/nodes", json={"name": "杭州节点"}, headers=headers).json()
@@ -1424,7 +1763,7 @@ class RouteApiTests(unittest.TestCase):
             "taskId": task["taskId"], "ok": True, "isCn2": True,
         }, headers=node_headers).json()
         self.assertEqual(report["applied"], True)
-        self.assertEqual(store.list_discover_results()[0]["label"], "CN2")
+        self.assertEqual(discover_rows(store)[0]["label"], "CN2")
 
         # 重复回报幂等；状态端点
         self.assertEqual(client.post("/api/probe/route/report", json={
@@ -1439,7 +1778,7 @@ class RouteApiTests(unittest.TestCase):
         client.post("/api/probe/route/report", json={
             "taskId": task2["taskId"], "ok": False,
         }, headers=node_headers)
-        self.assertEqual(store.list_discover_results()[0]["label"], "未路由测试")
+        self.assertEqual(discover_rows(store)[0]["label"], "未路由测试")
 
         # 已测 CN2 的行不再需要路由（联动入队的过滤条件）
         store.set_route_label("10.0.0.1", "CN2")
@@ -1468,7 +1807,7 @@ class RouteApiTests(unittest.TestCase):
                 time.sleep(0.1)
             # 命中已落库且自动入队路由任务
             from app.probe.store import ProbeStore
-            rows = ProbeStore(self.db_path).list_discover_results()
+            rows = discover_rows(ProbeStore(self.db_path))
             self.assertEqual([(r["ip"], r["label"]) for r in rows], [("127.0.0.1", "未路由测试")])
             queue = client.get("/api/probe/route/status", headers=headers).json()
             self.assertEqual(queue["pending"] + queue["running"], 1)
