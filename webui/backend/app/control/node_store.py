@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 from ..models import now_iso
-from .database import connect_database
+from .database import connect_database, initialize_database
 from .models import NodeRecord
 
 T = TypeVar("T")
@@ -47,7 +47,7 @@ def _record_from_row(row) -> NodeRecord:
 class NodeStore:
     def __init__(self, database_path: Path):
         self.database_path = database_path
-        self._with_connection(lambda connection: None)
+        initialize_database(database_path)
 
     def _with_connection(self, callback: Callable, *args) -> T:
         connection = connect_database(self.database_path)

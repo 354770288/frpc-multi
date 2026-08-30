@@ -21,6 +21,7 @@ from .auth import (
 from .config_defaults import render_default_config
 from .control import wsproto
 from .control.audit_store import AuditStore
+from .control.database import initialize_database
 from .control.hub import hub
 from .control.node_store import NodeStore
 from .control.router import audit_router, router as control_router
@@ -36,6 +37,9 @@ from .settings import settings
 async def lifespan(app: FastAPI):
     """Agent 角色：启动出站 WS 客户端连回主控。
     Console 角色：启动负载均衡定时同步线程。"""
+    if settings.is_console:
+        initialize_database(settings.database_path)
+
     agent_task: asyncio.Task | None = None
     agent_client = None
     scheduler_stop = None

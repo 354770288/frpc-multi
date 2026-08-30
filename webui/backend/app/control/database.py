@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
+
+
+BUSY_TIMEOUT_MS = 5_000
+
+_initialized_paths: set[Path] = set()
+_initialization_locks: dict[Path, threading.Lock] = {}
+_initialization_locks_guard = threading.Lock()
 
 
 SCHEMA = """
@@ -194,14 +202,60 @@ def _migrate_probe_groups(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE probe_groups ADD COLUMN color TEXT NOT NULL DEFAULT ''")
 
 
-def connect_database(path: Path) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _resolved_path(path: Path) -> Path:
+    return Path(path).expanduser().resolve()
+
+
+def _initialization_lock(path: Path) -> threading.Lock:
+    with _initialization_locks_guard:
+        return _initialization_locks.setdefault(path, threading.Lock())
+
+
+def _open_database(path: Path) -> sqlite3.Connection:
+    """Open and configure one owner-local connection without initializing schema."""
     connection = sqlite3.connect(path)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.executescript(SCHEMA)
-    _migrate_nodes(connection)
-    _migrate_lb_domains(connection)
-    _migrate_probe_groups(connection)
-    connection.commit()
-    return connection
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+        connection.execute("PRAGMA synchronous = NORMAL")
+        return connection
+    except Exception:
+        connection.close()
+        raise
+
+
+def initialize_database(path: Path) -> None:
+    """Initialize one database path once per process, retrying after failures."""
+    resolved_path = _resolved_path(path)
+    if resolved_path in _initialized_paths:
+        return
+
+    with _initialization_lock(resolved_path):
+        if resolved_path in _initialized_paths:
+            return
+
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = _open_database(resolved_path)
+        try:
+            journal_mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+            if str(journal_mode).lower() != "wal":
+                raise RuntimeError(
+                    f"failed to enable SQLite WAL mode for {resolved_path}: {journal_mode}"
+                )
+            connection.executescript(SCHEMA)
+            _migrate_nodes(connection)
+            _migrate_lb_domains(connection)
+            _migrate_probe_groups(connection)
+            connection.commit()
+        finally:
+            connection.close()
+
+        _initialized_paths.add(resolved_path)
+
+
+def connect_database(path: Path) -> sqlite3.Connection:
+    """Return a fresh connection owned by the calling thread."""
+    resolved_path = _resolved_path(path)
+    initialize_database(resolved_path)
+    return _open_database(resolved_path)

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 from ..models import now_iso
-from ..control.database import connect_database
+from ..control.database import connect_database, initialize_database
 from .engine import speed_mbs, speed_mbps
 
 T = TypeVar("T")
@@ -102,7 +102,7 @@ def _server_from_row(row) -> ProbeServer:
 class ProbeStore:
     def __init__(self, database_path: Path):
         self.database_path = database_path
-        self._with_connection(lambda connection: None)
+        initialize_database(database_path)
 
     def _with_connection(self, callback: Callable, *args) -> T:
         connection = connect_database(self.database_path)
