@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("PROJECT_DIR", tempfile.mkdtemp(prefix="frpc-multi-tests-"))
 
@@ -543,6 +544,217 @@ class ProbeStoreTests(unittest.TestCase):
             self.store.update_servers_batch(ids, group="  ", label=None)
         with self.assertRaises(ValueError):
             self.store.update_servers_batch(ids, group=None, label=None)
+
+
+    def test_discover_page_filters_facets_and_stable_sorts(self):
+        from app.control.database import connect_database
+        from app.probe.store import DiscoverPageQuery
+
+        self.store.upsert_discover_results_batch([
+            ("10.0.0.10", 7000, 5.0),
+            ("10.0.0.2", 7000, 5.0),
+            ("10.0.0.3", 7000, 1.0),
+        ])
+        rows = {row["ip"]: row for row in self.store.list_discover_results()}
+        self.store.update_discover_batch(
+            [rows["10.0.0.10"]["id"]], group="east", label="fast"
+        )
+        self.store.update_discover_batch(
+            [rows["10.0.0.2"]["id"]], group="west", label="slow"
+        )
+        self.store.import_servers([{"ip": "10.0.0.2"}])
+
+        connection = connect_database(Path(self.tmpdir) / "probe.db")
+        try:
+            connection.execute(
+                "INSERT INTO probe_discover_results "
+                "(ip, ip_sort, port, latency_ms, server_group, label, discovered_at) "
+                "VALUES (?, NULL, ?, ?, ?, ?, ?)",
+                ("legacy.invalid", 7000, 9.0, "east", "legacy", "2026-01-01T00:00:00"),
+            )
+            connection.execute(
+                "UPDATE probe_discover_results SET discovered_at = ?",
+                ("2026-01-01T00:00:00",),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        page = self.store.query_discover_results(
+            DiscoverPageQuery(page=2, page_size=2, sort="ip", order="asc")
+        )
+        self.assertEqual(
+            {key: page[key] for key in ("page", "pageSize", "total", "sort", "order")},
+            {"page": 2, "pageSize": 2, "total": 4, "sort": "ip", "order": "asc"},
+        )
+        self.assertEqual([row["ip"] for row in page["items"]], ["10.0.0.10", "legacy.invalid"])
+        descending = self.store.query_discover_results(
+            DiscoverPageQuery(page_size=10, sort="ip", order="desc")
+        )
+        self.assertEqual(
+            [row["ip"] for row in descending["items"]],
+            ["10.0.0.10", "10.0.0.3", "10.0.0.2", "legacy.invalid"],
+        )
+        for sort in ("time", "latency"):
+            for order in ("asc", "desc"):
+                result = self.store.query_discover_results(
+                    DiscoverPageQuery(page_size=10, sort=sort, order=order)
+                )
+                ids = [row["id"] for row in result["items"]]
+                self.assertEqual(ids, sorted(ids, reverse=order == "desc") if sort == "time" else ids)
+        latency_tie = self.store.query_discover_results(
+            DiscoverPageQuery(page_size=10, sort="latency", order="asc")
+        )["items"]
+        tied_ids = [row["id"] for row in latency_tie if row["latency_ms"] == 5.0]
+        self.assertEqual(tied_ids, sorted(tied_ids))
+
+        self.assertEqual(
+            self.store.query_discover_results(
+                DiscoverPageQuery(page_size=10, q="east", group="east")
+            )["total"],
+            2,
+        )
+        self.assertEqual(
+            self.store.query_discover_results(
+                DiscoverPageQuery(page_size=10, label="fast")
+            )["total"],
+            1,
+        )
+        self.assertEqual(
+            self.store.query_discover_results(
+                DiscoverPageQuery(page_size=10, library="imported")
+            )["total"],
+            1,
+        )
+        self.assertEqual(
+            self.store.query_discover_results(
+                DiscoverPageQuery(page_size=10, library="new")
+            )["total"],
+            3,
+        )
+        facets = self.store.discover_facets()
+        self.assertEqual((facets["imported"], facets["new"]), (1, 3))
+        self.assertIn({"group": "east", "count": 2}, facets["groups"])
+        self.assertIn({"label": "fast", "count": 1}, facets["labels"])
+        with self.assertRaises(ValueError):
+            DiscoverPageQuery(page_size=201)
+
+    def test_selected_lookup_import_and_batch_upsert_contracts(self):
+        eligible = self.store.upsert_discover_results_batch([
+            ("10.0.0.1", 7000, 4.0),
+            ("10.0.0.1", 7000, 2.0),
+            ("10.0.0.1", 7001, 3.0),
+            ("10.0.0.2", 7000, 5.0),
+        ])
+        self.assertEqual(eligible, ["10.0.0.1", "10.0.0.2"])
+        rows = self.store.list_discover_results()
+        by_key = {(row["ip"], row["port"]): row for row in rows}
+        self.assertEqual(by_key[("10.0.0.1", 7000)]["latency_ms"], 2.0)
+        self.store.update_discover_batch(
+            [by_key[("10.0.0.1", 7000)]["id"]], group="G", label="custom"
+        )
+        selected_ids = [
+            by_key[("10.0.0.2", 7000)]["id"],
+            999999,
+            by_key[("10.0.0.1", 7000)]["id"],
+            by_key[("10.0.0.2", 7000)]["id"],
+        ]
+        selected = self.store.get_discover_results_by_ids(selected_ids)
+        self.assertEqual(
+            [row["id"] for row in selected],
+            [selected_ids[0], selected_ids[2]],
+        )
+        self.assertEqual(self.store.import_discover_results(selected_ids, group="override"), (2, 0))
+        self.assertEqual(self.store.import_discover_results(selected_ids), (0, 2))
+        self.assertEqual({server.server_group for server in self.store.list_servers()}, {"override"})
+
+        self.store.set_route_label("10.0.0.1", "CN2")
+        self.assertEqual(
+            self.store.upsert_discover_results_batch([("10.0.0.1", 7000, 1.0)]), []
+        )
+        row = self.store.get_discover_results_by_ids([by_key[("10.0.0.1", 7000)]["id"]])[0]
+        self.assertEqual((row["label"], row["server_group"]), ("CN2", "G"))
+
+    def test_import_discovery_counts_selected_same_ip_rows_and_uses_first_metadata(self):
+        self.store.upsert_discover_results_batch([
+            ("10.0.2.1", 7000, 1.0),
+            ("10.0.2.1", 7001, 2.0),
+        ])
+        rows = {
+            row["port"]: row
+            for row in self.store.list_discover_results()
+            if row["ip"] == "10.0.2.1"
+        }
+        self.store.update_discover_batch(
+            [rows[7000]["id"]], group="first-group", label="first-label"
+        )
+        self.store.update_discover_batch(
+            [rows[7001]["id"]], group="second-group", label="second-label"
+        )
+
+        result = self.store.import_discover_results(
+            [rows[7001]["id"], rows[7000]["id"], rows[7001]["id"]]
+        )
+
+        self.assertEqual(result, (1, 1))
+        server = next(server for server in self.store.list_servers() if server.ip == "10.0.2.1")
+        self.assertEqual((server.label, server.server_group), ("second-label", "second-group"))
+
+    def test_batch_operations_chunk_at_lower_sqlite_limit(self):
+        from app.probe import store as store_module
+
+        self.store.upsert_discover_results_batch(
+            [(f"10.0.0.{index}", 7000, float(index)) for index in range(1, 13)]
+        )
+        ids = [row["id"] for row in self.store.list_discover_results()]
+        real_connect = store_module.connect_database
+
+        def limited_connect(path):
+            connection = real_connect(path)
+            connection.setlimit(store_module.sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 12)
+            return connection
+
+        with mock.patch.object(store_module, "connect_database", side_effect=limited_connect):
+            self.assertEqual(
+                self.store.update_discover_batch(ids + ids[:2] + [999999], group="chunked", label=None),
+                12,
+            )
+            selected = self.store.get_discover_results_by_ids(ids + ids[:2] + [999999])
+            self.assertEqual(len(selected), 12)
+            self.assertEqual(self.store.delete_discover_results([]), 0)
+            self.assertEqual(self.store.delete_discover_results(ids[:7] + ids[:2]), 7)
+        self.assertEqual(len(self.store.list_discover_results()), 5)
+        self.assertEqual(self.store.delete_discover_results(None), 5)
+
+    def test_batch_update_rolls_back_when_later_chunk_fails(self):
+        from app.control.database import connect_database
+        from app.probe import store as store_module
+
+        self.store.upsert_discover_results_batch(
+            [(f"10.0.1.{index}", 7000, 1.0) for index in range(1, 8)]
+        )
+        ids = [row["id"] for row in self.store.list_discover_results()]
+        connection = connect_database(Path(self.tmpdir) / "probe.db")
+        try:
+            connection.execute(
+                "CREATE TRIGGER fail_late_update BEFORE UPDATE ON probe_discover_results "
+                f"WHEN OLD.id = {ids[-1]} AND NEW.server_group = 'boom' "
+                "BEGIN SELECT RAISE(ABORT, 'later chunk failed'); END"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        def tiny_chunks(connection, items, *, headroom=0):
+            for start in range(0, len(items), 3):
+                yield items[start:start + 3]
+
+        with mock.patch.object(store_module, "_chunks", side_effect=tiny_chunks):
+            with self.assertRaisesRegex(Exception, "later chunk failed"):
+                self.store.update_discover_batch(ids, group="boom", label=None)
+        self.assertEqual(
+            {row["server_group"] for row in self.store.list_discover_results()}, {""}
+        )
 
 
 class ProbeApiTests(unittest.TestCase):

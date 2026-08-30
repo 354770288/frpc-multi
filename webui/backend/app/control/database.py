@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ipaddress
 import sqlite3
 import threading
 from pathlib import Path
 
 
 BUSY_TIMEOUT_MS = 5_000
+DISCOVER_MIGRATION_BATCH_SIZE = 1_000
 
 _initialized_paths: set[Path] = set()
 _initialization_locks: dict[Path, threading.Lock] = {}
@@ -86,6 +88,7 @@ CREATE TABLE IF NOT EXISTS probe_groups (
 CREATE TABLE IF NOT EXISTS probe_discover_results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ip TEXT NOT NULL,
+    ip_sort INTEGER,
     port INTEGER NOT NULL,
     latency_ms REAL NOT NULL DEFAULT 0,
     server_group TEXT NOT NULL DEFAULT '',
@@ -202,6 +205,63 @@ def _migrate_probe_groups(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE probe_groups ADD COLUMN color TEXT NOT NULL DEFAULT ''")
 
 
+def _migrate_probe_discover_results(connection: sqlite3.Connection) -> None:
+    """Atomically add/backfill the IPv4 key using bounded cursor batches."""
+    columns = _column_names(connection, "probe_discover_results")
+    if not columns:
+        return
+
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        if "ip_sort" not in columns:
+            connection.execute("ALTER TABLE probe_discover_results ADD COLUMN ip_sort INTEGER")
+
+        cursor = connection.execute(
+            "SELECT id, ip FROM probe_discover_results WHERE ip_sort IS NULL"
+        )
+        while rows := cursor.fetchmany(DISCOVER_MIGRATION_BATCH_SIZE):
+            valid = []
+            for row in rows:
+                try:
+                    address = ipaddress.ip_address(row["ip"])
+                except ValueError:
+                    continue
+                if address.version == 4:
+                    valid.append((int(address), row["id"]))
+            if valid:
+                connection.executemany(
+                    "UPDATE probe_discover_results SET ip_sort = ? WHERE id = ?", valid
+                )
+
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_discover_time "
+            "ON probe_discover_results (discovered_at, id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_discover_ip "
+            "ON probe_discover_results ((ip_sort IS NULL), ip_sort, id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_discover_ip_desc "
+            "ON probe_discover_results ((ip_sort IS NULL) ASC, ip_sort DESC, id DESC)"
+        )
+        connection.execute("DROP INDEX IF EXISTS idx_probe_discover_group")
+        connection.execute("DROP INDEX IF EXISTS idx_probe_discover_label")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_discover_group_time "
+            "ON probe_discover_results (server_group, discovered_at, id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_discover_label_time "
+            "ON probe_discover_results (label, discovered_at, id)"
+        )
+    except Exception:
+        connection.rollback()
+        raise
+    else:
+        connection.commit()
+
+
 def _resolved_path(path: Path) -> Path:
     return Path(path).expanduser().resolve()
 
@@ -248,6 +308,7 @@ def initialize_database(path: Path) -> None:
             _migrate_lb_domains(connection)
             _migrate_probe_groups(connection)
             connection.commit()
+            _migrate_probe_discover_results(connection)
         finally:
             connection.close()
 

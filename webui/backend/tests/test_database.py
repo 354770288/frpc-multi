@@ -9,6 +9,39 @@ from app.control import database
 
 
 class DatabaseLifecycleTests(unittest.TestCase):
+    @staticmethod
+    def _create_legacy_discovery(path: Path, addresses: list[str]) -> None:
+        connection = sqlite3.connect(path)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE probe_discover_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ip TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    latency_ms REAL NOT NULL DEFAULT 0,
+                    server_group TEXT NOT NULL DEFAULT '',
+                    label TEXT NOT NULL DEFAULT '',
+                    discovered_at TEXT NOT NULL,
+                    UNIQUE (ip, port)
+                );
+                """
+            )
+            connection.executemany(
+                "INSERT INTO probe_discover_results "
+                "(ip, port, latency_ms, discovered_at) VALUES (?, ?, 1, ?)",
+                [(ip, 7000, "2026-01-01T00:00:00") for ip in addresses],
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _open_legacy(path: Path) -> sqlite3.Connection:
+        connection = sqlite3.connect(path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
     def test_initialization_is_cached_per_resolved_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "nested" / "console.db"
@@ -67,6 +100,225 @@ class DatabaseLifecycleTests(unittest.TestCase):
             finally:
                 reader.close()
                 writer.close()
+
+    def test_discovery_migration_backfills_ipv4_and_preserves_invalid_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.db"
+            connection = sqlite3.connect(path)
+            try:
+                connection.executescript(
+                    """
+                    CREATE TABLE probe_discover_results (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ip TEXT NOT NULL,
+                        port INTEGER NOT NULL,
+                        latency_ms REAL NOT NULL DEFAULT 0,
+                        server_group TEXT NOT NULL DEFAULT '',
+                        label TEXT NOT NULL DEFAULT '',
+                        discovered_at TEXT NOT NULL,
+                        UNIQUE (ip, port)
+                    );
+                    CREATE INDEX idx_probe_discover_group
+                        ON probe_discover_results (server_group);
+                    CREATE INDEX idx_probe_discover_label
+                        ON probe_discover_results (label);
+                    INSERT INTO probe_discover_results
+                        (ip, port, latency_ms, discovered_at)
+                    VALUES ('10.0.0.2', 7000, 1, '2026-01-01T00:00:00'),
+                           ('legacy.invalid', 7000, 2, '2026-01-01T00:00:00'),
+                           ('2001:db8::1', 7000, 3, '2026-01-01T00:00:00');
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            database.initialize_database(path)
+            connection = database.connect_database(path)
+            try:
+                values = {
+                    row["ip"]: row["ip_sort"]
+                    for row in connection.execute(
+                        "SELECT ip, ip_sort FROM probe_discover_results"
+                    ).fetchall()
+                }
+                indexes = {
+                    row["name"]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'index' AND tbl_name = 'probe_discover_results'"
+                    ).fetchall()
+                }
+                ip_order_plans = {}
+                for order, index_name in (
+                    ("ASC", "idx_probe_discover_ip"),
+                    ("DESC", "idx_probe_discover_ip_desc"),
+                ):
+                    ip_order_plans[index_name] = [
+                        row["detail"]
+                        for row in connection.execute(
+                            "EXPLAIN QUERY PLAN "
+                            "SELECT id, ip_sort FROM probe_discover_results "
+                            f"ORDER BY (ip_sort IS NULL) ASC, ip_sort {order}, id {order}"
+                        ).fetchall()
+                    ]
+                filter_order_plans = {}
+                filters = (
+                    ("group", "server_group = ?", ("",), "idx_probe_discover_group_time"),
+                    ("label", "label = ?", ("",), "idx_probe_discover_label_time"),
+                    (
+                        "combined",
+                        "server_group = ? AND label = ?",
+                        ("", ""),
+                        "idx_probe_discover_label_time",
+                    ),
+                )
+                for filter_name, predicate, params, index_name in filters:
+                    for order in ("ASC", "DESC"):
+                        filter_order_plans[(filter_name, order)] = (
+                            index_name,
+                            [
+                                row["detail"]
+                                for row in connection.execute(
+                                    "EXPLAIN QUERY PLAN "
+                                    "SELECT id, ip, port, latency_ms, server_group, label, "
+                                    "discovered_at FROM probe_discover_results "
+                                    f"WHERE {predicate} ORDER BY discovered_at {order}, id {order} "
+                                    "LIMIT ? OFFSET ?",
+                                    (*params, 50, 0),
+                                ).fetchall()
+                            ],
+                        )
+            finally:
+                connection.close()
+
+            self.assertEqual(values["10.0.0.2"], 167772162)
+            self.assertIsNone(values["legacy.invalid"])
+            self.assertIsNone(values["2001:db8::1"])
+            self.assertTrue({
+                "idx_probe_discover_time",
+                "idx_probe_discover_ip",
+                "idx_probe_discover_ip_desc",
+                "idx_probe_discover_group_time",
+                "idx_probe_discover_label_time",
+            }.issubset(indexes))
+            self.assertNotIn("idx_probe_discover_group", indexes)
+            self.assertNotIn("idx_probe_discover_label", indexes)
+            for index_name, details in ip_order_plans.items():
+                plan = " ".join(details)
+                self.assertIn(f"USING COVERING INDEX {index_name}", plan)
+                self.assertNotIn("USE TEMP B-TREE", plan)
+            for index_name, details in filter_order_plans.values():
+                plan = " ".join(details)
+                self.assertIn(f"USING INDEX {index_name}", plan)
+                self.assertNotIn("USE TEMP B-TREE", plan)
+
+    def test_discovery_migration_rolls_back_column_and_retries_after_backfill_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.db"
+            self._create_legacy_discovery(path, ["10.0.0.1"])
+            connection = self._open_legacy(path)
+            try:
+                connection.execute(
+                    "CREATE TRIGGER fail_discovery_backfill "
+                    "BEFORE UPDATE ON probe_discover_results "
+                    "BEGIN SELECT RAISE(ABORT, 'backfill failed'); END"
+                )
+                connection.commit()
+
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "backfill failed"):
+                    database._migrate_probe_discover_results(connection)
+                self.assertNotIn(
+                    "ip_sort", database._column_names(connection, "probe_discover_results")
+                )
+                self.assertFalse(connection.in_transaction)
+
+                connection.execute("DROP TRIGGER fail_discovery_backfill")
+                connection.commit()
+                database._migrate_probe_discover_results(connection)
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT ip_sort FROM probe_discover_results"
+                    ).fetchone()[0],
+                    167772161,
+                )
+            finally:
+                connection.close()
+
+    def test_discovery_migration_rolls_back_backfill_and_indexes_then_retries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.db"
+            self._create_legacy_discovery(path, ["10.0.0.2"])
+            connection = self._open_legacy(path)
+            try:
+                connection.execute("CREATE TABLE idx_probe_discover_group_time (value INTEGER)")
+                connection.commit()
+
+                with self.assertRaisesRegex(sqlite3.OperationalError, "already a table"):
+                    database._migrate_probe_discover_results(connection)
+                self.assertNotIn(
+                    "ip_sort", database._column_names(connection, "probe_discover_results")
+                )
+                created_indexes = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'index' "
+                        "AND name LIKE 'idx_probe_discover_%'"
+                    )
+                }
+                self.assertEqual(created_indexes, set())
+                self.assertFalse(connection.in_transaction)
+
+                connection.execute("DROP TABLE idx_probe_discover_group_time")
+                connection.commit()
+                database._migrate_probe_discover_results(connection)
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT ip_sort FROM probe_discover_results"
+                    ).fetchone()[0],
+                    167772162,
+                )
+                self.assertIn(
+                    "idx_probe_discover_group_time",
+                    {
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'index'"
+                        )
+                    },
+                )
+            finally:
+                connection.close()
+
+    def test_discovery_migration_backfills_multiple_bounded_batches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.db"
+            addresses = [
+                "10.0.0.1",
+                "legacy.invalid",
+                "10.0.0.2",
+                "2001:db8::1",
+                "10.0.0.3",
+            ]
+            self._create_legacy_discovery(path, addresses)
+            connection = self._open_legacy(path)
+            try:
+                with mock.patch.object(database, "DISCOVER_MIGRATION_BATCH_SIZE", 2):
+                    database._migrate_probe_discover_results(connection)
+                values = {
+                    row["ip"]: row["ip_sort"]
+                    for row in connection.execute(
+                        "SELECT ip, ip_sort FROM probe_discover_results"
+                    )
+                }
+            finally:
+                connection.close()
+
+            self.assertEqual(values["10.0.0.1"], 167772161)
+            self.assertEqual(values["10.0.0.2"], 167772162)
+            self.assertEqual(values["10.0.0.3"], 167772163)
+            self.assertIsNone(values["legacy.invalid"])
+            self.assertIsNone(values["2001:db8::1"])
 
     def test_each_connection_has_required_pragmas(self):
         with tempfile.TemporaryDirectory() as tmp:

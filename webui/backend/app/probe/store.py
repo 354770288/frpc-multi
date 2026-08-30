@@ -6,16 +6,69 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Callable, Iterable, Literal, Sequence, TypeVar
 
 from ..models import now_iso
 from ..control.database import connect_database, initialize_database
 from .engine import speed_mbs, speed_mbps
 
 T = TypeVar("T")
+ChunkItem = TypeVar("ChunkItem")
+
+DiscoverLibrary = Literal["all", "new", "imported"]
+DiscoverSort = Literal["time", "ip", "latency"]
+SortOrder = Literal["asc", "desc"]
+_SQL_VARIABLE_HEADROOM = 8
+
+
+@dataclass(frozen=True)
+class DiscoverPageQuery:
+    page: int = 1
+    page_size: int = 50
+    q: str = ""
+    group: str | None = None
+    label: str | None = None
+    library: DiscoverLibrary = "all"
+    sort: DiscoverSort = "time"
+    order: SortOrder = "desc"
+
+    def __post_init__(self) -> None:
+        if self.page < 1:
+            raise ValueError("page 必须大于等于 1")
+        if not 1 <= self.page_size <= 200:
+            raise ValueError("page_size 必须在 1-200")
+        if self.library not in {"all", "new", "imported"}:
+            raise ValueError("library 必须是 all/new/imported")
+        if self.sort not in {"time", "ip", "latency"}:
+            raise ValueError("sort 必须是 time/ip/latency")
+        if self.order not in {"asc", "desc"}:
+            raise ValueError("order 必须是 asc/desc")
+
+
+def _ipv4_sort_key(ip: str) -> int:
+    address = ipaddress.ip_address(ip)
+    if address.version != 4:
+        raise ValueError("发现结果仅支持 IPv4")
+    return int(address)
+
+
+def _normalize_ids(ids: Iterable[int]) -> list[int]:
+    return list(dict.fromkeys(int(row_id) for row_id in ids))
+
+
+def _chunks(
+    connection: sqlite3.Connection, items: Sequence[ChunkItem], *, headroom: int = 0
+) -> Iterable[Sequence[ChunkItem]]:
+    limit = connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    size = max(1, limit - _SQL_VARIABLE_HEADROOM - headroom)
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
+
 
 # 分组颜色标记：给不同情况的分组做视觉区分（'' = 无色）
 GROUP_COLORS = {"red", "yellow", "blue", "green"}
@@ -332,19 +385,44 @@ class ProbeStore:
     # ---- 网段发现结果 ----
 
     def upsert_discover_result(self, ip: str, port: int, latency_ms: float) -> None:
-        """扫描命中入库：新行默认打「未路由测试」标签；重复命中只更新延迟与时间，保留分组/标签。"""
+        """Compatibility wrapper for one scanner hit; batch writers should use the batch method."""
+        self.upsert_discover_results_batch([(ip, port, latency_ms)])
+
+    def upsert_discover_results_batch(
+        self, hits: Iterable[tuple[str, int, float]]
+    ) -> list[str]:
+        """UPSERT scanner hits atomically and return de-duplicated IPs still needing route tests."""
+        timestamp = now_iso()
+        cleaned = [
+            (str(ip), _ipv4_sort_key(str(ip)), int(port), float(latency), timestamp)
+            for ip, port, latency in hits
+        ]
+        if not cleaned:
+            return []
 
         def write(connection):
-            connection.execute(
-                "INSERT INTO probe_discover_results (ip, port, latency_ms, label, discovered_at) "
-                "VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(ip, port) DO UPDATE SET latency_ms = excluded.latency_ms, "
-                "discovered_at = excluded.discovered_at",
-                (ip, port, latency_ms, ROUTE_LABEL_UNTESTED, now_iso()),
-            )
-            connection.commit()
+            with connection:
+                connection.executemany(
+                    "INSERT INTO probe_discover_results "
+                    "(ip, ip_sort, port, latency_ms, label, discovered_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(ip, port) DO UPDATE SET ip_sort = excluded.ip_sort, "
+                    "latency_ms = excluded.latency_ms, discovered_at = excluded.discovered_at",
+                    [(*row[:4], ROUTE_LABEL_UNTESTED, row[4]) for row in cleaned],
+                )
+                eligible: set[str] = set()
+                unique_ips = list(dict.fromkeys(row[0] for row in cleaned))
+                for chunk in _chunks(connection, unique_ips, headroom=1):
+                    placeholders = ",".join("?" for _ in chunk)
+                    rows = connection.execute(
+                        "SELECT DISTINCT ip FROM probe_discover_results "
+                        f"WHERE ip IN ({placeholders}) AND (label = '' OR label = ?)",
+                        (*chunk, ROUTE_LABEL_UNTESTED),
+                    ).fetchall()
+                    eligible.update(row["ip"] for row in rows)
+            return [ip for ip in unique_ips if ip in eligible]
 
-        self._with_connection(write)
+        return self._with_connection(write)
 
     def set_route_label(self, ip: str, label: str) -> int:
         """路由测试结论写回该 IP 的全部发现行标签，返回更新行数。"""
@@ -390,21 +468,166 @@ class ProbeStore:
         self._with_connection(write)
 
     def list_discover_results(self) -> list[dict]:
-        """发现结果 + 是否已在服务器库（按 ip 关联）。"""
+        """Compatibility full-table reader retained until Task 4 migrates existing consumers."""
 
         def read(connection):
             rows = connection.execute(
                 """
                 SELECT d.id, d.ip, d.port, d.latency_ms, d.server_group, d.label,
-                       d.discovered_at, (s.id IS NOT NULL) AS in_library
+                       d.discovered_at,
+                       EXISTS (SELECT 1 FROM probe_servers s WHERE s.ip = d.ip) AS in_library
                 FROM probe_discover_results d
-                LEFT JOIN probe_servers s ON s.ip = d.ip
                 ORDER BY d.discovered_at DESC, d.ip
                 """
             ).fetchall()
             return [dict(row) for row in rows]
 
         return self._with_connection(read)
+
+    def query_discover_results(self, query: DiscoverPageQuery) -> dict:
+        """Return one globally filtered/sorted discovery page and its metadata."""
+        where = []
+        params: list[object] = []
+        q = query.q.strip()
+        if q:
+            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append(
+                "(d.ip LIKE ? ESCAPE '\\' OR d.server_group LIKE ? ESCAPE '\\' "
+                "OR d.label LIKE ? ESCAPE '\\')"
+            )
+            params.extend([f"%{escaped}%"] * 3)
+        if query.group is not None:
+            where.append("d.server_group = ?")
+            params.append(query.group)
+        if query.label is not None:
+            where.append("d.label = ?")
+            params.append(query.label)
+        library_exists = "EXISTS (SELECT 1 FROM probe_servers s WHERE s.ip = d.ip)"
+        if query.library == "imported":
+            where.append(library_exists)
+        elif query.library == "new":
+            where.append(f"NOT {library_exists}")
+        where_sql = " WHERE " + " AND ".join(where) if where else ""
+        direction = query.order.upper()
+        if query.sort == "ip":
+            order_sql = (
+                f"(d.ip_sort IS NULL) ASC, d.ip_sort {direction}, d.id {direction}"
+            )
+        else:
+            column = "d.discovered_at" if query.sort == "time" else "d.latency_ms"
+            order_sql = f"{column} {direction}, d.id {direction}"
+
+        def read(connection):
+            total = connection.execute(
+                "SELECT COUNT(*) FROM probe_discover_results d" + where_sql, params
+            ).fetchone()[0]
+            rows = connection.execute(
+                "SELECT d.id, d.ip, d.port, d.latency_ms, d.server_group, d.label, "
+                f"d.discovered_at, {library_exists} AS in_library "
+                "FROM probe_discover_results d" + where_sql +
+                f" ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                (*params, query.page_size, (query.page - 1) * query.page_size),
+            ).fetchall()
+            return {
+                "items": [dict(row) for row in rows],
+                "page": query.page,
+                "pageSize": query.page_size,
+                "total": total,
+                "sort": query.sort,
+                "order": query.order,
+            }
+
+        return self._with_connection(read)
+
+    def discover_facets(self) -> dict:
+        """Return global discovery facets, independent of any current page/filter."""
+        def read(connection):
+            labels = connection.execute(
+                "SELECT label, COUNT(*) AS count FROM probe_discover_results "
+                "WHERE label != '' GROUP BY label ORDER BY count DESC, label"
+            ).fetchall()
+            groups = connection.execute(
+                "SELECT server_group, COUNT(*) AS count FROM probe_discover_results "
+                "WHERE server_group != '' GROUP BY server_group ORDER BY count DESC, server_group"
+            ).fetchall()
+            counts = connection.execute(
+                "SELECT COUNT(*) AS total, "
+                "SUM(CASE WHEN EXISTS (SELECT 1 FROM probe_servers s WHERE s.ip = d.ip) "
+                "THEN 1 ELSE 0 END) AS imported "
+                "FROM probe_discover_results d"
+            ).fetchone()
+            imported = counts["imported"] or 0
+            return {
+                "labels": [{"label": row["label"], "count": row["count"]} for row in labels],
+                "groups": [{"group": row["server_group"], "count": row["count"]} for row in groups],
+                "imported": imported,
+                "new": counts["total"] - imported,
+            }
+
+        return self._with_connection(read)
+
+    def get_discover_results_by_ids(self, ids: Iterable[int]) -> list[dict]:
+        """Fetch only selected discovery rows, preserving normalized request order."""
+        normalized = _normalize_ids(ids)
+        if not normalized:
+            return []
+
+        def read(connection):
+            found = {}
+            for chunk in _chunks(connection, normalized):
+                placeholders = ",".join("?" for _ in chunk)
+                rows = connection.execute(
+                    "SELECT d.id, d.ip, d.port, d.latency_ms, d.server_group, d.label, "
+                    "d.discovered_at, EXISTS (SELECT 1 FROM probe_servers s WHERE s.ip = d.ip) "
+                    "AS in_library FROM probe_discover_results d "
+                    f"WHERE d.id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                found.update((row["id"], dict(row)) for row in rows)
+            return [found[row_id] for row_id in normalized if row_id in found]
+
+        return self._with_connection(read)
+
+    def import_discover_results(self, ids: Iterable[int], *, group: str = "") -> tuple[int, int]:
+        """Import unique IPs; the first normalized selected row supplies metadata."""
+        normalized = _normalize_ids(ids)
+        if not normalized:
+            return 0, 0
+        override = group.strip()
+
+        def write(connection):
+            with connection:
+                selected = {}
+                for chunk in _chunks(connection, normalized):
+                    placeholders = ",".join("?" for _ in chunk)
+                    rows = connection.execute(
+                        "SELECT id, ip, server_group, label FROM probe_discover_results "
+                        f"WHERE id IN ({placeholders})", chunk
+                    ).fetchall()
+                    selected.update((row["id"], row) for row in rows)
+                candidates = {}
+                existing_selected = 0
+                timestamp = now_iso()
+                for row_id in normalized:
+                    row = selected.get(row_id)
+                    if row is None:
+                        continue
+                    existing_selected += 1
+                    if row["ip"] not in candidates:
+                        candidates[row["ip"]] = (
+                            row["ip"], row["label"], override or row["server_group"], timestamp
+                        )
+                if not candidates:
+                    return 0, 0
+                cursor = connection.executemany(
+                    "INSERT OR IGNORE INTO probe_servers "
+                    "(ip, label, server_group, created_at) VALUES (?, ?, ?, ?)",
+                    candidates.values(),
+                )
+                inserted = max(cursor.rowcount, 0)
+                return inserted, existing_selected - inserted
+
+        return self._with_connection(write)
 
     def update_discover_batch(self, ids: list[int], *, group: str | None, label: str | None) -> int:
         """批量覆盖发现结果的分组/标签，返回更新行数。"""
@@ -415,31 +638,42 @@ class ProbeStore:
             raise ValueError("分组不能为空")
         clean_label = (label or "").strip() if label is not None else None
 
+        normalized = _normalize_ids(ids)
+        if not normalized:
+            return 0
+
         def write(connection):
-            cursor = connection.execute(
-                "UPDATE probe_discover_results SET server_group = COALESCE(?, server_group), "
-                "label = COALESCE(?, label) WHERE id IN (%s)" % ",".join("?" * len(ids)),
-                (clean_group, clean_label, *ids),
-            )
-            connection.commit()
-            return cursor.rowcount
+            affected = 0
+            with connection:
+                for chunk in _chunks(connection, normalized, headroom=2):
+                    placeholders = ",".join("?" for _ in chunk)
+                    cursor = connection.execute(
+                        "UPDATE probe_discover_results SET server_group = COALESCE(?, server_group), "
+                        f"label = COALESCE(?, label) WHERE id IN ({placeholders})",
+                        (clean_group, clean_label, *chunk),
+                    )
+                    affected += cursor.rowcount
+            return affected
 
         return self._with_connection(write)
 
     def delete_discover_results(self, ids: list[int] | None = None) -> int:
-        """删除勾选的发现结果；ids 为空表示清空全部。"""
+        """Delete selected unique IDs; only ids=None clears the whole result table."""
+        normalized = None if ids is None else _normalize_ids(ids)
+        if normalized == []:
+            return 0
 
         def write(connection):
-            if ids:
-                cursor = connection.execute(
-                    "DELETE FROM probe_discover_results WHERE id IN (%s)"
-                    % ",".join("?" * len(ids)),
-                    ids,
-                )
-            else:
-                cursor = connection.execute("DELETE FROM probe_discover_results")
-            connection.commit()
-            return cursor.rowcount
+            with connection:
+                if normalized is None:
+                    return connection.execute("DELETE FROM probe_discover_results").rowcount
+                affected = 0
+                for chunk in _chunks(connection, normalized):
+                    placeholders = ",".join("?" for _ in chunk)
+                    affected += connection.execute(
+                        f"DELETE FROM probe_discover_results WHERE id IN ({placeholders})", chunk
+                    ).rowcount
+                return affected
 
         return self._with_connection(write)
 
@@ -452,14 +686,22 @@ class ProbeStore:
             raise ValueError("分组不能为空")
         clean_label = (label or "").strip() if label is not None else None
 
+        normalized = _normalize_ids(ids)
+        if not normalized:
+            return 0
+
         def write(connection):
-            cursor = connection.execute(
-                "UPDATE probe_servers SET server_group = COALESCE(?, server_group), "
-                "label = COALESCE(?, label) WHERE id IN (%s)" % ",".join("?" * len(ids)),
-                (clean_group, clean_label, *ids),
-            )
-            connection.commit()
-            return cursor.rowcount
+            affected = 0
+            with connection:
+                for chunk in _chunks(connection, normalized, headroom=2):
+                    placeholders = ",".join("?" for _ in chunk)
+                    cursor = connection.execute(
+                        "UPDATE probe_servers SET server_group = COALESCE(?, server_group), "
+                        f"label = COALESCE(?, label) WHERE id IN ({placeholders})",
+                        (clean_group, clean_label, *chunk),
+                    )
+                    affected += cursor.rowcount
+            return affected
 
         return self._with_connection(write)
 
