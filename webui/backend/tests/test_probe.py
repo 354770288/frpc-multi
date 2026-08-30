@@ -998,7 +998,8 @@ class DiscoverApiTests(unittest.TestCase):
             self.assertFalse(status["running"])
             self.assertEqual(status["total"], 1)
             self.assertEqual(status["scanned"], 1)
-            self.assertEqual([hit["ip"] for hit in status["found"]], ["127.0.0.1"])
+            self.assertEqual(status["foundCount"], 1)
+            self.assertEqual([hit["ip"] for hit in status["recentHits"]], ["127.0.0.1"])
 
             # 导入：按结果行 id；重复导入去重
             results = client.get("/api/probe/discover/results", headers=headers).json()

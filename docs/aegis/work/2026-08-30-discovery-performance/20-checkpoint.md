@@ -1,11 +1,11 @@
 # Todo Checkpoint
 
-- Completed: baseline/handoff audit; backend/frontend bottleneck audit; approved design/plan; Task 1 SQLite initialization and owner-local connection implementation; Task 1 specification and quality reviews; fresh focused and full backend verification.
-- Active slice: Task 1 closeout and scoped commit, then Task 2 lazy IPv4 intervals and bounded scanner.
-- Pending: bounded scanner; store pagination/batching; router orchestration; frontend; integrated verification/review/docs.
-- Evidence: baseline `ce52f02`; Task 1 focused database/core suite 63 passing; full backend suite 146 passing; `git diff --check` clean; specification approved; quality approved with only bounded minor lock-registry/test-specificity observations.
+- Completed: baseline/handoff audit; backend/frontend bottleneck audit; approved design/plan; Task 1 SQLite lifecycle; Task 2 lazy IPv4 interval planning and bounded scanner; Task 2 specification and quality review loops; fresh focused and full backend verification.
+- Active slice: Task 2 closeout and scoped commit, then Task 3 store pagination, facets, chunking, and batch persistence.
+- Pending: store pagination/batching; router orchestration; frontend; integrated verification/review/docs.
+- Evidence: Task 1 commit `e2b1f6a`; Task 2 discovery suite 21 passing; probe suite 52 passing; full backend suite 161 passing; `git diff --check` clean; specification approved; quality approved with no findings after two lifecycle-race remediations.
 - Blocked on: nothing.
-- Next: commit only Task 1-owned implementation/tests plus durable Aegis records, read back Git state, then open the Task 2 implementation gate.
+- Next: commit only Task 2-owned implementation/tests plus durable Aegis records, read back Git state, then open the Task 3 implementation gate.
 
 ## ResumeStateHint
 
@@ -22,4 +22,4 @@ Read the plan, this checkpoint, `chat/PERF_OPT_HANDOFF_2026-08-29.md`, and `git 
 
 ## DriftCheckDraft
 
-Task 1 matches the intent, scope, baseline, owner-local connection rule, data-preserving compatibility boundary, retirement boundary, test obligations, and both review gates. Repeated schema/WAL setup was retired without fallback; no destructive migration or production operation appeared. Task 2 remains within the approved IPv4-only scanner owner and removes eager/unbounded owners rather than preserving aliases. Decision: continue.
+Tasks 1–2 match the intent, scope, baseline, canonical-owner rules, compatibility boundary, retirement boundary, test obligations, and review gates. Task 2 stayed inside the IPv4-only scanner owner: immutable merged intervals and lazy iteration replaced eager target materialization; one bounded producer and fixed workers replaced all-target scheduling; bounded `recentHits`/`foundCount` replaced unbounded result state without aliases. Lifecycle publication now occurs only after event-loop cleanup, so reset/start remain mutually exclusive through thread termination. No persistence/router/frontend work, destructive migration, production operation, fallback, or duplicate owner appeared. Decision: continue.
