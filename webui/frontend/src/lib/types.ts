@@ -290,6 +290,21 @@ export type DiscoverHit = {
   latencyMs: number;
 };
 
+export type DiscoverLibrary = 'all' | 'imported' | 'new';
+export type DiscoverSort = 'discoveredAt' | 'ip' | 'latency';
+export type DiscoverOrder = 'asc' | 'desc';
+
+export type DiscoverQuery = {
+  page: number;
+  pageSize: number;
+  q?: string;
+  group?: string;
+  label?: string;
+  library: DiscoverLibrary;
+  sort: DiscoverSort;
+  order: DiscoverOrder;
+};
+
 export type DiscoverResult = {
   id: number;
   ip: string;
@@ -303,9 +318,22 @@ export type DiscoverResult = {
 
 export type LabelCount = { label: string; count: number };
 
-export type DiscoverResults = {
+export type DiscoverPage = {
   items: DiscoverResult[];
+  page: number;
+  pageSize: number;
+  total: number;
+  sort: DiscoverSort;
+  order: DiscoverOrder;
+};
+
+export type DiscoverFacetGroup = { group: string; count: number };
+
+export type DiscoverFacets = {
   labels: LabelCount[];
+  groups: DiscoverFacetGroup[];
+  imported: number;
+  new: number;
 };
 
 // ---- CN2 路由追踪（节点轮询模型） ----
@@ -336,7 +364,8 @@ export type DiscoverStatus = {
   } | null;
   total: number;
   scanned: number;
-  found: DiscoverHit[];
+  foundCount: number;
+  recentHits: DiscoverHit[];
   startedAt: string | null;
   finishedAt: string | null;
   error: string;

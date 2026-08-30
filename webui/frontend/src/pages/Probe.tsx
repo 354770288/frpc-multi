@@ -20,12 +20,13 @@ import {
 } from '../components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { ConnBadge, ProbeStatCards, RecentList, SpeedText } from './probe/ProbeParts';
+import { useDiscovery } from './probe/useDiscovery';
 import { ConfirmOverlay, Overlay } from '../components/Overlay';
 import { cn } from '../lib/utils';
 import type {
-  DiscoverResult, DiscoverStatus, GroupColor, GroupInfo, LabelCount,
+  DiscoverStatus, GroupColor, GroupInfo, LabelCount,
   ProbeConnectivityHistory, ProbeConnectivitySummary, ProbeDashboard, ProbeServer,
-  ProbeSpeedHistory, ProbeTestConfig, ProbeTestStatus, RouteNodeInfo, RouteStatusView,
+  ProbeSpeedHistory, ProbeTestConfig, ProbeTestStatus, RouteNodeInfo,
 } from '../lib/types';
 
 /** 路由测试系统保留标签 → Badge variant（灰/红/绿三态）。 */
@@ -103,6 +104,7 @@ export function Probe() {
   const navigate = useNavigate();
   const [servers, setServers] = useState<ProbeServer[]>([]);
   const [groups, setGroups] = useState<GroupInfo[]>([]);
+  const [serverLabels, setServerLabels] = useState<LabelCount[]>([]);
   const [stats, setStats] = useState<ProbeDashboard | null>(null);
   const [status, setStatus] = useState<ProbeTestStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -117,6 +119,18 @@ export function Probe() {
 
   // 页面主 Tab（受控：勾选快速测试后自动切到「穿透测试」）；网段发现为第一子页
   const [tab, setTab] = useState('discover');
+  const discovery = useDiscovery(tab === 'discover');
+  const discoverRows = discovery.page.items;
+  const dSelected = discovery.selected;
+  const scanStatus = discovery.scanStatus;
+  const routeStatus = discovery.routeStatus;
+
+  // 发现表搜索框：本地受控 + 300ms 防抖后下沉到服务端查询
+  const [discoverySearch, setDiscoverySearch] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => discovery.setSearch(discoverySearch), 300);
+    return () => clearTimeout(timer);
+  }, [discoverySearch, discovery.setSearch]);
 
   // 弹窗
   const [editing, setEditing] = useState<ProbeServer | 'new' | null>(null);
@@ -129,22 +143,12 @@ export function Probe() {
   const [groupsOpen, setGroupsOpen] = useState(false);
   const [batchEdit, setBatchEdit] = useState<'group' | 'label' | null>(null);
 
-  // 网段发现（第一子页）
-  const [discoverRows, setDiscoverRows] = useState<DiscoverResult[]>([]);
-  const [labels, setLabels] = useState<LabelCount[]>([]);
-  const [labelFilter, setLabelFilter] = useState<string | null>(null);
-  const [dGroupFilter, setDGroupFilter] = useState('all');
-  const [dStatusFilter, setDStatusFilter] = useState('all');
-  const [dSearch, setDSearch] = useState('');
-  const [dSortKey, setDSortKey] = useState<'ip' | 'latency' | 'time'>('time');
-  const [dSortAsc, setDSortAsc] = useState(false);
-  const [dSelected, setDSelected] = useState<Set<number>>(new Set());
+  // 网段发现（分页数据、跨页勾选与轮询由 useDiscovery 统一持有）
+  const [serverLabelFilter, setServerLabelFilter] = useState<string | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
-  const [scanStatus, setScanStatus] = useState<DiscoverStatus | null>(null);
   const [dBatchEdit, setDBatchEdit] = useState<'group' | 'label' | null>(null);
   const [dDeleting, setDDeleting] = useState(false);
   const [importSelOpen, setImportSelOpen] = useState(false);
-  const [routeStatus, setRouteStatus] = useState<RouteStatusView | null>(null);
   const [routeNodesOpen, setRouteNodesOpen] = useState(false);
 
   // 测试
@@ -170,12 +174,13 @@ export function Probe() {
 
   const loadServers = useCallback(async () => {
     try {
-      const [list, dash, groupList] = await Promise.all([
-        probeApi.servers(), probeApi.dashboard(), probeApi.groups(),
+      const [list, dash, groupList, labelList] = await Promise.all([
+        probeApi.servers(), probeApi.dashboard(), probeApi.groups(), probeApi.labels(),
       ]);
       setServers(list);
       setStats(dash);
       setGroups(groupList);
+      setServerLabels(labelList);
       setSelectedIds((prev) => {
         const alive = new Set(list.map((item) => item.id));
         const next = new Set([...prev].filter((id) => alive.has(id)));
@@ -188,56 +193,19 @@ export function Probe() {
     }
   }, []);
 
-  const loadDiscover = useCallback(async () => {
-    try {
-      const result = await probeApi.discoverResults();
-      setDiscoverRows(result.items);
-      setLabels(result.labels);
-    } catch {
-      /* 网段发现加载失败不阻塞页面 */
-    }
-  }, []);
-
   useEffect(() => {
     loadServers();
-    loadDiscover();
     const timer = setInterval(loadServers, 10000);
     return () => clearInterval(timer);
-  }, [loadServers, loadDiscover]);
-
-  // 扫描运行中：轮询进度并同步落库结果；结束时刷新一次
-  useEffect(() => {
-    if (!scanStatus?.running) return;
-    const timer = setInterval(() => {
-      probeApi.discoverStatus().then((next) => {
-        setScanStatus(next);
-        if (!next.running) loadDiscover();
-      }).catch(() => {});
-      loadDiscover();
-    }, 1500);
-    return () => clearInterval(timer);
-  }, [scanStatus?.running, loadDiscover]);
-
-  // 路由队列活跃时：轮询进度并刷新表格（保留标签随回报更新）
-  useEffect(() => {
-    probeApi.routeStatus().then(setRouteStatus).catch(() => {});
-  }, []);
-  useEffect(() => {
-    if (!routeStatus?.active) return;
-    const timer = setInterval(() => {
-      probeApi.routeStatus().then(setRouteStatus).catch(() => {});
-      loadDiscover();
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [routeStatus?.active, loadDiscover]);
+  }, [loadServers]);
 
   const startRouteTest = async () => {
-    const ids = [...dSelected];
+    const ids = [...discovery.selected];
     if (!ids.length) return;
     try {
       const result = await probeApi.routeStart(ids);
       toast.success(`已入队 ${result.enqueued} 台，等待路由节点领取测试`);
-      setRouteStatus(await probeApi.routeStatus());
+      discovery.setRouteStatus(await probeApi.routeStatus());
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '入队失败');
     }
@@ -297,50 +265,30 @@ export function Probe() {
     return map;
   }, [groups]);
 
-  // ---- 网段发现表：分组/标签/状态过滤 + 排序 ----
-  const discoverGroups = useMemo(() => {
-    const extra = new Set(discoverRows.map((row) => row.group).filter(Boolean));
-    return Array.from(new Set([...groups.map((group) => group.name), ...extra])).sort();
-  }, [groups, discoverRows]);
+  const discoverGroups = useMemo(() => (
+    Array.from(new Set([
+      ...groups.map((group) => group.name),
+      ...discovery.facets.groups.map((group) => group.group),
+    ])).filter(Boolean).sort()
+  ), [groups, discovery.facets.groups]);
 
-  const discoverFiltered = useMemo(() => {
-    const keyword = dSearch.trim().toLowerCase();
-    const rows = discoverRows.filter((item) => {
-      if (dGroupFilter !== 'all' && item.group !== dGroupFilter) return false;
-      if (labelFilter && item.label !== labelFilter) return false;
-      if (dStatusFilter === 'new' && item.inLibrary) return false;
-      if (dStatusFilter === 'imported' && !item.inLibrary) return false;
-      if (!keyword) return true;
-      return item.ip.toLowerCase().includes(keyword)
-        || item.label.toLowerCase().includes(keyword)
-        || item.group.toLowerCase().includes(keyword);
-    });
-    const dir = dSortAsc ? 1 : -1;
-    return rows.sort((a, b) => {
-      if (dSortKey === 'ip') return compareIp(a.ip, b.ip) * dir;
-      if (dSortKey === 'latency') return (a.latencyMs - b.latencyMs) * dir;
-      return a.discoveredAt.localeCompare(b.discoveredAt) * dir;
-    });
-  }, [discoverRows, dGroupFilter, labelFilter, dStatusFilter, dSearch, dSortKey, dSortAsc]);
-
-  const toggleDSelect = (id: number) => {
-    setDSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  // 发现表空态文案区分「完全没有数据」和「筛选无匹配」
+  const discoveryHasFilter = Boolean(
+    discovery.query.q?.trim()
+    || discovery.query.group !== undefined
+    || discovery.query.label !== undefined
+    || discovery.query.library !== 'all'
+  );
 
   const deleteDiscoverSelected = async () => {
-    const ids = [...dSelected];
+    const ids = [...discovery.selected];
     if (!ids.length) return;
     try {
       const result = await probeApi.discoverDelete(ids);
       toast.success(`已删除 ${result.deleted} 条发现记录`);
-      setDSelected(new Set());
+      discovery.removeSelected(ids);
       setDDeleting(false);
-      loadDiscover();
+      await discovery.refreshAll({ recoverOutOfRange: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '删除失败');
     }
@@ -348,7 +296,7 @@ export function Probe() {
 
   const filtered = useMemo(() => servers.filter((item) => {
     if (groupFilter !== 'all' && item.group !== groupFilter) return false;
-    if (labelFilter && item.label !== labelFilter) return false;
+    if (serverLabelFilter && item.label !== serverLabelFilter) return false;
     const score = connScore(item.latestConnectivity);
     if (connFilter === 'pass' && score !== 4) return false;
     if (connFilter === 'partial' && (score <= 1 || score === 4)) return false;
@@ -359,7 +307,7 @@ export function Probe() {
     return item.ip.toLowerCase().includes(keyword)
       || item.label.toLowerCase().includes(keyword)
       || item.group.toLowerCase().includes(keyword);
-  }), [servers, groupFilter, labelFilter, connFilter, search]);
+  }), [servers, groupFilter, serverLabelFilter, connFilter, search]);
 
   const displayList = useMemo(() => {
     if (sortKey === 'none') return filtered;
@@ -512,11 +460,11 @@ export function Probe() {
         </TabsList>
 
         {/* ---- 网段发现（第一子页） ---- */}
-        <TabsContent value="discover" className="mt-4">
+        {tab === 'discover' && <TabsContent value="discover" className="mt-4">
           <Card>
             <CardHeader className="flex-row flex-wrap items-center gap-2">
               <CardTitle className="text-sm">网段内开放 frps 端口的设备</CardTitle>
-              <Badge tone="muted">{discoverRows.length} 条</Badge>
+              <Badge tone="muted">{discovery.page.total} 条</Badge>
               <div className="ml-auto flex flex-wrap items-center gap-2">
                 {scanStatus?.running ? (
                   <>
@@ -524,15 +472,15 @@ export function Probe() {
                       <Square size={13} />停止扫描
                     </Button>
                     <span className="text-xs tabular-nums text-muted-foreground">
-                      {scanStatus.scanned} / {scanStatus.total} · 命中 {scanStatus.found.length}
+                      {scanStatus.scanned} / {scanStatus.total} · 命中 {scanStatus.foundCount}
                     </span>
                   </>
                 ) : (
                   <Button size="sm" onClick={() => setScanOpen(true)}>
-                    <Radar size={13} />{discoverRows.length ? '再次扫描' : '开始扫描'}
+                    <Radar size={13} />{discovery.page.total ? '再次扫描' : '开始扫描'}
                   </Button>
                 )}
-                <Button size="sm" variant="outline" onClick={loadDiscover}>
+                <Button size="sm" variant="outline" onClick={() => discovery.refreshPage().catch(() => {})}>
                   <RefreshCw size={13} />刷新
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => setRouteNodesOpen(true)}>
@@ -554,7 +502,7 @@ export function Probe() {
                 ))}
                 {routeStatus!.active && (
                   <Button size="sm" variant="outline" className="ml-auto h-6 px-2 text-[11px]"
-                    onClick={() => probeApi.routeStop().then(() => probeApi.routeStatus().then(setRouteStatus)).catch(() => {})}>
+                    onClick={() => probeApi.routeStop().then(() => probeApi.routeStatus().then(discovery.setRouteStatus)).catch(() => {})}>
                     停止（清空队列）
                   </Button>
                 )}
@@ -567,7 +515,7 @@ export function Probe() {
             )}
             <div className="flex flex-wrap items-center gap-2 border-y bg-muted/40 px-4 py-2">
               <div className="w-40">
-                <Select value={dGroupFilter} onValueChange={setDGroupFilter}>
+                <Select value={discovery.query.group ?? 'all'} onValueChange={discovery.setGroup}>
                   <SelectTrigger size="sm"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
@@ -582,7 +530,7 @@ export function Probe() {
                 </Select>
               </div>
               <div className="w-32">
-                <Select value={dStatusFilter} onValueChange={setDStatusFilter}>
+                <Select value={discovery.query.library} onValueChange={(value) => discovery.setLibrary(value as 'all' | 'new' | 'imported')}>
                   <SelectTrigger size="sm"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
@@ -594,11 +542,11 @@ export function Probe() {
                 </Select>
               </div>
               <Input
-                className="h-8 w-44" value={dSearch} onChange={(e) => setDSearch(e.target.value)}
+                className="h-8 w-44" value={discoverySearch} onChange={(e) => setDiscoverySearch(e.target.value)}
                 placeholder="搜索 IP / 标签 / 分组"
               />
             </div>
-            <LabelCloud labels={labels} active={labelFilter} onToggle={setLabelFilter} />
+            <LabelCloud labels={discovery.facets.labels} active={discovery.query.label ?? null} onToggle={discovery.setLabel} />
             {dSelected.size > 0 && (
               <div className="flex flex-wrap items-center gap-2 border-b bg-primary/5 px-4 py-2">
                 <Badge tone="muted">已选 {dSelected.size} 条</Badge>
@@ -625,28 +573,27 @@ export function Probe() {
                   <thead>
                     <tr className="border-b bg-muted/50">
                       <Th><input type="checkbox" className="size-3.5 accent-[var(--primary)]"
-                        checked={discoverFiltered.length > 0 && discoverFiltered.every((row) => row.inLibrary || dSelected.has(row.id))}
-                        onChange={(e) => setDSelected(e.target.checked
-                          ? new Set([...dSelected, ...discoverFiltered.filter((row) => !row.inLibrary).map((row) => row.id)])
-                          : new Set())} /></Th>
-                      <ThSort label="IP" sortKey="ip" activeKey={dSortKey} asc={dSortAsc} onSort={(key) => { setDSortKey(key as 'ip'); setDSortAsc(dSortKey === key ? !dSortAsc : true); }} />
+                        disabled={!discoverRows.some((row) => !row.inLibrary)}
+                        checked={discoverRows.some((row) => !row.inLibrary) && discoverRows.filter((row) => !row.inLibrary).every((row) => dSelected.has(row.id))}
+                        onChange={(e) => discovery.toggleCurrentPage(e.target.checked)} /></Th>
+                      <ThSort label="IP" sortKey="ip" activeKey={discovery.query.sort} asc={discovery.query.order === 'asc'} onSort={() => discovery.setSort('ip', discovery.query.sort === 'ip' && discovery.query.order === 'asc' ? 'desc' : 'asc')} />
                       <Th>端口</Th>
-                      <ThSort label="延迟" sortKey="latency" activeKey={dSortKey} asc={dSortAsc} onSort={(key) => { setDSortKey(key as 'latency'); setDSortAsc(dSortKey === key ? !dSortAsc : true); }} />
+                      <ThSort label="延迟" sortKey="latency" activeKey={discovery.query.sort} asc={discovery.query.order === 'asc'} onSort={() => discovery.setSort('latency', discovery.query.sort === 'latency' && discovery.query.order === 'asc' ? 'desc' : 'asc')} />
                       <Th>分组</Th>
                       <Th>标签</Th>
                       <Th>状态</Th>
-                      <ThSort label="发现时间" sortKey="time" activeKey={dSortKey} asc={dSortAsc} onSort={(key) => { setDSortKey(key as 'time'); setDSortAsc(dSortKey === key ? !dSortAsc : false); }} />
+                      <ThSort label="发现时间" sortKey="discoveredAt" activeKey={discovery.query.sort} asc={discovery.query.order === 'asc'} onSort={() => discovery.setSort('discoveredAt', discovery.query.sort === 'discoveredAt' && discovery.query.order === 'desc' ? 'asc' : 'desc')} />
                       <Th align="right">操作</Th>
                     </tr>
                   </thead>
                   <tbody>
-                    {discoverFiltered.map((row) => (
+                    {discoverRows.map((row) => (
                       <tr key={row.id} className="border-b last:border-b-0 transition-colors hover:bg-muted/50">
                         <Td>
                           <input type="checkbox" className="size-3.5 accent-[var(--primary)]"
-                            checked={row.inLibrary || dSelected.has(row.id)}
+                            checked={!row.inLibrary && dSelected.has(row.id)}
                             disabled={row.inLibrary}
-                            onChange={() => toggleDSelect(row.id)} />
+                            onChange={() => discovery.toggleSelected(row.id)} />
                         </Td>
                         <Td><span className="font-mono text-[12px] font-medium">{row.ip}</span></Td>
                         <Td><span className="font-mono text-xs text-muted-foreground">{row.port}</span></Td>
@@ -659,27 +606,48 @@ export function Probe() {
                           {row.inLibrary ? (
                             <span className="text-[11px] text-muted-foreground">—</span>
                           ) : (
-                            <Button size="sm" variant="outline" onClick={() => { setDSelected(new Set([row.id])); setImportSelOpen(true); }}>
+                            <Button size="sm" variant="outline" onClick={() => { discovery.setSelected(new Set([row.id])); setImportSelOpen(true); }}>
                               <Download size={13} />导入
                             </Button>
                           )}
                         </Td>
                       </tr>
                     ))}
-                    {!discoverFiltered.length && (
+                    {!discoverRows.length && (
                       <tr><td colSpan={9} className="px-4 py-10 text-center text-xs text-muted-foreground">
-                        {discoverRows.length ? '当前筛选条件下没有匹配的记录' : '还没有发现记录，点「开始扫描」扫一段自有网段'}
+                        {discoveryHasFilter ? '当前筛选条件下没有匹配的记录' : '还没有发现记录，点「开始扫描」扫一段自有网段'}
                       </td></tr>
                     )}
                   </tbody>
                 </table>
               </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3">
+                <span className="text-xs text-muted-foreground">
+                  第 {discovery.page.page} / {Math.max(1, Math.ceil(discovery.page.total / discovery.page.pageSize))} 页
+                </span>
+                <div className="flex items-center gap-2">
+                  <Select value={String(discovery.query.pageSize)} onValueChange={(value) => discovery.setPageSize(Number(value))}>
+                    <SelectTrigger size="sm" className="w-24"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="25">25 / 页</SelectItem>
+                      <SelectItem value="50">50 / 页</SelectItem>
+                      <SelectItem value="100">100 / 页</SelectItem>
+                      <SelectItem value="200">200 / 页</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button size="sm" variant="outline" disabled={discovery.page.page <= 1}
+                    onClick={() => discovery.setPageNumber(discovery.page.page - 1)}>上一页</Button>
+                  <Button size="sm" variant="outline"
+                    disabled={discovery.page.page >= Math.max(1, Math.ceil(discovery.page.total / discovery.page.pageSize))}
+                    onClick={() => discovery.setPageNumber(discovery.page.page + 1)}>下一页</Button>
+                </div>
+              </div>
             </CardContent>
           </Card>
-        </TabsContent>
+        </TabsContent>}
 
         {/* ---- 服务器库 ---- */}
-        <TabsContent value="servers" className="mt-4">
+        {tab === 'servers' && <TabsContent value="servers" className="mt-4">
           <Card>
             <CardHeader className="flex-row flex-wrap items-center gap-2">
               <CardTitle className="text-sm">候选 frps 服务器</CardTitle>
@@ -727,7 +695,7 @@ export function Probe() {
                 <Button size="sm" onClick={() => setEditing('new')}><Plus size={13} />添加</Button>
               </div>
             </CardHeader>
-            <LabelCloud labels={labels} active={labelFilter} onToggle={setLabelFilter} />
+            <LabelCloud labels={serverLabels} active={serverLabelFilter} onToggle={setServerLabelFilter} />
             {selectedIps.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 border-b bg-primary/5 px-4 py-2">
                 <Badge tone="muted">已选 {selectedIps.length} 台</Badge>
@@ -824,10 +792,10 @@ export function Probe() {
               </div>
             </CardContent>
           </Card>
-        </TabsContent>
+        </TabsContent>}
 
         {/* ---- 测试执行 ---- */}
-        <TabsContent value="test" className="mt-4">
+        {tab === 'test' && <TabsContent value="test" className="mt-4">
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
             <Card>
               <CardHeader><CardTitle className="text-sm">测试进度</CardTitle></CardHeader>
@@ -939,10 +907,10 @@ export function Probe() {
               </Card>
             </aside>
           </div>
-        </TabsContent>
+        </TabsContent>}
 
         {/* ---- 历史结果 ---- */}
-        <TabsContent value="history" className="mt-4">
+        {tab === 'history' && <TabsContent value="history" className="mt-4">
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <Input
               className="h-8 w-56" value={historyIp} onChange={(e) => setHistoryIp(e.target.value)}
@@ -1013,7 +981,7 @@ export function Probe() {
               </CardContent>
             </Card>
           </div>
-        </TabsContent>
+        </TabsContent>}
       </Tabs>
 
       {editing && (
@@ -1044,7 +1012,7 @@ export function Probe() {
           groups={groups}
           groupCounts={groupCounts}
           onClose={() => setGroupsOpen(false)}
-          onChanged={loadServers}
+          onChanged={() => { loadServers(); discovery.refreshAll().catch(() => {}); }}
         />
       )}
       {batchEdit && (
@@ -1064,7 +1032,7 @@ export function Probe() {
           count={dSelected.size}
           groups={discoverGroups}
           onClose={() => setDBatchEdit(null)}
-          onSaved={() => { setDBatchEdit(null); loadDiscover(); }}
+          onSaved={() => { setDBatchEdit(null); discovery.refreshAll({ recoverOutOfRange: true }).catch(() => {}); }}
           applyDiscover
         />
       )}
@@ -1073,7 +1041,7 @@ export function Probe() {
           defaultPort={config?.frpsPort ?? 7000}
           running={!!scanStatus?.running}
           onClose={() => setScanOpen(false)}
-          onStarted={(next) => { setScanOpen(false); setScanStatus(next); setTab('discover'); }}
+          onStarted={(next) => { setScanOpen(false); discovery.setScanStatus(next); setTab('discover'); }}
         />
       )}
       {importSelOpen && (
@@ -1081,9 +1049,15 @@ export function Probe() {
           ids={[...dSelected]}
           count={dSelected.size}
           groups={discoverGroups}
-          defaultGroup={discoverRows.find((row) => dSelected.has(row.id))?.group || ''}
+          defaultGroup={discoverRows.find((row) => dSelected.has(row.id))?.group ?? ''}
           onClose={() => setImportSelOpen(false)}
-          onDone={() => { setImportSelOpen(false); setDSelected(new Set()); loadDiscover(); loadServers(); }}
+          onDone={() => {
+            const importedIds = [...dSelected];
+            setImportSelOpen(false);
+            discovery.removeSelected(importedIds);
+            discovery.refreshAll({ recoverOutOfRange: true }).catch(() => {});
+            loadServers();
+          }}
         />
       )}
       {routeNodesOpen && (

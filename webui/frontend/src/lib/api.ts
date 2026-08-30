@@ -3,7 +3,9 @@ import type {
   AuditLog,
   CloudflareInfo,
   CloudflareZone,
-  DiscoverResults,
+  DiscoverFacets,
+  DiscoverPage,
+  DiscoverQuery,
   DiscoverStatus,
   GroupColor,
   GroupInfo,
@@ -225,7 +227,22 @@ export const probeApi = {
   }),
   discoverStatus: () => api<DiscoverStatus>('/api/probe/discover/status'),
   discoverStop: () => api<{ stopped: boolean }>('/api/probe/discover/stop', { method: 'POST' }),
-  discoverResults: () => api<DiscoverResults>('/api/probe/discover/results'),
+  discoverResults: (query: DiscoverQuery, signal?: AbortSignal) => {
+    const params = new URLSearchParams({
+      page: String(query.page),
+      pageSize: String(query.pageSize),
+      q: query.q?.trim() ?? '',
+      library: query.library,
+      sort: query.sort,
+      order: query.order,
+    });
+    // group/label 的显式空串是有意义的筛选（查空分组/空标签），undefined 才是不筛选——此时缺省参数
+    if (query.group !== undefined) params.set('group', query.group);
+    if (query.label !== undefined) params.set('label', query.label);
+    return api<DiscoverPage>(`/api/probe/discover/results?${params.toString()}`, { signal });
+  },
+  discoverFacets: (signal?: AbortSignal) =>
+    api<DiscoverFacets>('/api/probe/discover/facets', { signal }),
   discoverUpdateBatch: (ids: number[], group?: string, label?: string) =>
     api<{ updated: number }>('/api/probe/discover/results/batch', {
       method: 'PATCH', body: JSON.stringify({ ids, group: group ?? null, label: label ?? null })

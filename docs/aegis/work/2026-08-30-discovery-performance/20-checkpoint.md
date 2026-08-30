@@ -1,15 +1,15 @@
 # Todo Checkpoint
 
-- Completed: baseline/handoff audit; approved design/plan; Task 1 SQLite lifecycle; Task 2 bounded lazy scanner; Task 3 discovery migration/paging/facets/chunking/batch UPSERT; Task 4 paginated HTTP contracts, selected-ID consumers, and bounded persistence-writer orchestration; Task 1–4 specification and quality review loops.
-- Active slice: Task 4 closeout and scoped commit, then Task 5 frontend paged discovery workflow.
-- Pending: frontend paged workflow; integrated verification/review/docs.
-- Evidence: Task 1 commit `e2b1f6a`; Task 2 commit `78cc4e4`; Task 3 commit `0e5b2c3`; Task 4 focused discover/probe suite 103 passing; full backend suite 195 passing; `git diff --check` clean; Task 4 specification and final quality reviews approved with confidence A.
+- Completed: baseline/handoff audit; approved design/plan; Task 1 SQLite lifecycle; Task 2 bounded lazy scanner; Task 3 discovery migration/paging/facets/chunking/batch UPSERT; Task 4 paginated HTTP contracts, selected-ID consumers, and bounded persistence-writer orchestration; Task 1–4 specification and quality review loops; Task 5 frontend paged discovery workflow (spec + quality reviews passed).
+- Active slice: Task 5 scoped commit, then Task 6 integrated verification/review/docs.
+- Pending: Task 6 EXPLAIN/boundedness evidence, independent comprehensive review, doc closeout (checkpoint/evidence/handoff/99-reflection).
+- Evidence: Task 1 commit `e2b1f6a`; Task 2 commit `78cc4e4`; Task 3 commit `0e5b2c3`; Task 4 commit `dd42848`; Task 5 working-tree verification: `npx tsc -b && npm run build` exit 0; retirement greps clean (no discoverFiltered/loadDiscover/scanStatus.found/discovery setInterval in frontend discovery paths); first review verdict "With fixes" → fixed 1 Critical (terminal-transition miss via hook-level refs + nudge setters) + 4 Minor; second independent review verdict "Yes" with one consistency nit (import onDone recoverOutOfRange) fixed; `git diff --check` clean.
 - Blocked on: nothing.
-- Next: commit only Task 4-owned implementation/tests plus durable Aegis records, read back Git state, then implement Task 5 with a focused discovery hook and coordinated page/facet polling.
+- Next: create scoped Task 5 commit, then Task 6 per plan.
 
 ## ResumeStateHint
 
-Read the plan, this checkpoint, `chat/PERF_OPT_HANDOFF_2026-08-29.md`, and `git status`; do not touch production DB, deploy, or let subagents mutate Git lifecycle state. Task 5 must keep its hook mounted above conditional tab content and must not restore browser-global discovery filtering/sorting.
+Read the plan, this checkpoint, `chat/PERF_OPT_HANDOFF_2026-08-29.md`, and `git status`; do not touch production DB, deploy, or let subagents mutate Git lifecycle state. Task 5 is implemented and review-approved (hook `pages/probe/useDiscovery.ts` mounted above conditional tab content); do not restore browser-global discovery filtering/sorting or a second polling owner.
 
 ## Slice Card
 
