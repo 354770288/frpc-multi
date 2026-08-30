@@ -321,6 +321,11 @@ class ConnectivityProbeTests(unittest.TestCase):
         self.assertIn("不可达", result["detail"])
 
 
+def _ipv4_int(ip: str) -> int:
+    import ipaddress as _ipa
+    return int(_ipa.ip_address(ip))
+
+
 class ProbeStoreTests(unittest.TestCase):
     def setUp(self):
         import tempfile as _tf
@@ -358,6 +363,129 @@ class ProbeStoreTests(unittest.TestCase):
         ])
         self.assertEqual((inserted, skipped), (2, 1))
         self.assertEqual(self.store.list_groups(), ["g1"])
+
+    def _seed_servers_for_paging(self):
+        # ip 从大到小插入，验证数值排序；两台有连通结果，覆盖 conn 分级
+        rows = [
+            ("10.0.0.9", "gB", ""),
+            ("10.0.0.10", "gA", "CN2"),
+            ("10.0.0.2", "gA", ""),
+            ("192.168.1.5", "", "非CN2"),
+        ]
+        for ip, group, label in rows:
+            self.store.create_server(ip=ip, label=label, server_group=group)
+        self.store.add_connectivity_result({
+            "server_ip": "10.0.0.9", "frps_reachable": True,
+            "tunnel_established": True, "firewall_open": True,
+        })
+        self.store.add_connectivity_result({
+            "server_ip": "10.0.0.10", "frps_reachable": True,
+            "tunnel_established": False, "firewall_open": False,
+        })
+
+    def test_query_servers_paging_and_numeric_ip_sort(self):
+        self._seed_servers_for_paging()
+        from app.probe.store import ServerPageQuery
+        page = self.store.query_servers(ServerPageQuery(page=1, page_size=2, sort="ip", order="asc"))
+        self.assertEqual(page["total"], 4)
+        self.assertEqual([row["ip"] for row in page["items"]], ["10.0.0.2", "10.0.0.9"])  # 数值序，非点分字符串序
+        last = self.store.query_servers(ServerPageQuery(page=2, page_size=2, sort="ip", order="asc"))
+        self.assertEqual([row["ip"] for row in last["items"]], ["10.0.0.10", "192.168.1.5"])
+        desc = self.store.query_servers(ServerPageQuery(page=1, page_size=1, sort="ip", order="desc"))
+        self.assertEqual(desc["items"][0]["ip"], "192.168.1.5")
+
+    def test_query_servers_filters(self):
+        self._seed_servers_for_paging()
+        from app.probe.store import ServerPageQuery
+        # 显式空串分组 = 筛无分组；undefined 不筛
+        empty_group = self.store.query_servers(ServerPageQuery(group=""))
+        self.assertEqual({r["ip"] for r in empty_group["items"]}, {"192.168.1.5"})
+        by_label = self.store.query_servers(ServerPageQuery(label="CN2"))
+        self.assertEqual([r["ip"] for r in by_label["items"]], ["10.0.0.10"])
+        # LIKE 子串语义：CN2 同时命中 label「CN2」与「非CN2」
+        keyword = self.store.query_servers(ServerPageQuery(q="CN2"))
+        self.assertEqual(keyword["total"], 2)
+        by_group = self.store.query_servers(ServerPageQuery(group="gA"))
+        self.assertEqual(by_group["total"], 2)
+
+    def test_query_servers_conn_buckets(self):
+        self._seed_servers_for_paging()
+        from app.probe.store import ServerPageQuery
+        passed = {r["ip"] for r in self.store.query_servers(ServerPageQuery(conn="pass"))["items"]}
+        partial = {r["ip"] for r in self.store.query_servers(ServerPageQuery(conn="partial"))["items"]}
+        failed = {r["ip"] for r in self.store.query_servers(ServerPageQuery(conn="fail"))["items"]}
+        untested = {r["ip"] for r in self.store.query_servers(ServerPageQuery(conn="untested"))["items"]}
+        self.assertEqual(passed, {"10.0.0.9"})
+        self.assertEqual(partial, {"10.0.0.10"})
+        self.assertEqual(untested, {"10.0.0.2", "192.168.1.5"})  # 未测=0
+        self.assertEqual(failed, {"10.0.0.10"})  # 测过未全过（含部分通过）
+
+    def test_domain_servers_get_null_ip_sort(self):
+        # 域名服务器可正常创建/导入（回归：曾因 _ipv4_sort_key 崩溃）；数值序 null-last
+        from app.probe.store import ServerPageQuery
+        self.store.create_server(ip="frps.example.com", label="域名节点")
+        inserted, _ = self.store.import_servers([
+            {"ip": "1.2.3.4"}, {"ip": "2001:db8::1"}, {"ip": "cdn.example.net"}])
+        self.assertEqual(inserted, 3)
+        rows = self.store.query_servers(ServerPageQuery(sort="ip", order="asc", page_size=200))
+        ips = [r["ip"] for r in rows["items"]]
+        self.assertEqual(ips[0], "1.2.3.4")  # IPv4 数值序在前
+        self.assertEqual(set(ips[1:]), {"frps.example.com", "2001:db8::1", "cdn.example.net"})  # null-last
+
+    def test_update_server_recomputes_ip_sort(self):
+        from app.probe.store import ServerPageQuery
+        server = self.store.create_server(ip="frps.example.com")
+        changed = self.store.update_server(server.id, ip="9.9.9.9")
+        self.assertEqual(changed.ip, "9.9.9.9")
+        rows = self.store.query_servers(ServerPageQuery(sort="ip", order="asc", page_size=200))
+        numeric = [r["ip"] for r in rows["items"] if r["ip"].startswith("9.")]
+        self.assertIn("9.9.9.9", numeric)  # 改 IP 后 ip_sort 已重算（非 NULL 尾段）
+
+    def test_server_facets(self):
+        self._seed_servers_for_paging()
+        facets = self.store.server_facets()
+        labels = {row["label"]: row["count"] for row in facets["labels"]}
+        self.assertEqual(labels["CN2"], 1)
+        groups = {row["group"]: row["count"] for row in facets["groups"]}
+        self.assertEqual(groups, {"gA": 2, "gB": 1})
+
+    def test_probe_servers_migration_backfills_ip_sort(self):
+        # 旧结构库（无 ip_sort 列）→ initialize_database 回填；无效 IP 永驻 NULL
+        import sqlite3 as _sq
+        import tempfile as _tf
+        from pathlib import Path as _Path
+        from app.control import database as _database
+        with _tf.TemporaryDirectory() as tmp:
+            path = _Path(tmp) / "legacy.db"
+            connection = _sq.connect(path)
+            try:
+                connection.executescript(
+                    """
+                    CREATE TABLE probe_servers (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ip TEXT NOT NULL UNIQUE,
+                        label TEXT NOT NULL DEFAULT '',
+                        server_group TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL
+                    );
+                    INSERT INTO probe_servers (ip, label, created_at)
+                    VALUES ('8.8.8.8', 'x', '2026-01-01T00:00:00'),
+                           ('not-an-ip', '', '2026-01-01T00:00:00');
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            _database._initialized_paths.discard(path.resolve())
+            _database.initialize_database(path)
+            connection = _database.connect_database(path)
+            try:
+                values = {row["ip"]: row["ip_sort"] for row in
+                          connection.execute("SELECT ip, ip_sort FROM probe_servers")}
+            finally:
+                connection.close()
+            self.assertEqual(values["8.8.8.8"], int(_ipv4_int("8.8.8.8")))
+            self.assertIsNone(values["not-an-ip"])
 
     def test_group_color(self):
         # 预创建分组带色 / 改色 / 清色；非法颜色拒绝
@@ -455,11 +583,16 @@ class ProbeStoreTests(unittest.TestCase):
         self.store.update_discover_batch(
             [row["id"] for row in discover_rows(self.store) if row["ip"] == "10.0.0.1"],
             group=None, label="共用")
-        labels = {item["label"]: item["count"] for item in self.store.list_labels()}
-        # 服务器 + 发现结果合并计数；发现行默认带「未路由测试」保留标签
-        self.assertEqual(labels, {"共用": 2, "未路由测试": 1})
+        facets = {item["label"]: item["count"] for item in self.store.server_facets()["labels"]}
+        self.assertEqual(facets, {"共用": 1})  # 仅服务器侧；发现行标签走 /discover/facets
 
         rows = discover_rows(self.store)
+        # 发现 → 导入服务器的行必须带数值 ip_sort（数值排序的主入口路径）
+        from app.probe.store import ServerPageQuery
+        self.store.import_discover_results([rows[0]["id"]])
+        imported = self.store.query_servers(ServerPageQuery(q="10.0.0.1", sort="ip", order="asc"))
+        self.assertEqual(imported["total"], 1)
+        self.assertIsNotNone(imported["items"][0]["ip_sort"])
         self.assertEqual(self.store.delete_discover_results([rows[0]["id"]]), 1)
         self.assertEqual(len(discover_rows(self.store)), 1)
         self.assertEqual(self.store.delete_discover_results(), 1)  # 清空
@@ -861,7 +994,7 @@ class ProbeApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["inserted"], 2)
         servers = client.get("/api/probe/servers", headers=headers).json()
-        self.assertEqual(len(servers), 3)
+        self.assertEqual(servers["total"], 3)
         groups = client.get("/api/probe/servers/groups", headers=headers).json()
         self.assertEqual(groups, [{"name": "g", "color": ""}])
         # 启动测试（frps 不可达 → 每个 IP 快速失败）
@@ -887,9 +1020,10 @@ class ProbeApiTests(unittest.TestCase):
         stats = client.get("/api/probe/dashboard", headers=headers).json()
         self.assertEqual(stats["servers"], 3)
         self.assertEqual(stats["connectivity"]["tested"], 1)
-        # with-status 列表带最新结果
-        servers = client.get("/api/probe/servers", headers=headers).json()
-        by_ip = {row["ip"]: row for row in servers}
+        # with-status 列表带最新结果（分页 envelope）
+        servers = client.get("/api/probe/servers?pageSize=200", headers=headers).json()
+        self.assertEqual(servers["total"], 3)
+        by_ip = {row["ip"]: row for row in servers["items"]}
         self.assertIsNotNone(by_ip["127.0.0.1"]["latestConnectivity"])
         self.assertIsNone(by_ip["127.0.0.1"]["latestSpeed"])
         # 审计

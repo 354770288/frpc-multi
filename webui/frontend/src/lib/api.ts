@@ -28,6 +28,9 @@ import type {
   ProbeSpeedHistory,
   ProbeTestConfig,
   ProbeTestStatus,
+  ServerFacets,
+  ServerPage,
+  ServerQuery,
   SystemInfo,
   ValidationData
 } from './types';
@@ -152,7 +155,22 @@ export type ProbeServerPayload = {
 };
 
 export const probeApi = {
-  servers: () => api<ProbeServer[]>('/api/probe/servers'),
+  servers: (query: ServerQuery, signal?: AbortSignal) => {
+    const params = new URLSearchParams({
+      page: String(query.page),
+      pageSize: String(query.pageSize),
+      q: query.q?.trim() ?? '',
+      conn: query.conn,
+      sort: query.sort,
+      order: query.order,
+    });
+    // group/label 显式空串=筛空值；undefined=不筛选（与后端 None 语义对齐）
+    if (query.group !== undefined) params.set('group', query.group);
+    if (query.label !== undefined) params.set('label', query.label);
+    return api<ServerPage>(`/api/probe/servers?${params.toString()}`, { signal });
+  },
+  serverFacets: (signal?: AbortSignal) =>
+    api<ServerFacets>('/api/probe/servers/facets', { signal }),
   groups: () => api<GroupInfo[]>('/api/probe/servers/groups'),
   createGroup: (name: string, color?: GroupColor) =>
     api<{ ok: boolean; name: string }>('/api/probe/servers/groups', {
@@ -214,7 +232,6 @@ export const probeApi = {
       body: JSON.stringify({ values })
     }),
   dashboard: () => api<ProbeDashboard>('/api/probe/dashboard'),
-  labels: () => api<LabelCount[]>('/api/probe/servers/labels'),
   renameGroup: (old: string, name: string) =>
     api<{ renamed: string }>('/api/probe/servers/groups/rename', {
       method: 'PATCH', body: JSON.stringify({ old, new: name })

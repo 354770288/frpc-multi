@@ -22,6 +22,8 @@ ChunkItem = TypeVar("ChunkItem")
 
 DiscoverLibrary = Literal["all", "new", "imported"]
 DiscoverSort = Literal["time", "ip", "latency"]
+ServerConn = Literal["all", "pass", "partial", "fail", "untested"]
+ServerSort = Literal["ip", "group", "conn", "speed", "time"]
 SortOrder = Literal["asc", "desc"]
 _SQL_VARIABLE_HEADROOM = 8
 
@@ -63,6 +65,39 @@ def _ipv4_sort_key(ip: str) -> int:
     if address.version != 4:
         raise ValueError("发现结果仅支持 IPv4")
     return int(address)
+
+
+def _ip_sort_for(addr: str) -> int | None:
+    """服务器地址 → 数值排序键；仅 IPv4 给 int，域名/IPv6/解析失败 → NULL（null-last 兜底）。"""
+    try:
+        address = ipaddress.ip_address(addr)
+    except ValueError:
+        return None
+    return int(address) if address.version == 4 else None
+
+
+@dataclass(frozen=True)
+class ServerPageQuery:
+    page: int = 1
+    page_size: int = 50
+    q: str = ""
+    group: str | None = None
+    label: str | None = None
+    conn: ServerConn = "all"
+    sort: ServerSort = "group"
+    order: SortOrder = "asc"
+
+    def __post_init__(self) -> None:
+        if self.page < 1:
+            raise ValueError("page 必须大于等于 1")
+        if not 1 <= self.page_size <= 200:
+            raise ValueError("page_size 必须在 1-200")
+        if self.conn not in {"all", "pass", "partial", "fail", "untested"}:
+            raise ValueError("conn 必须是 all/pass/partial/fail/untested")
+        if self.sort not in {"ip", "group", "conn", "speed", "time"}:
+            raise ValueError("sort 必须是 ip/group/conn/speed/time")
+        if self.order not in {"asc", "desc"}:
+            raise ValueError("order 必须是 asc/desc")
 
 
 def _normalize_ids(ids: Iterable[int]) -> list[int]:
@@ -186,12 +221,14 @@ class ProbeStore:
     def create_server(self, *, ip: str, label: str = "", server_group: str = "") -> ProbeServer:
         addr = validate_probe_addr(ip)
         created_at = now_iso()
+        ip_sort = _ip_sort_for(addr)
 
         def write(connection):
             try:
                 cursor = connection.execute(
-                    "INSERT INTO probe_servers (ip, label, server_group, created_at) VALUES (?, ?, ?, ?)",
-                    (addr, (label or "").strip(), (server_group or "").strip(), created_at),
+                    "INSERT INTO probe_servers (ip, ip_sort, label, server_group, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (addr, ip_sort, (label or "").strip(), (server_group or "").strip(), created_at),
                 )
             except Exception as exc:
                 if "UNIQUE" in str(exc):
@@ -226,11 +263,13 @@ class ProbeStore:
         new_ip = validate_probe_addr(ip) if ip is not None else server.ip
         new_label = (label or "").strip() if label is not None else server.label
         new_group = (server_group or "").strip() if server_group is not None else server.server_group
+        # 恒重算排序键：改 IP 后旧键失效；对域名/IPv6 落 NULL（null-last 兜底）
+        new_ip_sort = _ip_sort_for(new_ip)
 
         def write(connection):
             connection.execute(
-                "UPDATE probe_servers SET ip = ?, label = ?, server_group = ? WHERE id = ?",
-                (new_ip, new_label, new_group, server_id),
+                "UPDATE probe_servers SET ip = ?, ip_sort = ?, label = ?, server_group = ? WHERE id = ?",
+                (new_ip, new_ip_sort, new_label, new_group, server_id),
             )
             connection.commit()
 
@@ -248,11 +287,12 @@ class ProbeStore:
 
     def import_servers(self, items: list[dict]) -> tuple[int, int]:
         """批量导入 [{ip, label?, group?}]。已存在的 IP 跳过。返回 (新增, 跳过)。"""
-        cleaned: list[tuple[str, str, str]] = []
+        cleaned: list[tuple[str, int | None, str, str]] = []
         for item in items:
             addr = validate_probe_addr(str(item.get("ip", "")))
             cleaned.append((
                 addr,
+                _ip_sort_for(addr),
                 str(item.get("label", "") or "").strip(),
                 str(item.get("group", "") or "").strip(),
             ))
@@ -262,8 +302,9 @@ class ProbeStore:
 
         def write(connection):
             cursor = connection.executemany(
-                "INSERT OR IGNORE INTO probe_servers (ip, label, server_group, created_at) VALUES (?, ?, ?, ?)",
-                [(ip, label, group, created_at) for ip, label, group in cleaned],
+                "INSERT OR IGNORE INTO probe_servers (ip, ip_sort, label, server_group, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [(ip, ip_sort, label, group, created_at) for ip, ip_sort, label, group in cleaned],
             )
             connection.commit()
             inserted = cursor.rowcount if cursor.rowcount >= 0 else 0
@@ -373,24 +414,6 @@ class ProbeStore:
         self._with_connection(write)
         return new_value
 
-    def list_labels(self) -> list[dict]:
-        """服务器 + 网段发现结果的 distinct 标签及计数（标签云数据源）。"""
-
-        def read(connection):
-            rows = connection.execute(
-                """
-                SELECT label, COUNT(*) AS count FROM (
-                    SELECT label FROM probe_servers WHERE label != ''
-                    UNION ALL
-                    SELECT label FROM probe_discover_results WHERE label != ''
-                ) GROUP BY label ORDER BY count DESC, label
-                """
-            ).fetchall()
-            return [{"label": row[0], "count": row[1]} for row in rows]
-
-        return self._with_connection(read)
-
-    # ---- 网段发现结果 ----
 
     def upsert_discover_results_batch(
         self, hits: Iterable[tuple[str, int, float]]
@@ -607,13 +630,14 @@ class ProbeStore:
                     existing_selected += 1
                     if row["ip"] not in candidates:
                         candidates[row["ip"]] = (
-                            row["ip"], row["label"], override or row["server_group"], timestamp
+                            row["ip"], _ip_sort_for(row["ip"]), row["label"],
+                            override or row["server_group"], timestamp
                         )
                 if not candidates:
                     return DiscoverImportResult(existing_selected, 0, 0)
                 cursor = connection.executemany(
                     "INSERT OR IGNORE INTO probe_servers "
-                    "(ip, label, server_group, created_at) VALUES (?, ?, ?, ?)",
+                    "(ip, ip_sort, label, server_group, created_at) VALUES (?, ?, ?, ?, ?)",
                     candidates.values(),
                 )
                 inserted = max(cursor.rowcount, 0)
@@ -731,6 +755,124 @@ class ProbeStore:
                 """
             ).fetchall()
             return [dict(row) for row in rows]
+
+        return self._with_connection(read)
+
+    # 连通性分级表达式：与前端 ConnBadge 展示语义对齐（未测=0；fail=测过未全过 1..3）。
+    _CONN_SCORE_SQL = """(CASE
+        WHEN c.test_time IS NULL THEN 0
+        WHEN COALESCE(c.frps_reachable,0)=1 AND COALESCE(c.tunnel_established,0)=1
+             AND COALESCE(c.firewall_open,0)=1 THEN 4
+        WHEN COALESCE(c.frps_reachable,0)=1 AND COALESCE(c.tunnel_established,0)=1 THEN 3
+        WHEN COALESCE(c.frps_reachable,0)=1 THEN 2
+        ELSE 1 END)"""
+
+    def query_servers(self, query: ServerPageQuery) -> dict:
+        """Return one globally filtered/sorted server page and its metadata."""
+
+        def read(connection):
+            where = []
+            params: list[object] = []
+            q = query.q.strip()
+            if q:
+                escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                where.append(
+                    "(s.ip LIKE ? ESCAPE '\\' OR s.server_group LIKE ? ESCAPE '\\' "
+                    "OR s.label LIKE ? ESCAPE '\\')"
+                )
+                params.extend([f"%{escaped}%"] * 3)
+            if query.group is not None:
+                where.append("s.server_group = ?")
+                params.append(query.group)
+            if query.label is not None:
+                where.append("s.label = ?")
+                params.append(query.label)
+            if query.conn != "all":
+                score = self._CONN_SCORE_SQL
+                if query.conn == "pass":
+                    where.append(f"{score} = 4")
+                elif query.conn == "partial":
+                    where.append(f"{score} IN (2, 3)")
+                elif query.conn == "fail":
+                    where.append(f"{score} BETWEEN 1 AND 3")
+                else:
+                    where.append(f"{score} = 0")
+            where_sql = " WHERE " + " AND ".join(where) if where else ""
+            direction = query.order.upper()
+            if query.sort == "ip":
+                order_sql = f"(s.ip_sort IS NULL) ASC, s.ip_sort {direction}, s.id {direction}"
+            elif query.sort == "group":
+                order_sql = (
+                    f"s.server_group {direction}, (s.ip_sort IS NULL) ASC, "
+                    f"s.ip_sort {direction}, s.id {direction}"
+                )
+            elif query.sort == "conn":
+                order_sql = f"{self._CONN_SCORE_SQL} {direction}, s.id {direction}"
+            elif query.sort == "speed":
+                order_sql = f"COALESCE(p.dl_speed_mbps,0) {direction}, s.id {direction}"
+            else:
+                order_sql = f"(p.test_time IS NULL) ASC, p.test_time {direction}, s.id {direction}"
+
+            total = connection.execute(
+                "SELECT COUNT(*) FROM probe_servers s"
+                " LEFT JOIN probe_connectivity_results c"
+                " ON c.id = (SELECT id FROM probe_connectivity_results"
+                " WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1)"
+                + where_sql,
+                params,
+            ).fetchone()[0]
+            rows = connection.execute(
+                """
+                SELECT s.*, c.test_time AS c_test_time,
+                    c.frps_reachable AS c_frps_reachable,
+                    c.tunnel_established AS c_tunnel_established,
+                    c.firewall_open AS c_firewall_open,
+                    c.detail AS c_detail,
+                    p.dl_ok AS s_dl_ok, p.ul_ok AS s_ul_ok,
+                    p.dl_speed_mbps AS s_dl_speed_mbps,
+                    p.ul_speed_mbps AS s_ul_speed_mbps,
+                    p.test_time AS s_test_time
+                FROM probe_servers s
+                LEFT JOIN probe_connectivity_results c
+                    ON c.id = (
+                        SELECT id FROM probe_connectivity_results
+                        WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1
+                    )
+                LEFT JOIN probe_speed_results p
+                    ON p.id = (
+                        SELECT id FROM probe_speed_results
+                        WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1
+                    )
+                """ + where_sql + f" ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                (*params, query.page_size, (query.page - 1) * query.page_size),
+            ).fetchall()
+            return {
+                "items": [dict(row) for row in rows],
+                "page": query.page,
+                "pageSize": query.page_size,
+                "total": total,
+                "sort": query.sort,
+                "order": query.order,
+            }
+
+        return self._with_connection(read)
+
+    def server_facets(self) -> dict:
+        """服务器库标签云 / 分组筛选数据源（仅 probe_servers 自身）。"""
+
+        def read(connection):
+            labels = connection.execute(
+                "SELECT label, COUNT(*) AS count FROM probe_servers "
+                "WHERE label != '' GROUP BY label ORDER BY count DESC, label"
+            ).fetchall()
+            groups = connection.execute(
+                "SELECT server_group, COUNT(*) AS count FROM probe_servers "
+                "WHERE server_group != '' GROUP BY server_group ORDER BY server_group"
+            ).fetchall()
+            return {
+                "labels": [{"label": row["label"], "count": row["count"]} for row in labels],
+                "groups": [{"group": row["server_group"], "count": row["count"]} for row in groups],
+            }
 
         return self._with_connection(read)
 

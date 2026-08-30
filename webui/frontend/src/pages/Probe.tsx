@@ -21,10 +21,11 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { ConnBadge, ProbeStatCards, RecentList, SpeedText } from './probe/ProbeParts';
 import { useDiscovery } from './probe/useDiscovery';
+import { useServers } from './probe/useServers';
 import { ConfirmOverlay, Overlay } from '../components/Overlay';
 import { cn } from '../lib/utils';
 import type {
-  DiscoverStatus, GroupColor, GroupInfo, LabelCount,
+  DiscoverStatus, GroupColor, GroupInfo, LabelCount, ServerConn,
   ProbeConnectivityHistory, ProbeConnectivitySummary, ProbeDashboard, ProbeServer,
   ProbeSpeedHistory, ProbeTestConfig, ProbeTestStatus, RouteNodeInfo,
 } from '../lib/types';
@@ -44,7 +45,6 @@ function isRouteLabel(label: string): boolean {
 }
 
 type TestScope = 'all' | 'selected' | string; // 'all' | 'selected' | 分组名
-type SortKey = 'none' | 'ip' | 'group' | 'conn' | 'speed' | 'time';
 
 type GroupBadgeVariant = 'destructive' | 'warning' | 'info' | 'success' | 'muted';
 
@@ -77,49 +77,25 @@ function GroupDotClass(color: GroupColor | undefined): string {
   return color ? dot[color] : 'bg-muted-foreground/40';
 }
 
-/** IPv4 按段数值比较（10.0.0.2 < 10.0.0.10），其他按字典序。 */
-function compareIp(a: string, b: string): number {
-  const seg = (ip: string) => ip.split('.');
-  if (seg(a).length === 4 && seg(b).length === 4 && [...a, ...b].every((s) => /^\d+$/.test(s))) {
-    const left = seg(a).map(Number);
-    const right = seg(b).map(Number);
-    for (let i = 0; i < 4; i += 1) {
-      if (left[i] !== right[i]) return left[i] - right[i];
-    }
-    return 0;
-  }
-  return a.localeCompare(b);
-}
-
-/** 连通性状态分级：未测 < 不可达 < 可达 < 隧道 < 全通过。 */
-function connScore(latest: ProbeConnectivitySummary | null): number {
-  if (!latest) return 0;
-  if (latest.frpsReachable && latest.tunnelEstablished && latest.firewallOpen) return 4;
-  if (latest.frpsReachable && latest.tunnelEstablished) return 3;
-  if (latest.frpsReachable) return 2;
-  return 1;
-}
-
 export function Probe() {
   const navigate = useNavigate();
-  const [servers, setServers] = useState<ProbeServer[]>([]);
   const [groups, setGroups] = useState<GroupInfo[]>([]);
-  const [serverLabels, setServerLabels] = useState<LabelCount[]>([]);
   const [stats, setStats] = useState<ProbeDashboard | null>(null);
   const [status, setStatus] = useState<ProbeTestStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // 服务器表：筛选 + 勾选 + 排序
-  const [groupFilter, setGroupFilter] = useState('all');
-  const [connFilter, setConnFilter] = useState('all');
-  const [search, setSearch] = useState('');
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [sortKey, setSortKey] = useState<SortKey>('none');
-  const [sortAsc, setSortAsc] = useState(true);
-
   // 页面主 Tab（受控：勾选快速测试后自动切到「穿透测试」）；网段发现为第一子页
   const [tab, setTab] = useState('discover');
   const discovery = useDiscovery(tab === 'discover');
+  // 服务器库同样走服务端分页（数据/轮询/跨页勾选由 hook 统一持有）
+  const servers = useServers(tab === 'servers');
+  const serverRows = servers.page.items;
+  // 服务器表搜索框：本地受控 + 300ms 防抖
+  const [serverSearch, setServerSearch] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => servers.setSearch(serverSearch), 300);
+    return () => clearTimeout(timer);
+  }, [serverSearch, servers.setSearch]);
   const discoverRows = discovery.page.items;
   const dSelected = discovery.selected;
   const scanStatus = discovery.scanStatus;
@@ -172,32 +148,32 @@ export function Probe() {
     loadConfig();
   }, [loadConfig]);
 
-  const loadServers = useCallback(async () => {
+  // 仪表盘（轻量，所有 Tab 头部都在用）：首屏 + 仅页面可见时 10s 一拍
+  const loadDashboard = useCallback(async () => {
     try {
-      const [list, dash, groupList, labelList] = await Promise.all([
-        probeApi.servers(), probeApi.dashboard(), probeApi.groups(), probeApi.labels(),
-      ]);
-      setServers(list);
-      setStats(dash);
-      setGroups(groupList);
-      setServerLabels(labelList);
-      setSelectedIds((prev) => {
-        const alive = new Set(list.map((item) => item.id));
-        const next = new Set([...prev].filter((id) => alive.has(id)));
-        return next.size === prev.size ? prev : next;
-      });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : '服务器列表加载失败');
+      setStats(await probeApi.dashboard());
+    } catch {
+      /* 仪表盘加载失败不阻塞页面 */
     } finally {
       setLoading(false);
     }
   }, []);
+  const loadGroups = useCallback(async () => {
+    try {
+      setGroups(await probeApi.groups());
+    } catch {
+      /* 分组加载失败不阻塞页面 */
+    }
+  }, []);
 
   useEffect(() => {
-    loadServers();
-    const timer = setInterval(loadServers, 10000);
+    loadDashboard();
+    loadGroups();
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') void loadDashboard();
+    }, 10000);
     return () => clearInterval(timer);
-  }, [loadServers]);
+  }, [loadDashboard, loadGroups]);
 
   const startRouteTest = async () => {
     const ids = [...discovery.selected];
@@ -234,7 +210,8 @@ export function Probe() {
         if (cancelled) return;
         setStatus(next);
         if (wasRunning.current && !next.running) {
-          loadServers();
+          loadDashboard();
+          servers.refreshAll().catch(() => {});
           loadHistory(historyIp);
         }
         wasRunning.current = next.running;
@@ -245,18 +222,18 @@ export function Probe() {
     void tick();
     const timer = setInterval(tick, status?.running ? 1200 : 6000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [status?.running, loadServers, loadHistory, historyIp]);
+  }, [status?.running, loadDashboard, servers.refreshAll, loadHistory, historyIp]);
 
   useEffect(() => { loadHistory(historyIp); }, [loadHistory, historyIp]);
 
   /** 分组 → 组内服务器数：分组管理弹窗里标出空分组（提示先入组再绑域名）。 */
   const groupCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const server of servers) {
-      if (server.group) counts.set(server.group, (counts.get(server.group) ?? 0) + 1);
+    for (const { group, count } of servers.facets.groups) {
+      counts.set(group, count);
     }
     return counts;
-  }, [servers]);
+  }, [servers.facets.groups]);
 
   /** 分组名 → 颜色（徽章着色）。 */
   const groupColorMap = useMemo(() => {
@@ -294,55 +271,10 @@ export function Probe() {
     }
   };
 
-  const filtered = useMemo(() => servers.filter((item) => {
-    if (groupFilter !== 'all' && item.group !== groupFilter) return false;
-    if (serverLabelFilter && item.label !== serverLabelFilter) return false;
-    const score = connScore(item.latestConnectivity);
-    if (connFilter === 'pass' && score !== 4) return false;
-    if (connFilter === 'partial' && (score <= 1 || score === 4)) return false;
-    if (connFilter === 'fail' && (score === 0 || score === 4)) return false;
-    if (connFilter === 'untested' && score !== 0) return false;
-    const keyword = search.trim().toLowerCase();
-    if (!keyword) return true;
-    return item.ip.toLowerCase().includes(keyword)
-      || item.label.toLowerCase().includes(keyword)
-      || item.group.toLowerCase().includes(keyword);
-  }), [servers, groupFilter, serverLabelFilter, connFilter, search]);
-
-  const displayList = useMemo(() => {
-    if (sortKey === 'none') return filtered;
-    const dir = sortAsc ? 1 : -1;
-    const timeOf = (item: ProbeServer) => item.latestSpeed?.testTime || item.latestConnectivity?.testTime || '';
-    return [...filtered].sort((a, b) => {
-      switch (sortKey) {
-        case 'ip': return compareIp(a.ip, b.ip) * dir;
-        case 'group': return (a.group || '\uffff').localeCompare(b.group || '\uffff') * dir;
-        case 'conn': return (connScore(a.latestConnectivity) - connScore(b.latestConnectivity)) * dir;
-        case 'speed': return ((a.latestSpeed?.downloadMbps ?? -1) - (b.latestSpeed?.downloadMbps ?? -1)) * dir;
-        case 'time': return timeOf(a).localeCompare(timeOf(b)) * dir;
-        default: return 0;
-      }
-    });
-  }, [filtered, sortKey, sortAsc]);
-
-  function toggleSort(key: Exclude<SortKey, 'none'> | string) {
-    const next = key as Exclude<SortKey, 'none'>;
-    if (sortKey === next) {
-      setSortAsc((prev) => !prev);
-    } else {
-      setSortKey(next);
-      setSortAsc(true);
-    }
-  }
-
   const selectedIps = useMemo(
-    () => servers.filter((item) => selectedIds.has(item.id)).map((item) => item.ip),
-    [servers, selectedIds],
+    () => Array.from(servers.selected.values()).filter((ip): ip is string => typeof ip === 'string'),
+    [servers.selected],
   );
-
-  function toggleAll(checked: boolean) {
-    setSelectedIds(checked ? new Set(filtered.map((item) => item.id)) : new Set());
-  }
 
   async function startTest(mode: 'connectivity' | 'speed' | 'full', ipsOverride?: string[]): Promise<boolean> {
     setStarting(true);
@@ -397,7 +329,8 @@ export function Probe() {
     try {
       await probeApi.deleteServer(target.id);
       toast.success(`${target.ip} 已删除`);
-      loadServers();
+      servers.removeSelected([target.id]);
+      servers.refreshAll({ recoverOutOfRange: true }).catch(() => {});
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '删除失败');
     }
@@ -405,20 +338,20 @@ export function Probe() {
 
   /** 删除勾选的服务器（逐台调用，最后统一刷新）。 */
   async function deleteSelected() {
-    const targets = servers.filter((item) => selectedIds.has(item.id));
+    const targets = [...servers.selected.entries()];
     setDeletingSelected(false);
     let failed = 0;
-    for (const item of targets) {
+    for (const [id] of targets) {
       try {
-        await probeApi.deleteServer(item.id);
+        await probeApi.deleteServer(id);
       } catch {
         failed += 1;
       }
     }
-    setSelectedIds(new Set());
+    servers.removeSelected(targets.map(([id]) => id));
     if (failed) toast.warning(`已删除 ${targets.length - failed} 台，${failed} 台失败`);
     else toast.success(`已删除 ${targets.length} 台`);
-    loadServers();
+    servers.refreshAll({ recoverOutOfRange: true }).catch(() => {});
   }
 
   async function clearHistory() {
@@ -429,7 +362,7 @@ export function Probe() {
       const result = await probeApi.clearHistory(kind);
       toast.success(`已清空 ${kind === 'connectivity' ? '连通性' : '速率'}历史（${result.deleted} 条）`);
       loadHistory(historyIp);
-      loadServers();
+      servers.refreshAll().catch(() => {});
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '清空失败');
     }
@@ -445,7 +378,8 @@ export function Probe() {
         <Badge tone="muted">frps 验收</Badge>
         <div className="ml-auto flex items-center gap-3">
           <ProbeStatCards stats={stats} />
-          <Button size="sm" variant="outline" onClick={loadServers} disabled={loading}>
+          <Button size="sm" variant="outline"
+            onClick={() => { loadDashboard(); servers.refreshAll().catch(() => {}); }} disabled={loading}>
             <RefreshCw size={13} />刷新
           </Button>
         </div>
@@ -651,10 +585,10 @@ export function Probe() {
           <Card>
             <CardHeader className="flex-row flex-wrap items-center gap-2">
               <CardTitle className="text-sm">候选 frps 服务器</CardTitle>
-              <Badge tone="muted">{servers.length} 台</Badge>
+              <Badge tone="muted">{servers.page.total} 台</Badge>
               <div className="ml-auto flex flex-wrap items-center gap-2">
                 <div className="w-40">
-                  <Select value={groupFilter} onValueChange={setGroupFilter}>
+                  <Select value={servers.query.group ?? 'all'} onValueChange={servers.setGroup}>
                     <SelectTrigger size="sm"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectGroup>
@@ -669,7 +603,7 @@ export function Probe() {
                   </Select>
                 </div>
                 <div className="w-36">
-                  <Select value={connFilter} onValueChange={setConnFilter}>
+                  <Select value={servers.query.conn} onValueChange={(value) => servers.setConn(value as ServerConn)}>
                     <SelectTrigger size="sm"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectGroup>
@@ -683,7 +617,7 @@ export function Probe() {
                   </Select>
                 </div>
                 <Input
-                  className="h-8 w-44" value={search} onChange={(e) => setSearch(e.target.value)}
+                  className="h-8 w-44" value={serverSearch} onChange={(e) => setServerSearch(e.target.value)}
                   placeholder="搜索 IP / 标签 / 分组"
                 />
                 <Button size="sm" variant="outline" onClick={() => setGroupsOpen(true)}>
@@ -695,10 +629,10 @@ export function Probe() {
                 <Button size="sm" onClick={() => setEditing('new')}><Plus size={13} />添加</Button>
               </div>
             </CardHeader>
-            <LabelCloud labels={serverLabels} active={serverLabelFilter} onToggle={setServerLabelFilter} />
+            <LabelCloud labels={servers.facets.labels} active={servers.query.label ?? null} onToggle={servers.setLabel} />
             {selectedIps.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 border-b bg-primary/5 px-4 py-2">
-                <Badge tone="muted">已选 {selectedIps.length} 台</Badge>
+                <Badge tone="muted">已选 {selectedIps.length} 台（跨页保持）</Badge>
                 <Button size="sm" variant="outline" onClick={() => quickTest('connectivity')} disabled={running || starting}>
                   <Play size={13} />测连通
                 </Button>
@@ -717,7 +651,7 @@ export function Probe() {
                 <Button size="sm" variant="destructive" onClick={() => setDeletingSelected(true)}>
                   <Trash2 size={13} />删除
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
+                <Button size="sm" variant="ghost" onClick={() => servers.setSelected(new Map())}>
                   <X size={13} />清除勾选
                 </Button>
                 <span className="ml-auto text-[11px] text-muted-foreground">启动后自动跳转测试进度</span>
@@ -732,31 +666,32 @@ export function Probe() {
                         <input
                           type="checkbox" aria-label="全选"
                           className="size-3.5 accent-[var(--primary)]"
-                          checked={displayList.length > 0 && displayList.every((item) => selectedIds.has(item.id))}
-                          onChange={(e) => toggleAll(e.target.checked)}
+                          checked={serverRows.length > 0 && serverRows.every((item) => servers.selected.has(item.id))}
+                          onChange={(e) => servers.toggleCurrentPage(e.target.checked)}
                         />
                       </Th>
-                      <ThSort label="服务器" sortKey="ip" activeKey={sortKey} asc={sortAsc} onSort={toggleSort} />
-                      <ThSort label="分组" sortKey="group" activeKey={sortKey} asc={sortAsc} onSort={toggleSort} />
-                      <ThSort label="连通性" sortKey="conn" activeKey={sortKey} asc={sortAsc} onSort={toggleSort} />
-                      <ThSort label="速率" sortKey="speed" activeKey={sortKey} asc={sortAsc} onSort={toggleSort} />
-                      <ThSort label="测速时间" sortKey="time" activeKey={sortKey} asc={sortAsc} onSort={toggleSort} />
+                      <ThSort label="服务器" sortKey="ip" activeKey={servers.query.sort} asc={servers.query.order === 'asc'}
+                        onSort={() => servers.setSort('ip', servers.query.sort === 'ip' && servers.query.order === 'asc' ? 'desc' : 'asc')} />
+                      <ThSort label="分组" sortKey="group" activeKey={servers.query.sort} asc={servers.query.order === 'asc'}
+                        onSort={() => servers.setSort('group', servers.query.sort === 'group' && servers.query.order === 'asc' ? 'desc' : 'asc')} />
+                      <ThSort label="连通性" sortKey="conn" activeKey={servers.query.sort} asc={servers.query.order === 'asc'}
+                        onSort={() => servers.setSort('conn', servers.query.sort === 'conn' && servers.query.order === 'asc' ? 'desc' : 'asc')} />
+                      <ThSort label="速率" sortKey="speed" activeKey={servers.query.sort} asc={servers.query.order === 'asc'}
+                        onSort={() => servers.setSort('speed', servers.query.sort === 'speed' && servers.query.order === 'desc' ? 'asc' : 'desc')} />
+                      <ThSort label="测速时间" sortKey="time" activeKey={servers.query.sort} asc={servers.query.order === 'asc'}
+                        onSort={() => servers.setSort('time', servers.query.sort === 'time' && servers.query.order === 'desc' ? 'asc' : 'desc')} />
                       <Th align="right">操作</Th>
                     </tr>
                   </thead>
                   <tbody>
-                    {displayList.map((item) => (
+                    {serverRows.map((item) => (
                       <tr key={item.id} className="border-b last:border-b-0 hover:bg-muted/50 transition-colors">
                         <Td>
                           <input
                             type="checkbox" aria-label={`选择 ${item.ip}`}
                             className="size-3.5 accent-[var(--primary)]"
-                            checked={selectedIds.has(item.id)}
-                            onChange={(e) => {
-                              const next = new Set(selectedIds);
-                              if (e.target.checked) next.add(item.id); else next.delete(item.id);
-                              setSelectedIds(next);
-                            }}
+                            checked={servers.selected.has(item.id)}
+                            onChange={() => servers.toggleSelected(item.id, item.ip)}
                           />
                         </Td>
                         <Td>
@@ -782,13 +717,34 @@ export function Probe() {
                         </Td>
                       </tr>
                     ))}
-                    {!displayList.length && (
+                    {!serverRows.length && (
                       <tr><td colSpan={7} className="px-4 py-10 text-center text-xs text-muted-foreground">
-                        {loading ? '加载中…' : '暂无服务器，点击「添加」或「批量导入」开始'}
+                        {servers.page.total ? '当前筛选条件下没有匹配的记录' : '暂无服务器，点击「添加」或「批量导入」开始'}
                       </td></tr>
                     )}
                   </tbody>
                 </table>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3">
+                <span className="text-xs text-muted-foreground">
+                  第 {servers.page.page} / {Math.max(1, Math.ceil(servers.page.total / servers.page.pageSize))} 页 · 共 {servers.page.total} 台
+                </span>
+                <div className="flex items-center gap-2">
+                  <Select value={String(servers.query.pageSize)} onValueChange={(value) => servers.setPageSize(Number(value))}>
+                    <SelectTrigger size="sm" className="w-24"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="25">25 / 页</SelectItem>
+                      <SelectItem value="50">50 / 页</SelectItem>
+                      <SelectItem value="100">100 / 页</SelectItem>
+                      <SelectItem value="200">200 / 页</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button size="sm" variant="outline" disabled={servers.page.page <= 1}
+                    onClick={() => servers.setPageNumber(servers.page.page - 1)}>上一页</Button>
+                  <Button size="sm" variant="outline"
+                    disabled={servers.page.page >= Math.max(1, Math.ceil(servers.page.total / servers.page.pageSize))}
+                    onClick={() => servers.setPageNumber(servers.page.page + 1)}>下一页</Button>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -868,7 +824,7 @@ export function Probe() {
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
-                          <SelectItem value="all">全部服务器（{servers.length}）</SelectItem>
+                          <SelectItem value="all">全部服务器（{stats?.servers ?? 0}）</SelectItem>
                           <SelectItem value="selected" disabled={!selectedIps.length}>
                             勾选的服务器（{selectedIps.length}）
                           </SelectItem>
@@ -882,15 +838,15 @@ export function Probe() {
                     </Select>
                   </div>
                   <div className="flex flex-col gap-2">
-                    <Button onClick={() => startTest('full')} disabled={running || starting || !servers.length || (scope === 'selected' && !selectedIps.length)}>
+                    <Button onClick={() => startTest('full')} disabled={running || starting || !(stats?.servers) || (scope === 'selected' && !selectedIps.length)}>
                       <Zap size={13} />一键完整测试
                     </Button>
                     <p className="text-[11px] leading-4 text-muted-foreground">连通性全过（可达 + 隧道 + 端口放行）的服务器自动续接速率测试</p>
                     <div className="grid grid-cols-2 gap-2">
-                      <Button variant="outline" onClick={() => startTest('connectivity')} disabled={running || starting || !servers.length || (scope === 'selected' && !selectedIps.length)}>
+                      <Button variant="outline" onClick={() => startTest('connectivity')} disabled={running || starting || !(stats?.servers) || (scope === 'selected' && !selectedIps.length)}>
                         <Play size={13} />连通性
                       </Button>
-                      <Button variant="outline" onClick={() => startTest('speed')} disabled={running || starting || !servers.length || (scope === 'selected' && !selectedIps.length)}>
+                      <Button variant="outline" onClick={() => startTest('speed')} disabled={running || starting || !(stats?.servers) || (scope === 'selected' && !selectedIps.length)}>
                         <Gauge size={13} />速率
                       </Button>
                     </div>
@@ -989,14 +945,24 @@ export function Probe() {
           server={editing === 'new' ? null : editing}
           groups={groups.map((group) => group.name)}
           onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); loadServers(); }}
+          onSaved={() => {
+            setEditing(null);
+            loadDashboard();
+            servers.refreshAll().catch(() => {});
+            loadGroups();
+          }}
         />
       )}
       {importOpen && (
         <ImportDialog
           groups={groups.map((group) => group.name)}
           onClose={() => setImportOpen(false)}
-          onImported={() => { setImportOpen(false); loadServers(); }}
+          onImported={() => {
+            setImportOpen(false);
+            loadDashboard();
+            servers.refreshAll().catch(() => {});
+            loadGroups();
+          }}
         />
       )}
       {deleting && (
@@ -1012,17 +978,25 @@ export function Probe() {
           groups={groups}
           groupCounts={groupCounts}
           onClose={() => setGroupsOpen(false)}
-          onChanged={() => { loadServers(); discovery.refreshAll().catch(() => {}); }}
+          onChanged={() => {
+            loadGroups();
+            discovery.refreshAll().catch(() => {});
+            servers.refreshAll().catch(() => {});
+          }}
         />
       )}
       {batchEdit && (
         <BatchEditDialog
           kind={batchEdit}
-          ids={[...selectedIds]}
-          count={selectedIps.length}
+          ids={[...servers.selected.keys()]}
+          count={servers.selected.size}
           groups={groups.map((group) => group.name)}
           onClose={() => setBatchEdit(null)}
-          onSaved={() => { setBatchEdit(null); loadServers(); }}
+          onSaved={() => {
+            setBatchEdit(null);
+            servers.refreshAll({ recoverOutOfRange: true }).catch(() => {});
+            loadGroups();
+          }}
         />
       )}
       {dBatchEdit && (
@@ -1056,7 +1030,7 @@ export function Probe() {
             setImportSelOpen(false);
             discovery.removeSelected(importedIds);
             discovery.refreshAll({ recoverOutOfRange: true }).catch(() => {});
-            loadServers();
+            loadDashboard();
           }}
         />
       )}

@@ -336,6 +336,36 @@ export type DiscoverFacets = {
   new: number;
 };
 
+// ---- 服务器库（服务端分页，模式同网段发现） ----
+
+export type ServerConn = 'all' | 'pass' | 'partial' | 'fail' | 'untested';
+export type ServerSort = 'ip' | 'group' | 'conn' | 'speed' | 'time';
+
+export type ServerQuery = {
+  page: number;
+  pageSize: number;
+  q?: string;
+  group?: string;
+  label?: string;
+  conn: ServerConn;
+  sort: ServerSort;
+  order: DiscoverOrder;
+};
+
+export type ServerPage = {
+  items: ProbeServer[];
+  page: number;
+  pageSize: number;
+  total: number;
+  sort: ServerSort;
+  order: DiscoverOrder;
+};
+
+export type ServerFacets = {
+  labels: LabelCount[];
+  groups: DiscoverFacetGroup[];
+};
+
 // ---- CN2 路由追踪（节点轮询模型） ----
 
 export type RouteStatusView = {

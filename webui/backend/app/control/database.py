@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE TABLE IF NOT EXISTS probe_servers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ip TEXT NOT NULL UNIQUE,
+    ip_sort INTEGER,
     label TEXT NOT NULL DEFAULT '',
     server_group TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
@@ -272,6 +273,63 @@ def _migrate_probe_discover_results(connection: sqlite3.Connection) -> None:
         connection.commit()
 
 
+def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
+    """probe_servers 补 ip_sort 数值列（分页数值排序）+ 查询索引，模式同发现表。"""
+    columns = _column_names(connection, "probe_servers")
+    if not columns:
+        return
+
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        if "ip_sort" not in columns:
+            connection.execute("ALTER TABLE probe_servers ADD COLUMN ip_sort INTEGER")
+
+        # 物化批次 + id 单调游标：既避免「遍历游标同时改 WHERE 列」的未定义行为，
+        # 也保证整批无法解析的行不会死循环（这些行永驻 NULL，null-last 排序兜底）。
+        last_seen_id = 0
+        while True:
+            batch = connection.execute(
+                "SELECT id, ip FROM probe_servers WHERE ip_sort IS NULL AND id > ? LIMIT ?",
+                (last_seen_id, DISCOVER_MIGRATION_BATCH_SIZE),
+            ).fetchall()
+            if not batch:
+                break
+            last_seen_id = max(row["id"] for row in batch)
+            valid = []
+            for row in batch:
+                try:
+                    address = ipaddress.ip_address(row["ip"])
+                except ValueError:
+                    continue
+                if address.version == 4:
+                    valid.append((int(address), row["id"]))
+            if valid:
+                connection.executemany(
+                    "UPDATE probe_servers SET ip_sort = ? WHERE id = ?", valid
+                )
+
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_servers_group_ip "
+            "ON probe_servers (server_group, ip)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_servers_label ON probe_servers (label)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_servers_ip "
+            "ON probe_servers ((ip_sort IS NULL), ip_sort, id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_servers_ip_desc "
+            "ON probe_servers ((ip_sort IS NULL) ASC, ip_sort DESC, id DESC)"
+        )
+    except Exception:
+        connection.rollback()
+        raise
+    else:
+        connection.commit()
+
+
 def _resolved_path(path: Path) -> Path:
     return Path(path).expanduser().resolve()
 
@@ -318,7 +376,10 @@ def initialize_database(path: Path) -> None:
             _migrate_lb_domains(connection)
             _migrate_probe_groups(connection)
             connection.commit()
+            # 各迁移自带 BEGIN IMMEDIATE/COMMIT，必须都在外层 commit 之后调用，
+            # 避免撞上前面 DML 留下的隐式事务
             _migrate_probe_discover_results(connection)
+            _migrate_probe_servers(connection)
         finally:
             connection.close()
 

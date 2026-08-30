@@ -21,7 +21,7 @@ from .engine import ProbeOptions
 from .persistence import DiscoverPersistenceError, DiscoverScanCoordinator
 from .route import load_route_nodes, route_hub, save_route_nodes
 from .runner import MODES, ProbeRunner
-from .store import DiscoverPageQuery, ProbeStore, validate_probe_addr
+from .store import DiscoverPageQuery, ProbeStore, ServerPageQuery, validate_probe_addr
 
 router = APIRouter(prefix="/api/probe", dependencies=[Depends(require_auth)])
 
@@ -264,19 +264,35 @@ def parse_batch_text(text: str, default_group: str = "") -> list[dict]:
 
 
 @router.get("/servers")
-def list_servers():
-    return [_public_server(row) for row in probe_store().list_servers_with_status()]
+def list_servers(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, alias="pageSize", ge=1, le=200),
+    q: str = "",
+    group: str | None = None,
+    label: str | None = None,
+    conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
+    sort: Literal["ip", "group", "conn", "speed", "time"] = "group",
+    order: Literal["asc", "desc"] = "asc",
+):
+    result = probe_store().query_servers(ServerPageQuery(
+        page=page, page_size=page_size, q=q, group=group, label=label,
+        conn=conn, sort=sort, order=order,
+    ))
+    return {
+        "items": [_public_server(row) for row in result["items"]],
+        "page": result["page"], "pageSize": result["pageSize"],
+        "total": result["total"], "sort": result["sort"], "order": result["order"],
+    }
+
+
+@router.get("/servers/facets")
+def server_facets():
+    return probe_store().server_facets()
 
 
 @router.get("/servers/groups")
 def list_server_groups():
     return probe_store().list_groups_with_colors()
-
-
-@router.get("/servers/labels")
-def list_server_labels():
-    """标签云数据源：服务器 + 网段发现结果的 distinct 标签及计数。"""
-    return probe_store().list_labels()
 
 
 class GroupCreate(BaseModel):
