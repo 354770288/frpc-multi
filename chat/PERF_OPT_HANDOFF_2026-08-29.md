@@ -47,12 +47,14 @@ dd42848 perf(probe): bound discovery persistence
 - SQLite 单写者串行化（writer 是唯一写者，首启迁移可能短暂持写锁）。
 - 前端 facets 在 route active 期间只在 terminal 刷新，长任务期间标签计数略陈旧。
 
-## 5. 上线清单（计划范围外，需用户决定）
+## 5. 上线记录（2026-08-30 已完成）
 
-1. push origin main → CI 构建镜像。
-2. VPS console 更新（compose pull+up -d）；agent 容器重建（docker run 参数见 vault/本地旧交接文档）。
-3. 存量 1400+ 真实发现行首次访问会触发 `ip_sort` 回填迁移（BEGIN IMMEDIATE，批量 1000，一次性）。
-4. 上线后人工验证：发现表翻页/筛选/排序、跨页勾选导入、批量改标签、删除越界恢复、扫描（短 /24 与大段各一次）进度与完成后自动刷新、路由队列标签更新。
+1. push origin main（ce52f02..5fe70ff）→ CI `33298725175` 构建发布镜像成功。
+2. VPS console：先容器内 sqlite3 backup API 备份 `console-backup-pre-perf.db`，再 compose pull+up -d。
+3. agent：docker run 重建（参数不变），重连主控正常。
+4. 迁移实测：2179 行 `ip_sort` 回填完成（0 NULL），journal_mode=wal。
+5. 线上冒烟全过：results envelope 恰为 {items,page,pageSize,total,sort,order}（无 labels 键）、数值 IP 排序正确、facets 独立（labels/groups/imported/new）、`group=&label=CN2` 显式空串筛选服务端生效（29 行全匹配）、UI 200、路由节点 claim 轮询正常、agent WebSocket 已连。
+6. 建议人工过一遍浏览器体验：翻页/筛选/跨页勾选导入/扫描（短 /24）完成后自动刷新。
 
 ## 6. 关键文件
 
