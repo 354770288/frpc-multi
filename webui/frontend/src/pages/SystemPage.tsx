@@ -287,7 +287,7 @@ function NodeSystemCard({ node, refreshKey }: { node: Node; refreshKey: number }
           // refetch 期间保留旧渲染，仅降不透明度（dataviz：no skeleton flash on refetch）
           <div className={`space-y-4 ${loading ? 'opacity-60' : ''}`}>
             <dl className="grid grid-cols-1 gap-x-6 gap-y-4 text-xs sm:grid-cols-2">
-              <InfoItem label="Docker 版本" value={info.dockerVersion || '未连接'} mono />
+              <InfoItem label="Agent 版本" value={info.agentVersion || '未知'} mono />
               <InfoItem label="frpc 镜像" value={info.frpImage} mono />
               <InfoItem label="frpc 版本" value={info.frpVersion} mono />
               <InfoItem label="项目目录" value={info.projectDir} mono />

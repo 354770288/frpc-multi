@@ -203,7 +203,7 @@ function NodeSystemSummary({ node, snapshot }: { node: Node; snapshot?: { info: 
   const diskRatio = info.disk.total > 0 ? (info.disk.used / info.disk.total) * 100 : null;
   return (
     <div className="min-w-0 space-y-1.5">
-      <div className="flex flex-wrap items-center gap-1.5"><Chip l="Agent" v="在线" t="success" /><Chip l="Docker" v={info.dockerVersion || '未连接'} /></div>
+      <div className="flex flex-wrap items-center gap-1.5"><Chip l="Agent" v="在线" t="success" /><Chip l="Agent 版本" v={info.agentVersion || '未知'} /></div>
       <div className="flex flex-wrap items-center gap-1.5"><Chip l="frpc" v={info.frpVersion || info.frpImage || '未配置'} /><Chip l="磁盘" v={diskRatio === null ? '不可用' : `${diskRatio.toFixed(1)}% · ${bytesToHuman(info.disk.used)} / ${bytesToHuman(info.disk.total)}`} t={diskRatio !== null && diskRatio >= 90 ? 'danger' : diskRatio !== null && diskRatio >= 75 ? 'warning' : 'muted'} /></div>
     </div>
   );

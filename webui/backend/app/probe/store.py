@@ -76,6 +76,49 @@ def _ip_sort_for(addr: str) -> int | None:
     return int(address) if address.version == 4 else None
 
 
+def _normalize_labels(labels: Iterable[str]) -> list[str]:
+    """归一化标签：拆逗号、去空白、去重、保序。"""
+    out: list[str] = []
+    for raw in labels:
+        for part in str(raw).split(","):
+            value = part.strip()
+            if value and value not in out:
+                out.append(value)
+    return out
+
+
+def _pack_labels(labels: Iterable[str]) -> str:
+    """标签列表 → 哨兵格式存储（`,a,b,`）；空集 = 空串。"""
+    parts = _normalize_labels(labels)
+    return "," + ",".join(parts) + "," if parts else ""
+
+
+def _unpack_labels(packed: str) -> list[str]:
+    """哨兵格式 → 标签列表（兼容 legacy 未打包值）。"""
+    if not packed:
+        return []
+    return [part for part in packed.strip(",").split(",") if part]
+
+
+unpack_labels = _unpack_labels  # 公开别名：router 序列化用
+
+
+def _label_like_pattern(label: str) -> str:
+    """哨兵格式的 LIKE 匹配模式（转义 %/_）。"""
+    escaped = label.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%,{escaped},%"
+
+
+def _aggregate_labels(packed_values: Iterable[str]) -> list[dict]:
+    """把哨兵格式 label 列聚合为 [{label, count}]（计数=包含该标签的行数）。"""
+    counts: dict[str, int] = {}
+    for packed in packed_values:
+        for label in _unpack_labels(packed):
+            counts[label] = counts.get(label, 0) + 1
+    return [{"label": label, "count": count}
+            for label, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
 @dataclass(frozen=True)
 class ServerPageQuery:
     page: int = 1
@@ -184,6 +227,10 @@ class ProbeServer:
     server_group: str
     created_at: str
 
+    @property
+    def labels(self) -> list[str]:
+        return _unpack_labels(self.label)
+
 
 def _server_from_row(row) -> ProbeServer:
     return ProbeServer(
@@ -218,7 +265,7 @@ class ProbeStore:
 
         return self._with_connection(read)
 
-    def create_server(self, *, ip: str, label: str = "", server_group: str = "") -> ProbeServer:
+    def create_server(self, *, ip: str, labels: Sequence[str] = (), server_group: str = "") -> ProbeServer:
         addr = validate_probe_addr(ip)
         created_at = now_iso()
         ip_sort = _ip_sort_for(addr)
@@ -228,7 +275,7 @@ class ProbeStore:
                 cursor = connection.execute(
                     "INSERT INTO probe_servers (ip, ip_sort, label, server_group, created_at) "
                     "VALUES (?, ?, ?, ?, ?)",
-                    (addr, ip_sort, (label or "").strip(), (server_group or "").strip(), created_at),
+                    (addr, ip_sort, _pack_labels(labels), (server_group or "").strip(), created_at),
                 )
             except Exception as exc:
                 if "UNIQUE" in str(exc):
@@ -256,12 +303,12 @@ class ProbeStore:
         server_id: int,
         *,
         ip: str | None = None,
-        label: str | None = None,
+        labels: Sequence[str] | None = None,
         server_group: str | None = None,
     ) -> ProbeServer:
         server = self.get_server(server_id)
         new_ip = validate_probe_addr(ip) if ip is not None else server.ip
-        new_label = (label or "").strip() if label is not None else server.label
+        new_label = _pack_labels(labels) if labels is not None else server.label
         new_group = (server_group or "").strip() if server_group is not None else server.server_group
         # 恒重算排序键：改 IP 后旧键失效；对域名/IPv6 落 NULL（null-last 兜底）
         new_ip_sort = _ip_sort_for(new_ip)
@@ -293,7 +340,7 @@ class ProbeStore:
             cleaned.append((
                 addr,
                 _ip_sort_for(addr),
-                str(item.get("label", "") or "").strip(),
+                _pack_labels([str(item.get("label", "") or "")]),
                 str(item.get("group", "") or "").strip(),
             ))
         if not cleaned:
@@ -435,7 +482,7 @@ class ProbeStore:
                     "VALUES (?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(ip, port) DO UPDATE SET ip_sort = excluded.ip_sort, "
                     "latency_ms = excluded.latency_ms, discovered_at = excluded.discovered_at",
-                    [(*row[:4], ROUTE_LABEL_UNTESTED, row[4]) for row in cleaned],
+                    [(*row[:4], _pack_labels([ROUTE_LABEL_UNTESTED]), row[4]) for row in cleaned],
                 )
                 eligible: set[str] = set()
                 unique_ips = list(dict.fromkeys(row[0] for row in cleaned))
@@ -443,8 +490,8 @@ class ProbeStore:
                     placeholders = ",".join("?" for _ in chunk)
                     rows = connection.execute(
                         "SELECT DISTINCT ip FROM probe_discover_results "
-                        f"WHERE ip IN ({placeholders}) AND (label = '' OR label = ?)",
-                        (*chunk, ROUTE_LABEL_UNTESTED),
+                        f"WHERE ip IN ({placeholders}) AND (label = '' OR label LIKE ?)",
+                        (*chunk, _label_like_pattern(ROUTE_LABEL_UNTESTED)),
                     ).fetchall()
                     eligible.update(row["ip"] for row in rows)
             return [ip for ip in unique_ips if ip in eligible]
@@ -452,24 +499,29 @@ class ProbeStore:
         return self._with_connection(write)
 
     def set_route_label(self, ip: str, label: str) -> int:
-        """路由测试结论写回该 IP 的全部发现行标签，返回更新行数。"""
+        """路由测试结论写回该 IP 的全部发现行标签（多标签语义：剥掉旧结论、追加新结论）。"""
+
+        # 结论标签三兄弟全部剥掉，避免残留矛盾结论
+        stripped = "REPLACE(REPLACE(REPLACE(label, ',未路由测试,', ','), ',非CN2,', ','), ',CN2,', ',')"
 
         def write(connection):
             cursor = connection.execute(
-                "UPDATE probe_discover_results SET label = ? WHERE ip = ?", (label, ip))
+                f"UPDATE probe_discover_results SET label = CASE WHEN {stripped} = '' "
+                f"THEN ? ELSE {stripped} || ? END WHERE ip = ?",
+                (_pack_labels([label]), f"{label},", ip))
             connection.commit()
             return cursor.rowcount
 
         return self._with_connection(write)
 
     def discover_row_needs_route(self, ip: str) -> bool:
-        """该 IP 是否存在待路由测试的发现行（标签为未路由测试或空）。"""
+        """该 IP 是否存在待路由测试的发现行（无结论标签：空或仅有「未路由测试」）。"""
 
         def read(connection):
             row = connection.execute(
                 "SELECT 1 FROM probe_discover_results "
-                "WHERE ip = ? AND (label = '' OR label = ?) LIMIT 1",
-                (ip, ROUTE_LABEL_UNTESTED),
+                "WHERE ip = ? AND (label = '' OR label LIKE ?) LIMIT 1",
+                (ip, _label_like_pattern(ROUTE_LABEL_UNTESTED)),
             ).fetchone()
             return row is not None
 
@@ -510,8 +562,12 @@ class ProbeStore:
             where.append("d.server_group = ?")
             params.append(query.group)
         if query.label is not None:
-            where.append("d.label = ?")
-            params.append(query.label)
+            # 空串 = 无标签；非空 = 标签集合包含该标签（哨兵 LIKE，转义 %/_）
+            if query.label == "":
+                where.append("d.label = ''")
+            else:
+                where.append("d.label LIKE ? ESCAPE '\\'")
+                params.append(_label_like_pattern(query.label))
         library_exists = "EXISTS (SELECT 1 FROM probe_servers s WHERE s.ip = d.ip)"
         if query.library == "imported":
             where.append(library_exists)
@@ -552,10 +608,8 @@ class ProbeStore:
     def discover_facets(self) -> dict:
         """Return global discovery facets, independent of any current page/filter."""
         def read(connection):
-            labels = connection.execute(
-                "SELECT label, COUNT(*) AS count FROM probe_discover_results "
-                "WHERE label != '' GROUP BY label ORDER BY count DESC, label"
-            ).fetchall()
+            packed = [row["label"] for row in connection.execute(
+                "SELECT label FROM probe_discover_results WHERE label != ''")]
             groups = connection.execute(
                 "SELECT server_group, COUNT(*) AS count FROM probe_discover_results "
                 "WHERE server_group != '' GROUP BY server_group ORDER BY count DESC, server_group"
@@ -568,7 +622,7 @@ class ProbeStore:
             ).fetchone()
             imported = counts["imported"] or 0
             return {
-                "labels": [{"label": row["label"], "count": row["count"]} for row in labels],
+                "labels": _aggregate_labels(packed),
                 "groups": [{"group": row["server_group"], "count": row["count"]} for row in groups],
                 "imported": imported,
                 "new": counts["total"] - imported,
@@ -647,14 +701,56 @@ class ProbeStore:
 
         return self._with_connection(write)
 
-    def update_discover_batch(self, ids: list[int], *, group: str | None, label: str | None) -> int:
-        """批量覆盖发现结果的分组/标签，返回更新行数。"""
-        if group is None and label is None:
+    def discover_labels_for_ids(self, ids: list[int]) -> list[dict]:
+        """聚合所选发现行已贴的标签（跨页批量标签弹窗用）。"""
+        normalized = _normalize_ids(ids)
+        if not normalized:
+            return []
+
+        def read(connection):
+            packed: list[str] = []
+            for chunk in _chunks(connection, normalized):
+                placeholders = ",".join("?" for _ in chunk)
+                rows = connection.execute(
+                    "SELECT label FROM probe_discover_results "
+                    f"WHERE id IN ({placeholders}) AND label != ''", chunk
+                ).fetchall()
+                packed.extend(row["label"] for row in rows)
+            return _aggregate_labels(packed)
+
+        return self._with_connection(read)
+
+    def servers_labels_for_ids(self, ids: list[int]) -> list[dict]:
+        """聚合所选服务器已贴的标签。"""
+        normalized = _normalize_ids(ids)
+        if not normalized:
+            return []
+
+        def read(connection):
+            packed: list[str] = []
+            for chunk in _chunks(connection, normalized):
+                placeholders = ",".join("?" for _ in chunk)
+                rows = connection.execute(
+                    "SELECT label FROM probe_servers "
+                    f"WHERE id IN ({placeholders}) AND label != ''", chunk
+                ).fetchall()
+                packed.extend(row["label"] for row in rows)
+            return _aggregate_labels(packed)
+
+        return self._with_connection(read)
+
+    def update_discover_batch(
+        self, ids: list[int], *, group: str | None = None,
+        add_labels: Sequence[str] = (), remove_labels: Sequence[str] = (),
+    ) -> int:
+        """批量更新发现结果：分组覆盖 + 标签增/删（多标签语义），返回更新行数。"""
+        if group is None and not add_labels and not remove_labels:
             raise ValueError("至少提供分组或标签之一")
         clean_group = (group or "").strip() if group is not None else None
         if group is not None and not clean_group:
             raise ValueError("分组不能为空")
-        clean_label = (label or "").strip() if label is not None else None
+        adds = _normalize_labels(add_labels)
+        removes = _normalize_labels(remove_labels)
 
         normalized = _normalize_ids(ids)
         if not normalized:
@@ -663,14 +759,37 @@ class ProbeStore:
         def write(connection):
             affected = 0
             with connection:
-                for chunk in _chunks(connection, normalized, headroom=2):
+                for chunk in _chunks(connection, normalized, headroom=4):
                     placeholders = ",".join("?" for _ in chunk)
-                    cursor = connection.execute(
-                        "UPDATE probe_discover_results SET server_group = COALESCE(?, server_group), "
-                        f"label = COALESCE(?, label) WHERE id IN ({placeholders})",
-                        (clean_group, clean_label, *chunk),
-                    )
-                    affected += cursor.rowcount
+                    # 纯标签操作没有可靠的 rowcount 语义，按 chunk 基数计数
+                    affected += connection.execute(
+                        f"SELECT COUNT(*) FROM probe_discover_results WHERE id IN ({placeholders})",
+                        chunk,
+                    ).fetchone()[0]
+                    if clean_group is not None:
+                        connection.execute(
+                            "UPDATE probe_discover_results SET server_group = ? "
+                            f"WHERE id IN ({placeholders})",
+                            (clean_group, *chunk),
+                        )
+                    for label in removes:
+                        cursor = connection.execute(
+                            "UPDATE probe_discover_results SET label = CASE "
+                            "WHEN REPLACE(label, ?, ',') = ',' THEN '' "
+                            "ELSE REPLACE(label, ?, ',') END "
+                            f"WHERE id IN ({placeholders})",
+                            (f",{label},", f",{label},", *chunk),
+                        )
+                    for label in adds:
+                        pattern = _label_like_pattern(label)
+                        cursor = connection.execute(
+                            "UPDATE probe_discover_results SET label = CASE "
+                            "WHEN label = '' THEN ? "
+                            "WHEN label LIKE ? ESCAPE '\\' THEN label "
+                            "ELSE label || ? END "
+                            f"WHERE id IN ({placeholders})",
+                            (f",{label},", pattern, f"{label},", *chunk),
+                        )
             return affected
 
         return self._with_connection(write)
@@ -695,14 +814,18 @@ class ProbeStore:
 
         return self._with_connection(write)
 
-    def update_servers_batch(self, ids: list[int], *, group: str | None, label: str | None) -> int:
-        """批量覆盖服务器的分组/标签，返回更新行数。"""
-        if group is None and label is None:
+    def update_servers_batch(
+        self, ids: list[int], *, group: str | None = None,
+        add_labels: Sequence[str] = (), remove_labels: Sequence[str] = (),
+    ) -> int:
+        """批量更新服务器：分组覆盖 + 标签增/删（多标签语义），返回更新行数。"""
+        if group is None and not add_labels and not remove_labels:
             raise ValueError("至少提供分组或标签之一")
         clean_group = (group or "").strip() if group is not None else None
         if group is not None and not clean_group:
             raise ValueError("分组不能为空")
-        clean_label = (label or "").strip() if label is not None else None
+        adds = _normalize_labels(add_labels)
+        removes = _normalize_labels(remove_labels)
 
         normalized = _normalize_ids(ids)
         if not normalized:
@@ -711,17 +834,40 @@ class ProbeStore:
         def write(connection):
             affected = 0
             with connection:
-                for chunk in _chunks(connection, normalized, headroom=2):
+                for chunk in _chunks(connection, normalized, headroom=4):
                     placeholders = ",".join("?" for _ in chunk)
-                    cursor = connection.execute(
-                        "UPDATE probe_servers SET server_group = COALESCE(?, server_group), "
-                        f"label = COALESCE(?, label) WHERE id IN ({placeholders})",
-                        (clean_group, clean_label, *chunk),
-                    )
-                    affected += cursor.rowcount
+                    affected += connection.execute(
+                        f"SELECT COUNT(*) FROM probe_servers WHERE id IN ({placeholders})",
+                        chunk,
+                    ).fetchone()[0]
+                    if clean_group is not None:
+                        connection.execute(
+                            "UPDATE probe_servers SET server_group = ? "
+                            f"WHERE id IN ({placeholders})",
+                            (clean_group, *chunk),
+                        )
+                    for label in removes:
+                        cursor = connection.execute(
+                            "UPDATE probe_servers SET label = CASE "
+                            "WHEN REPLACE(label, ?, ',') = ',' THEN '' "
+                            "ELSE REPLACE(label, ?, ',') END "
+                            f"WHERE id IN ({placeholders})",
+                            (f",{label},", f",{label},", *chunk),
+                        )
+                    for label in adds:
+                        pattern = _label_like_pattern(label)
+                        cursor = connection.execute(
+                            "UPDATE probe_servers SET label = CASE "
+                            "WHEN label = '' THEN ? "
+                            "WHEN label LIKE ? ESCAPE '\\' THEN label "
+                            "ELSE label || ? END "
+                            f"WHERE id IN ({placeholders})",
+                            (f",{label},", pattern, f"{label},", *chunk),
+                        )
             return affected
 
         return self._with_connection(write)
+
 
     def list_servers_with_status(self) -> list[dict]:
         """服务器清单 + 每 IP 最新的连通性/速率结果（相关子查询取最新一条）。"""
@@ -785,8 +931,11 @@ class ProbeStore:
                 where.append("s.server_group = ?")
                 params.append(query.group)
             if query.label is not None:
-                where.append("s.label = ?")
-                params.append(query.label)
+                if query.label == "":
+                    where.append("s.label = ''")
+                else:
+                    where.append("s.label LIKE ? ESCAPE '\\'")
+                    params.append(_label_like_pattern(query.label))
             if query.conn != "all":
                 score = self._CONN_SCORE_SQL
                 if query.conn == "pass":
@@ -861,16 +1010,14 @@ class ProbeStore:
         """服务器库标签云 / 分组筛选数据源（仅 probe_servers 自身）。"""
 
         def read(connection):
-            labels = connection.execute(
-                "SELECT label, COUNT(*) AS count FROM probe_servers "
-                "WHERE label != '' GROUP BY label ORDER BY count DESC, label"
-            ).fetchall()
+            packed = [row["label"] for row in connection.execute(
+                "SELECT label FROM probe_servers WHERE label != ''")]
             groups = connection.execute(
                 "SELECT server_group, COUNT(*) AS count FROM probe_servers "
                 "WHERE server_group != '' GROUP BY server_group ORDER BY server_group"
             ).fetchall()
             return {
-                "labels": [{"label": row["label"], "count": row["count"]} for row in labels],
+                "labels": _aggregate_labels(packed),
                 "groups": [{"group": row["server_group"], "count": row["count"]} for row in groups],
             }
 

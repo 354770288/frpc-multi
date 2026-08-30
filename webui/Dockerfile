@@ -11,9 +11,11 @@ FROM python:3.14-slim AS runtime
 ARG DOCKER_VERSION=27.5.1
 ARG COMPOSE_VERSION=2.32.4
 ARG FRP_VERSION=0.68.1
+# 镜像内烙上构建版本（git 短 sha），agent 上报供面板核对节点 agent 版本
+ARG AGENT_VERSION=dev
 
 WORKDIR /app
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1     AGENT_VERSION=${AGENT_VERSION}
 
 RUN set -eux; \
     apt-get update; \

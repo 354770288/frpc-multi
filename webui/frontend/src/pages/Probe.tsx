@@ -533,7 +533,15 @@ export function Probe() {
                         <Td><span className="font-mono text-xs text-muted-foreground">{row.port}</span></Td>
                         <Td><span className="font-mono text-xs tabular-nums text-muted-foreground">{row.latencyMs} ms</span></Td>
                         <Td>{row.group ? <Badge variant={groupVariant(groupColorMap.get(row.group))} dot>{row.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
-                        <Td>{row.label ? <Badge variant={labelVariant(row.label)} dot={isRouteLabel(row.label)}>{row.label}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
+                        <Td>
+                          {row.labels.length ? (
+                            <span className="flex flex-wrap items-center gap-1">
+                              {row.labels.map((label) => (
+                                <Badge key={label} variant={labelVariant(label)} dot={isRouteLabel(label)}>{label}</Badge>
+                              ))}
+                            </span>
+                          ) : <span className="text-xs text-muted-foreground">—</span>}
+                        </Td>
                         <Td>{row.inLibrary ? <Badge tone="muted">已入库</Badge> : <Badge tone="success">未入库</Badge>}</Td>
                         <Td><span className="whitespace-nowrap text-[11px] text-muted-foreground">{formatLastSeen(row.discoveredAt)}</span></Td>
                         <Td align="right">
@@ -696,7 +704,7 @@ export function Probe() {
                         </Td>
                         <Td>
                           <div className="font-mono text-[12px] font-medium">{item.ip}</div>
-                          {item.label && <div className="text-[11px] text-muted-foreground">{item.label}</div>}
+                          {item.labels.length > 0 && <div className="truncate text-[11px] text-muted-foreground">{item.labels.join(' · ')}</div>}
                         </Td>
                         <Td>{item.group ? <Badge variant={groupVariant(groupColorMap.get(item.group))} dot>{item.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
                         <Td><ConnBadge latest={item.latestConnectivity} /></Td>
@@ -991,6 +999,7 @@ export function Probe() {
           ids={[...servers.selected.keys()]}
           count={servers.selected.size}
           groups={groups.map((group) => group.name)}
+          cloudLabels={servers.facets.labels}
           onClose={() => setBatchEdit(null)}
           onSaved={() => {
             setBatchEdit(null);
@@ -1005,9 +1014,10 @@ export function Probe() {
           ids={[...dSelected]}
           count={dSelected.size}
           groups={discoverGroups}
+          cloudLabels={discovery.facets.labels}
+          applyDiscover
           onClose={() => setDBatchEdit(null)}
           onSaved={() => { setDBatchEdit(null); discovery.refreshAll({ recoverOutOfRange: true }).catch(() => {}); }}
-          applyDiscover
         />
       )}
       {scanOpen && (
@@ -1091,7 +1101,7 @@ function ServerDialog({ server, groups, onClose, onSaved }: {
   onSaved: () => void;
 }) {
   const [ip, setIp] = useState(server?.ip ?? '');
-  const [label, setLabel] = useState(server?.label ?? '');
+  const [labels, setLabels] = useState((server?.labels ?? []).join(','));
   const [group, setGroup] = useState(server?.group ?? '');
   const [saving, setSaving] = useState(false);
 
@@ -1100,7 +1110,11 @@ function ServerDialog({ server, groups, onClose, onSaved }: {
     if (!group.trim()) { toast.error('请选择或输入分组'); return; }
     setSaving(true);
     try {
-      const payload = { ip: ip.trim(), label: label.trim(), group: group.trim() };
+      const payload = {
+        ip: ip.trim(),
+        labels: labels.split(',').map((v) => v.trim()).filter(Boolean),
+        group: group.trim(),
+      };
       if (server) await probeApi.updateServer(server.id, payload);
       else await probeApi.createServer(payload);
       toast.success(server ? '服务器已更新' : '服务器已添加');
@@ -1120,6 +1134,10 @@ function ServerDialog({ server, groups, onClose, onSaved }: {
           <Input value={ip} onChange={(e) => setIp(e.target.value)} placeholder="1.2.3.4 或 frps.example.com" autoFocus />
         </div>
         <div className="flex flex-col gap-1.5">
+          <Label className="text-xs">标签（可选，多个用逗号分隔）</Label>
+          <Input value={labels} onChange={(e) => setLabels(e.target.value)} placeholder="CN2,家宽" />
+        </div>
+        <div className="flex flex-col gap-1.5">
           <Label className="text-xs">分组（必选，可输入新分组）</Label>
           <Input
             value={group} onChange={(e) => setGroup(e.target.value)}
@@ -1128,10 +1146,6 @@ function ServerDialog({ server, groups, onClose, onSaved }: {
           <datalist id="probe-group-options">
             {groups.map((name) => <option key={name} value={name} />)}
           </datalist>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label className="text-xs">标签（可选）</Label>
-          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="香港 VPS-01" />
         </div>
       </div>
       <div className="mt-5 flex justify-end gap-2">
@@ -1345,31 +1359,75 @@ function GroupDialog({ groups, groupCounts, onClose, onChanged }: {
 
 /** 勾选批量修改弹窗：改分组（必选）或改标签（可空=清除）；服务器表改组成功后引导去负载均衡绑域名。
  * applyDiscover=true 时作用于网段发现结果表。 */
-function BatchEditDialog({ kind, ids, count, groups, onClose, onSaved, applyDiscover }: {
+function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover, onClose, onSaved }: {
   kind: 'group' | 'label';
   ids: number[];
   count: number;
   groups: string[];
+  /** 标签云（facets 全局标签，供快选） */
+  cloudLabels: LabelCount[];
+  applyDiscover?: boolean;
   onClose: () => void;
   onSaved: () => void;
-  applyDiscover?: boolean;
 }) {
   const navigate = useNavigate();
   const [group, setGroup] = useState('');
-  const [label, setLabel] = useState('');
+  const [addLabels, setAddLabels] = useState<string[]>([]);
+  const [removeLabels, setRemoveLabels] = useState<string[]>([]);
+  const [attached, setAttached] = useState<LabelCount[]>([]);
+  const [custom, setCustom] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // 所选行已贴标签聚合（跨页由服务端预览接口聚合）；ids 序列化做依赖，避免父组件渲染重复请求
+  const idsKey = ids.join(',');
+  useEffect(() => {
+    if (kind !== 'label' || !idsKey) return;
+    let cancelled = false;
+    const idList = idsKey.split(',').map(Number).filter(Number.isFinite);
+    const preview = applyDiscover ? probeApi.discoverLabelsPreview(idList) : probeApi.serversLabelsPreview(idList);
+    preview.then((res) => { if (!cancelled) setAttached(res.labels); }).catch(() => { if (!cancelled) setAttached([]); });
+    return () => { cancelled = true; };
+  }, [kind, idsKey, applyDiscover]);
+
+  const toggleAdd = (label: string) => {
+    setAddLabels((current) => current.includes(label)
+      ? current.filter((v) => v !== label)
+      : [...current, label]);
+    setRemoveLabels((current) => current.filter((v) => v !== label));
+  };
+  const toggleRemove = (label: string) => {
+    setRemoveLabels((current) => current.includes(label)
+      ? current.filter((v) => v !== label)
+      : [...current, label]);
+    setAddLabels((current) => current.filter((v) => v !== label));
+  };
+  const addCustom = () => {
+    const parts = custom.split(',').map((v) => v.trim()).filter(Boolean);
+    if (!parts.length) return;
+    setAddLabels((current) => [...current, ...parts.filter((v) => !current.includes(v))]);
+    setCustom('');
+  };
 
   const submit = async () => {
     if (!ids.length) return;
     if (kind === 'group' && !group) { toast.error('请选择分组'); return; }
+    if (kind === 'label' && !addLabels.length && !removeLabels.length) {
+      toast.error('请至少选择要添加或移除的标签');
+      return;
+    }
     setSaving(true);
     try {
       if (applyDiscover) {
-        const result = await probeApi.discoverUpdateBatch(
-          ids, kind === 'group' ? group : undefined, kind === 'label' ? label.trim() : undefined);
+        const result = await probeApi.discoverUpdateBatch(ids, {
+          group: kind === 'group' ? group : undefined,
+          addLabels: kind === 'label' ? addLabels : undefined,
+          removeLabels: kind === 'label' ? removeLabels : undefined,
+        });
         toast.success(`已更新 ${result.updated} 条`);
       } else {
-        const changes = kind === 'group' ? { group } : { label: label.trim() };
+        const changes = kind === 'group'
+          ? { group }
+          : { addLabels, removeLabels };
         const result = await probeApi.batchUpdateServers(ids, changes);
         if (kind === 'group') {
           toast.success(`已更新 ${result.updated} 台（入组 ${group}）`, {
@@ -1388,10 +1446,17 @@ function BatchEditDialog({ kind, ids, count, groups, onClose, onSaved, applyDisc
     }
   };
 
+  const chipCls = (active: boolean, danger = false) => cn(
+    'rounded-full px-2.5 py-0.5 text-[11px] transition-colors',
+    active
+      ? (danger ? 'bg-destructive text-destructive-foreground' : 'bg-primary text-primary-foreground')
+      : 'bg-muted text-muted-foreground hover:text-foreground',
+  );
+
   return (
     <Overlay title={kind === 'group'
       ? `更改分组（${count} ${applyDiscover ? '条' : '台'}）`
-      : `更改标签（${count} ${applyDiscover ? '条' : '台'}）`} onClose={onClose}>
+      : `批量标签（${count} ${applyDiscover ? '条' : '台'}）`} onClose={onClose}>
       <div className="flex flex-col gap-4">
         {kind === 'group' ? (
           <div className="flex flex-col gap-1.5">
@@ -1406,10 +1471,43 @@ function BatchEditDialog({ kind, ids, count, groups, onClose, onSaved, applyDisc
             </Select>
           </div>
         ) : (
-          <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">目标标签（留空表示清除标签）</Label>
-            <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="如：香港 VPS-01" autoFocus />
-          </div>
+          <>
+            <div className="flex flex-col gap-1.5">
+              <Label className="text-xs">已贴标签（点击 = 从所选行移除）</Label>
+              {attached.length ? (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {attached.map(({ label, count: n }) => (
+                    <button key={label} type="button" className={chipCls(removeLabels.includes(label), true)}
+                      onClick={() => toggleRemove(label)}>
+                      {label}<span className="ml-1 opacity-70">×{n}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : <span className="text-[11px] text-muted-foreground">所选行还没有标签</span>}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label className="text-xs">标签云（点击 = 添加到所选行）</Label>
+              {cloudLabels.length ? (
+                <div className="flex max-h-28 flex-wrap items-center gap-1.5 overflow-y-auto">
+                  {cloudLabels.map(({ label }) => (
+                    <button key={label} type="button" className={chipCls(addLabels.includes(label))}
+                      onClick={() => toggleAdd(label)}>{label}</button>
+                  ))}
+                </div>
+              ) : <span className="text-[11px] text-muted-foreground">还没有任何标签</span>}
+            </div>
+            <div className="flex items-center gap-2">
+              <Input value={custom} onChange={(e) => setCustom(e.target.value)}
+                placeholder="手动添加新标签" autoFocus
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustom(); } }} />
+              <Button variant="outline" size="sm" onClick={addCustom}><Plus size={13} />添加</Button>
+            </div>
+            {(addLabels.length > 0 || removeLabels.length > 0) && (
+              <div className="text-[11px] text-muted-foreground">
+                将添加：{addLabels.join('、') || '（无）'}；将移除：{removeLabels.join('、') || '（无）'}
+              </div>
+            )}
+          </>
         )}
       </div>
       <div className="mt-5 flex justify-end gap-2">
@@ -1586,6 +1684,7 @@ function ScanDialog({ defaultPort, running, onClose, onStarted }: {
 }) {
   const [targets, setTargets] = useState('');
   const [exclude, setExclude] = useState('');
+  const [sourceUrl, setSourceUrl] = useState(() => localStorage.getItem('discover_source_url') || '');
   const [port, setPort] = useState(String(defaultPort));
   const [concurrency, setConcurrency] = useState('500');
   const [probeTimeout, setProbeTimeout] = useState('1.5');
@@ -1593,13 +1692,17 @@ function ScanDialog({ defaultPort, running, onClose, onStarted }: {
   const [starting, setStarting] = useState(false);
 
   const start = async () => {
-    if (!targets.trim()) { toast.error('请填写目标网段'); return; }
+    const url = sourceUrl.trim();
+    if (!targets.trim() && !url) { toast.error('请填写目标网段或订阅链接'); return; }
+    if (url && !/^https?:\/\//i.test(url)) { toast.error('订阅链接必须是 http/https 地址'); return; }
     setStarting(true);
     localStorage.setItem('discover_auto_route', autoRoute ? '1' : '0');
+    localStorage.setItem('discover_source_url', url);
     try {
       const status = await probeApi.discoverStart({
         targets,
         exclude: exclude.trim() || undefined,
+        sourceUrl: url || undefined,
         port: port.trim() ? Number(port) : undefined,
         concurrency: concurrency.trim() ? Number(concurrency) : undefined,
         timeout: probeTimeout.trim() ? Number(probeTimeout) : undefined,
@@ -1628,6 +1731,11 @@ function ScanDialog({ defaultPort, running, onClose, onStarted }: {
             placeholder={'10.0.0.0/24\n192.168.1.1-192.168.1.254\n172.16.0.1-254'}
             className="max-h-32 font-mono text-xs" disabled={running || starting}
           />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-xs">订阅链接（可选，txt 一行一个网段，下载后与上方目标合并）</Label>
+          <Input value={sourceUrl} onChange={(e) => setSourceUrl(e.target.value)}
+            placeholder="https://example.com/subnets.txt" disabled={running || starting} />
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="flex flex-col gap-1.5">

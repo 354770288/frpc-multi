@@ -150,7 +150,7 @@ export const auditLogsApi = {
 
 export type ProbeServerPayload = {
   ip?: string;
-  label?: string;
+  labels?: string[];
   group?: string;
 };
 
@@ -184,18 +184,18 @@ export const probeApi = {
     }),
   deleteGroup: (name: string) =>
     api<{ ok: boolean }>(`/api/probe/servers/groups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
-  batchUpdateServers: (ids: number[], changes: { group?: string; label?: string }) =>
+  batchUpdateServers: (ids: number[], changes: { group?: string; addLabels?: string[]; removeLabels?: string[] }) =>
     api<{ updated: number }>('/api/probe/servers/batch-update', {
       method: 'POST',
       body: JSON.stringify({ ids, ...changes })
     }),
   createServer: (payload: ProbeServerPayload) =>
-    api<{ id: number; ip: string; label: string; group: string }>('/api/probe/servers', {
+    api<{ id: number; ip: string; labels: string[]; group: string }>('/api/probe/servers', {
       method: 'POST',
       body: JSON.stringify(payload)
     }),
   updateServer: (id: number, payload: ProbeServerPayload) =>
-    api<{ id: number; ip: string; label: string; group: string }>(`/api/probe/servers/${id}`, {
+    api<{ id: number; ip: string; labels: string[]; group: string }>(`/api/probe/servers/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(payload)
     }),
@@ -237,7 +237,7 @@ export const probeApi = {
       method: 'PATCH', body: JSON.stringify({ old, new: name })
     }),
   discoverStart: (payload: {
-    targets: string; exclude?: string; port?: number; concurrency?: number; timeout?: number;
+    targets: string; exclude?: string; sourceUrl?: string; port?: number; concurrency?: number; timeout?: number;
     autoRoute?: boolean;
   }) => api<DiscoverStatus>('/api/probe/discover/start', {
     method: 'POST', body: JSON.stringify(payload)
@@ -260,9 +260,17 @@ export const probeApi = {
   },
   discoverFacets: (signal?: AbortSignal) =>
     api<DiscoverFacets>('/api/probe/discover/facets', { signal }),
-  discoverUpdateBatch: (ids: number[], group?: string, label?: string) =>
+  discoverUpdateBatch: (ids: number[], changes: { group?: string; addLabels?: string[]; removeLabels?: string[] }) =>
     api<{ updated: number }>('/api/probe/discover/results/batch', {
-      method: 'PATCH', body: JSON.stringify({ ids, group: group ?? null, label: label ?? null })
+      method: 'PATCH', body: JSON.stringify({ ids, group: changes.group ?? null, addLabels: changes.addLabels ?? [], removeLabels: changes.removeLabels ?? [] })
+    }),
+  discoverLabelsPreview: (ids: number[]) =>
+    api<{ labels: LabelCount[] }>('/api/probe/discover/labels-preview', {
+      method: 'POST', body: JSON.stringify({ ids })
+    }),
+  serversLabelsPreview: (ids: number[]) =>
+    api<{ labels: LabelCount[] }>('/api/probe/servers/labels-preview', {
+      method: 'POST', body: JSON.stringify({ ids })
     }),
   discoverDelete: (ids: number[] | null) =>
     api<{ deleted: number }>('/api/probe/discover/results', {

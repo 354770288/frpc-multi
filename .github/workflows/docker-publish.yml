@@ -48,6 +48,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: 计算版本号
+        run: echo "AGENT_VERSION=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
       - name: 构建并推送
         uses: docker/build-push-action@v6
         with:
@@ -56,5 +59,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: AGENT_VERSION=${{ env.AGENT_VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

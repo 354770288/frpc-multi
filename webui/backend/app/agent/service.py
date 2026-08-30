@@ -205,21 +205,6 @@ class LocalAgentService:
             return ""
         return ""
 
-    def docker_version(self) -> str:
-        try:
-            result = subprocess.run(
-                ["docker", "version", "--format", "{{.Server.Version}}"],
-                check=False,
-                text=True,
-                capture_output=True,
-                timeout=5,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return ""
-        if result.returncode != 0:
-            return ""
-        return (result.stdout or "").strip()
-
     def get_system(self, username: str = "") -> dict[str, Any]:
         stat = shutil.disk_usage(self.project_dir if self.project_dir.exists() else "/")
         frp_image = self.read_env_value("FRP_IMAGE")
@@ -228,8 +213,8 @@ class LocalAgentService:
             "projectDir": str(self.project_dir),
             "webuiHost": settings.webui_host,
             "webuiPort": settings.webui_port,
-            "version": "0.1.0",
-            "dockerVersion": self.docker_version(),
+            "version": os.environ.get("AGENT_VERSION", "dev"),
+            "agentVersion": os.environ.get("AGENT_VERSION", "dev"),
             "frpImage": frp_image,
             "frpVersion": frp_version,
             "disk": {"total": stat.total, "used": stat.used, "free": stat.free},

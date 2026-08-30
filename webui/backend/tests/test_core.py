@@ -479,6 +479,70 @@ class NodeStoreTests(unittest.TestCase):
             self.assertEqual(store.list_nodes(), [])
 
 
+class LabelMultiValueMigrationTests(unittest.TestCase):
+    def test_legacy_labels_migrated_to_sentinel_and_idempotent(self):
+        import sqlite3
+        from app.control import database
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy-labels.db"
+            connection = sqlite3.connect(path)
+            try:
+                connection.executescript(
+                    """
+                    CREATE TABLE probe_servers (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ip TEXT NOT NULL UNIQUE,
+                        label TEXT NOT NULL DEFAULT '',
+                        server_group TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL
+                    );
+                    CREATE TABLE probe_discover_results (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ip TEXT NOT NULL,
+                        ip_sort INTEGER,
+                        port INTEGER NOT NULL,
+                        latency_ms REAL NOT NULL DEFAULT 0,
+                        server_group TEXT NOT NULL DEFAULT '',
+                        label TEXT NOT NULL DEFAULT '',
+                        discovered_at TEXT NOT NULL,
+                        UNIQUE (ip, port)
+                    );
+                    INSERT INTO probe_servers (ip, label, created_at) VALUES
+                        ('1.2.3.4', '香港01', '2026-01-01'),
+                        ('1.2.3.5', 'a,b', '2026-01-01'),
+                        ('1.2.3.6', '', '2026-01-01');
+                    INSERT INTO probe_discover_results (ip, port, label, discovered_at) VALUES
+                        ('5.6.7.8', 7000, '未路由测试', '2026-01-01');
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            database._initialized_paths.discard(path.resolve())
+            database.initialize_database(path)
+            connection = database.connect_database(path)
+            try:
+                servers = {r["ip"]: r["label"] for r in connection.execute("SELECT ip, label FROM probe_servers")}
+                discovers = {r["ip"]: r["label"] for r in connection.execute("SELECT ip, label FROM probe_discover_results")}
+            finally:
+                connection.close()
+            self.assertEqual(servers["1.2.3.4"], ",香港01,")
+            self.assertEqual(servers["1.2.3.5"], ",a,b,")  # legacy 逗号拆多标签
+            self.assertEqual(servers["1.2.3.6"], "")
+            self.assertEqual(discovers["5.6.7.8"], ",未路由测试,")
+            # 幂等：重跑不变化
+            database._initialized_paths.discard(path.resolve())
+            database.initialize_database(path)
+            connection = database.connect_database(path)
+            try:
+                again = {r["ip"]: r["label"] for r in connection.execute("SELECT ip, label FROM probe_servers")}
+            finally:
+                connection.close()
+            self.assertEqual(again, servers)
+
+
 class DatabaseMigrationTests(unittest.TestCase):
     def test_legacy_nodes_table_gets_uuid_and_secret_columns(self):
         import sqlite3
@@ -627,12 +691,12 @@ class NodeApiTests(unittest.TestCase):
 
             conn = FakeConnection(
                 uuid=created["uuid"],
-                responses={"get_system": {"dockerVersion": "27.0", "frpImage": "img"}},
+                responses={"get_system": {"agentVersion": "27.0", "frpImage": "img"}},
             )
             patch_hub(app, conn, online=True)
             resp = client.get(f"/api/nodes/{created['id']}/system", headers=headers)
             self.assertEqual(resp.status_code, 200)
-            self.assertEqual(resp.json()["dockerVersion"], "27.0")
+            self.assertEqual(resp.json()["agentVersion"], "27.0")
             self.assertEqual(conn.calls[0][0], "get_system")
 
     def test_upgrade_agent_calls_agent_over_hub_and_audits(self):

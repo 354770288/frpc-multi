@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import urllib.error
+import urllib.request
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Literal
@@ -21,7 +23,9 @@ from .engine import ProbeOptions
 from .persistence import DiscoverPersistenceError, DiscoverScanCoordinator
 from .route import load_route_nodes, route_hub, save_route_nodes
 from .runner import MODES, ProbeRunner
-from .store import DiscoverPageQuery, ProbeStore, ServerPageQuery, validate_probe_addr
+from .store import (
+    DiscoverPageQuery, ProbeStore, ServerPageQuery, unpack_labels, validate_probe_addr,
+)
 
 router = APIRouter(prefix="/api/probe", dependencies=[Depends(require_auth)])
 
@@ -142,7 +146,7 @@ def _public_server(row: dict) -> dict:
     return {
         "id": row["id"],
         "ip": row["ip"],
-        "label": row["label"],
+        "labels": unpack_labels(row["label"]),
         "group": row["server_group"],
         "createdAt": row["created_at"],
         "latestConnectivity": {
@@ -200,13 +204,13 @@ def _public_speed(row: dict) -> dict:
 # ---------------------------------------------------------------------------
 class ServerCreate(BaseModel):
     ip: str
-    label: str = ""
+    labels: list[str] = []
     group: str = ""
 
 
 class ServerPatch(BaseModel):
     ip: str | None = None
-    label: str | None = None
+    labels: list[str] | None = None
     group: str | None = None
 
 
@@ -337,7 +341,8 @@ def delete_server_group(name: str, user: Annotated[str, Depends(require_auth)]):
 class ServerBatchUpdate(BaseModel):
     ids: list[int]
     group: str | None = None
-    label: str | None = None
+    addLabels: list[str] = []
+    removeLabels: list[str] = []
 
 
 @router.post("/servers/batch-update")
@@ -346,15 +351,19 @@ def batch_update_servers(payload: ServerBatchUpdate, user: Annotated[str, Depend
         raise HTTPException(status_code=400, detail="没有选择服务器")
     store = probe_store()
     try:
-        updated = store.update_servers_batch(payload.ids, group=payload.group, label=payload.label)
+        updated = store.update_servers_batch(
+            payload.ids, group=payload.group,
+            add_labels=payload.addLabels, remove_labels=payload.removeLabels)
     except ValueError as exc:
         audit(user, "probe_batch_update_servers", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     changes = []
     if payload.group is not None:
         changes.append(f"分组 → {payload.group.strip()}")
-    if payload.label is not None:
-        changes.append(f"标签 → {payload.label.strip() or '(空)'}")
+    if payload.addLabels:
+        changes.append(f"加标签 {payload.addLabels}")
+    if payload.removeLabels:
+        changes.append(f"去标签 {payload.removeLabels}")
     audit(user, "probe_batch_update_servers", message=f"{updated} 台：{'，'.join(changes)}")
     return {"updated": updated}
 
@@ -363,12 +372,13 @@ def batch_update_servers(payload: ServerBatchUpdate, user: Annotated[str, Depend
 def create_server(payload: ServerCreate, user: Annotated[str, Depends(require_auth)]):
     store = probe_store()
     try:
-        server = store.create_server(ip=payload.ip, label=payload.label, server_group=payload.group)
+        server = store.create_server(ip=payload.ip, labels=payload.labels, server_group=payload.group)
     except ValueError as exc:
         audit(user, "probe_create_server", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    audit(user, "probe_create_server", message=f"{server.ip} {server.label}".strip())
-    return {"id": server.id, "ip": server.ip, "label": server.label, "group": server.server_group}
+    labels_text = ", ".join(server.labels)
+    audit(user, "probe_create_server", message=f"{server.ip} {labels_text}".strip())
+    return {"id": server.id, "ip": server.ip, "labels": server.labels, "group": server.server_group}
 
 
 @router.patch("/servers/{server_id}")
@@ -377,15 +387,16 @@ def update_server(server_id: int, payload: ServerPatch, user: Annotated[str, Dep
     try:
         server = store.update_server(
             server_id,
-            ip=payload.ip, label=payload.label, server_group=payload.group,
+            ip=payload.ip, labels=payload.labels, server_group=payload.group,
         )
     except ValueError as exc:
         audit(user, "probe_update_server", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    audit(user, "probe_update_server", message=f"{server.ip} {server.label}".strip())
-    return {"id": server.id, "ip": server.ip, "label": server.label, "group": server.server_group}
+    labels_text = ", ".join(server.labels)
+    audit(user, "probe_update_server", message=f"{server.ip} {labels_text}".strip())
+    return {"id": server.id, "ip": server.ip, "labels": server.labels, "group": server.server_group}
 
 
 @router.delete("/servers/{server_id}")
@@ -519,10 +530,33 @@ def dashboard():
 class DiscoverStart(BaseModel):
     targets: str
     exclude: str = ""
+    sourceUrl: str = ""
     port: int | None = None
     concurrency: int = 500
     timeout: float = 1.5
     autoRoute: bool = False
+
+
+def _fetch_targets_from_url(url: str) -> str:
+    """下载网段订阅（txt，一行一个网段/CIDR/IP），返回换行分隔的文本。
+
+    仅允许 http/https；限制 2MB 与 15s 超时；空行和 # 注释行由下游解析忽略。
+    """
+    cleaned = url.strip()
+    if not cleaned.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="订阅链接必须是 http/https 地址")
+    request = urllib.request.Request(cleaned, headers={"User-Agent": "frpc-multi-discover"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = response.read(2 * 1024 * 1024 + 1)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=f"订阅链接下载失败: {exc}") from exc
+    if len(data) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="订阅文件超过 2MB 上限")
+    text = data.decode("utf-8", errors="replace")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="订阅文件为空")
+    return text
 
 
 class DiscoverImport(BaseModel):
@@ -533,7 +567,8 @@ class DiscoverImport(BaseModel):
 class DiscoverBatchUpdate(BaseModel):
     ids: list[int]
     group: str | None = None
-    label: str | None = None
+    addLabels: list[str] = []
+    removeLabels: list[str] = []
 
 
 class DiscoverDelete(BaseModel):
@@ -551,8 +586,13 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
         MAX_CONCURRENCY, MAX_TIMEOUT, MIN_CONCURRENCY, MIN_TIMEOUT, DiscoverParams, discover_runner,
     )
 
-    if not payload.targets.strip():
-        raise HTTPException(status_code=400, detail="至少填写一个目标网段")
+    targets_text = payload.targets
+    if payload.sourceUrl.strip():
+        # 订阅内容追加在手工目标之前；两者都可为空时由下方统一校验拦截
+        targets_text = _fetch_targets_from_url(payload.sourceUrl) + (
+            "\n" + targets_text if targets_text.strip() else "")
+    if not targets_text.strip():
+        raise HTTPException(status_code=400, detail="至少填写一个目标网段或订阅链接")
     if not MIN_CONCURRENCY <= payload.concurrency <= MAX_CONCURRENCY:
         raise HTTPException(status_code=400, detail=f"并发需在 {MIN_CONCURRENCY}-{MAX_CONCURRENCY}")
     if not MIN_TIMEOUT <= payload.timeout <= MAX_TIMEOUT:
@@ -561,7 +601,7 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
     if not 1 <= port <= 65535:
         raise HTTPException(status_code=400, detail="端口必须在 1-65535")
     params = DiscoverParams(
-        targets=[part.strip() for part in payload.targets.replace("\n", ",").split(",") if part.strip()],
+        targets=[part.strip() for part in targets_text.replace("\n", ",").split(",") if part.strip()],
         exclude=[part.strip() for part in payload.exclude.replace("\n", ",").split(",") if part.strip()],
         port=port,
         concurrency=payload.concurrency,
@@ -577,7 +617,8 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
         audit(user, "probe_discover_start", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(user, "probe_discover_start",
-          message=f"目标 {payload.targets.strip()[:120]} 端口 {port} 并发 {payload.concurrency}"
+          message=f"目标 {(targets_text.strip())[:120]} 端口 {port} 并发 {payload.concurrency}"
+                  + (f" · 订阅 {payload.sourceUrl.strip()[:80]}" if payload.sourceUrl.strip() else "")
                   + (" · 自动路由追踪" if payload.autoRoute else ""))
     return discover_scans.status()
 
@@ -617,7 +658,7 @@ def discover_results(
         "port": row["port"],
         "latencyMs": round(row["latency_ms"], 1),
         "group": row["server_group"],
-        "label": row["label"],
+        "labels": unpack_labels(row["label"]),
         "inLibrary": bool(row["in_library"]),
         "discoveredAt": row["discovered_at"],
     } for row in result["items"]]
@@ -632,17 +673,38 @@ def discover_facets():
     return probe_store().discover_facets()
 
 
+class IdsPayload(BaseModel):
+    ids: list[int]
+
+
+@router.post("/discover/labels-preview")
+def discover_labels_preview(payload: IdsPayload, user: Annotated[str, Depends(require_auth)]):
+    return {"labels": probe_store().discover_labels_for_ids(payload.ids)}
+
+
+@router.post("/servers/labels-preview")
+def servers_labels_preview(payload: IdsPayload, user: Annotated[str, Depends(require_auth)]):
+    return {"labels": probe_store().servers_labels_for_ids(payload.ids)}
+
+
 @router.patch("/discover/results/batch")
 def discover_results_batch(payload: DiscoverBatchUpdate, user: Annotated[str, Depends(require_auth)]):
     if not payload.ids:
         raise HTTPException(status_code=400, detail="请勾选要修改的记录")
     try:
         updated = probe_store().update_discover_batch(
-            payload.ids, group=payload.group, label=payload.label)
+            payload.ids, group=payload.group,
+            add_labels=payload.addLabels, remove_labels=payload.removeLabels)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    change = "分组" if payload.group is not None else "标签"
-    audit(user, "probe_update_discover", message=f"{change} × {updated}")
+    changes = []
+    if payload.group is not None:
+        changes.append(f"分组 → {payload.group.strip()}")
+    if payload.addLabels:
+        changes.append(f"加标签 {payload.addLabels}")
+    if payload.removeLabels:
+        changes.append(f"去标签 {payload.removeLabels}")
+    audit(user, "probe_update_discover", message=f"{updated} 条：{'，'.join(changes)}")
     return {"updated": updated}
 
 

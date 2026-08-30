@@ -344,12 +344,12 @@ class ProbeStoreTests(unittest.TestCase):
             self.validate_probe_addr('1.2.3.4" # injection')
 
     def test_server_crud(self):
-        server = self.store.create_server(ip="10.0.0.1", label="节点A", server_group="国内")
+        server = self.store.create_server(ip="10.0.0.1", labels=["节点A"], server_group="国内")
         self.assertEqual(server.ip, "10.0.0.1")
         with self.assertRaises(ValueError):
             self.store.create_server(ip="10.0.0.1")
-        updated = self.store.update_server(server.id, label="节点B", server_group="海外")
-        self.assertEqual(updated.label, "节点B")
+        updated = self.store.update_server(server.id, labels=["节点B"], server_group="海外")
+        self.assertEqual(updated.labels, ["节点B"])
         self.assertEqual(updated.server_group, "海外")
         self.store.delete_server(server.id)
         self.assertEqual(self.store.list_servers(), [])
@@ -373,7 +373,7 @@ class ProbeStoreTests(unittest.TestCase):
             ("192.168.1.5", "", "非CN2"),
         ]
         for ip, group, label in rows:
-            self.store.create_server(ip=ip, label=label, server_group=group)
+            self.store.create_server(ip=ip, labels=[label] if label else [], server_group=group)
         self.store.add_connectivity_result({
             "server_ip": "10.0.0.9", "frps_reachable": True,
             "tunnel_established": True, "firewall_open": True,
@@ -423,7 +423,7 @@ class ProbeStoreTests(unittest.TestCase):
     def test_domain_servers_get_null_ip_sort(self):
         # 域名服务器可正常创建/导入（回归：曾因 _ipv4_sort_key 崩溃）；数值序 null-last
         from app.probe.store import ServerPageQuery
-        self.store.create_server(ip="frps.example.com", label="域名节点")
+        self.store.create_server(ip="frps.example.com", labels=["域名节点"])
         inserted, _ = self.store.import_servers([
             {"ip": "1.2.3.4"}, {"ip": "2001:db8::1"}, {"ip": "cdn.example.net"}])
         self.assertEqual(inserted, 3)
@@ -523,7 +523,7 @@ class ProbeStoreTests(unittest.TestCase):
         self.store.import_servers([{"ip": "10.0.0.1", "group": "旧组"}])
         self.store.upsert_discover_results_batch([("10.0.0.2", 7000, 3.2)])
         self.store.update_discover_batch(
-            [row["id"] for row in discover_rows(self.store)], group="旧组", label=None)
+            [row["id"] for row in discover_rows(self.store)], group="旧组")
         lb.create_domain(name="frps.example.com", zone_id="z", zone_name="example.com",
                          group_name="旧组")
 
@@ -543,14 +543,14 @@ class ProbeStoreTests(unittest.TestCase):
         self.store.upsert_discover_results_batch([("10.0.0.9", 7000, 8.0)])
         self.store.update_discover_batch(
             [row["id"] for row in discover_rows(self.store)],
-            group="池A", label="快",
+            group="池A", add_labels=["快"],
         )
         # 重复命中：更新延迟与时间，保留分组/标签
         self.store.upsert_discover_results_batch([("10.0.0.9", 7000, 1.5)])
         rows = discover_rows(self.store)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["server_group"], "池A")
-        self.assertEqual(rows[0]["label"], "快")
+        self.assertEqual(rows[0]["label"], ",未路由测试,快,")
         self.assertEqual(rows[0]["latency_ms"], 1.5)
         self.assertFalse(rows[0]["in_library"])
 
@@ -558,21 +558,43 @@ class ProbeStoreTests(unittest.TestCase):
         self.store.import_servers([{"ip": "10.0.0.9", "group": "池A"}])
         self.assertTrue(discover_rows(self.store)[0]["in_library"])
 
+    def test_multi_label_flows(self):
+        # 多标签：单 IP 可挂多个标签；路由结论剥旧加新；needs_route 判定
+        from app.probe.store import ServerPageQuery
+        self.store.upsert_discover_results_batch([("10.0.0.1", 7000, 1.0)])
+        row = discover_rows(self.store)[0]
+        self.store.update_discover_batch([row["id"]], add_labels=["家宽", "优选"])
+        self.assertEqual(discover_rows(self.store)[0]["label"], ",未路由测试,家宽,优选,")
+        self.assertTrue(self.store.discover_row_needs_route("10.0.0.1"))
+        # 结论写回：剥掉未路由测试，保留用户标签
+        self.store.set_route_label("10.0.0.1", "CN2")
+        self.assertEqual(discover_rows(self.store)[0]["label"], ",家宽,优选,CN2,")
+        self.assertFalse(self.store.discover_row_needs_route("10.0.0.1"))
+        # 失败回退：结论变未路由测试（结论标签被剥后追加）
+        self.store.set_route_label("10.0.0.1", "未路由测试")
+        self.assertTrue(self.store.discover_row_needs_route("10.0.0.1"))
+        # 服务器侧：q 搜索 + label 筛选在哨兵格式下工作
+        self.store.import_discover_results([row["id"]])
+        page = self.store.query_servers(ServerPageQuery(label="家宽"))
+        self.assertEqual(page["total"], 1)
+
     def test_discover_batch_label_semantics(self):
         self.store.upsert_discover_results_batch([
             ("10.0.0.1", 7000, 1.0),
             ("10.0.0.2", 7000, 2.0),
         ])
         ids = [row["id"] for row in discover_rows(self.store)]
-        self.store.update_discover_batch(ids, group="G", label="L1")
-        # 只改分组（label=None 保留）
-        self.store.update_discover_batch(ids[:1], group="G2", label=None)
+        self.store.update_discover_batch(ids, group="G", add_labels=["L1", "重点"])
+        # 只改分组（不传标签参数 = 标签保留）
+        self.store.update_discover_batch(ids[:1], group="G2")
         rows = {row["ip"]: row for row in discover_rows(self.store)}
-        self.assertEqual((rows["10.0.0.1"]["server_group"], rows["10.0.0.1"]["label"]), ("G2", "L1"))
-        # 空串清除标签
-        self.store.update_discover_batch(ids[1:], group=None, label="")
+        self.assertEqual(rows["10.0.0.1"]["server_group"], "G2")
+        self.assertEqual(rows["10.0.0.1"]["label"], ",未路由测试,L1,重点,")
+        # 去标签 + 加标签共存；重复添加幂等
+        self.store.update_discover_batch(ids[1:], add_labels=["L1"], remove_labels=["重点"])
+        self.store.update_discover_batch(ids[1:], add_labels=["L1"])
         rows = {row["ip"]: row for row in discover_rows(self.store)}
-        self.assertEqual(rows["10.0.0.2"]["label"], "")
+        self.assertEqual(rows["10.0.0.2"]["label"], ",未路由测试,L1,")
 
     def test_discover_delete_and_labels(self):
         self.store.upsert_discover_results_batch([
@@ -582,7 +604,7 @@ class ProbeStoreTests(unittest.TestCase):
         self.store.import_servers([{"ip": "10.0.0.3", "label": "共用"}])
         self.store.update_discover_batch(
             [row["id"] for row in discover_rows(self.store) if row["ip"] == "10.0.0.1"],
-            group=None, label="共用")
+            add_labels=["共用"])
         facets = {item["label"]: item["count"] for item in self.store.server_facets()["labels"]}
         self.assertEqual(facets, {"共用": 1})  # 仅服务器侧；发现行标签走 /discover/facets
 
@@ -672,24 +694,24 @@ class ProbeStoreTests(unittest.TestCase):
             {"ip": "10.1.1.1", "group": "a"}, {"ip": "10.1.1.2", "group": "a"}, {"ip": "10.1.1.3"},
         ])
         ids = [s.id for s in self.store.list_servers() if s.ip in ("10.1.1.1", "10.1.1.2")]
-        updated = self.store.update_servers_batch(ids, group="b", label=None)
+        updated = self.store.update_servers_batch(ids, group="b")
         self.assertEqual(updated, 2)
         rows = {s.ip: s for s in self.store.list_servers()}
         self.assertEqual(rows["10.1.1.1"].server_group, "b")
         self.assertEqual(rows["10.1.1.2"].server_group, "b")
         self.assertEqual(rows["10.1.1.3"].server_group, "")
         # 批量改标签（含清除）
-        self.store.update_servers_batch(ids, group=None, label="重点")
+        self.store.update_servers_batch(ids, group=None, add_labels=["重点"])
         rows = {s.ip: s for s in self.store.list_servers()}
-        self.assertEqual(rows["10.1.1.1"].label, "重点")
-        self.store.update_servers_batch(ids, group=None, label="")
+        self.assertEqual(rows["10.1.1.1"].label, ",重点,")
+        self.store.update_servers_batch(ids, group=None, remove_labels=["重点"])
         rows = {s.ip: s for s in self.store.list_servers()}
-        self.assertEqual(rows["10.1.1.1"].label, "")
+        self.assertEqual(rows["10.1.1.1"].label, "")  # remove 后无标签
         # 空分组拒绝
         with self.assertRaises(ValueError):
-            self.store.update_servers_batch(ids, group="  ", label=None)
+            self.store.update_servers_batch(ids, group="  ")
         with self.assertRaises(ValueError):
-            self.store.update_servers_batch(ids, group=None, label=None)
+            self.store.update_servers_batch(ids, group=None)
 
 
     def test_discover_page_filters_facets_and_stable_sorts(self):
@@ -703,10 +725,10 @@ class ProbeStoreTests(unittest.TestCase):
         ])
         rows = {row["ip"]: row for row in discover_rows(self.store)}
         self.store.update_discover_batch(
-            [rows["10.0.0.10"]["id"]], group="east", label="fast"
+            [rows["10.0.0.10"]["id"]], group="east", add_labels=["fast"]
         )
         self.store.update_discover_batch(
-            [rows["10.0.0.2"]["id"]], group="west", label="slow"
+            [rows["10.0.0.2"]["id"]], group="west", add_labels=["slow"]
         )
         self.store.import_servers([{"ip": "10.0.0.2"}])
 
@@ -797,7 +819,7 @@ class ProbeStoreTests(unittest.TestCase):
         by_key = {(row["ip"], row["port"]): row for row in rows}
         self.assertEqual(by_key[("10.0.0.1", 7000)]["latency_ms"], 2.0)
         self.store.update_discover_batch(
-            [by_key[("10.0.0.1", 7000)]["id"]], group="G", label="custom"
+            [by_key[("10.0.0.1", 7000)]["id"]], group="G", add_labels=["custom"]
         )
         selected_ids = [
             by_key[("10.0.0.2", 7000)]["id"],
@@ -821,7 +843,8 @@ class ProbeStoreTests(unittest.TestCase):
             self.store.upsert_discover_results_batch([("10.0.0.1", 7000, 1.0)]), []
         )
         row = self.store.get_discover_results_by_ids([by_key[("10.0.0.1", 7000)]["id"]])[0]
-        self.assertEqual((row["label"], row["server_group"]), ("CN2", "G"))
+        # 多标签语义：旧结论/未路由测试被剥掉，只留结论
+        self.assertEqual((row["label"], row["server_group"]), (",custom,CN2,", "G"))
 
     def test_import_discovery_empty_and_missing_ids_return_zero_selected(self):
         empty = self.store.import_discover_results([])
@@ -842,10 +865,10 @@ class ProbeStoreTests(unittest.TestCase):
             if row["ip"] == "10.0.2.1"
         }
         self.store.update_discover_batch(
-            [rows[7000]["id"]], group="first-group", label="first-label"
+            [rows[7000]["id"]], group="first-group", add_labels=["first-label"]
         )
         self.store.update_discover_batch(
-            [rows[7001]["id"]], group="second-group", label="second-label"
+            [rows[7001]["id"]], group="second-group", add_labels=["second-label"]
         )
 
         result = self.store.import_discover_results(
@@ -854,7 +877,7 @@ class ProbeStoreTests(unittest.TestCase):
 
         self.assertEqual(result, (2, 1, 1))
         server = next(server for server in self.store.list_servers() if server.ip == "10.0.2.1")
-        self.assertEqual((server.label, server.server_group), ("second-label", "second-group"))
+        self.assertEqual((server.label, server.server_group), (",未路由测试,second-label,", "second-group"))
 
     def test_batch_operations_chunk_at_lower_sqlite_limit(self):
         from app.probe import store as store_module
@@ -872,7 +895,7 @@ class ProbeStoreTests(unittest.TestCase):
 
         with mock.patch.object(store_module, "connect_database", side_effect=limited_connect):
             self.assertEqual(
-                self.store.update_discover_batch(ids + ids[:2] + [999999], group="chunked", label=None),
+                self.store.update_discover_batch(ids + ids[:2] + [999999], group="chunked"),
                 12,
             )
             selected = self.store.get_discover_results_by_ids(ids + ids[:2] + [999999])
@@ -907,7 +930,7 @@ class ProbeStoreTests(unittest.TestCase):
 
         with mock.patch.object(store_module, "_chunks", side_effect=tiny_chunks):
             with self.assertRaisesRegex(Exception, "later chunk failed"):
-                self.store.update_discover_batch(ids, group="boom", label=None)
+                self.store.update_discover_batch(ids, group="boom")
         self.assertEqual(
             {row["server_group"] for row in discover_rows(self.store)}, {""}
         )
@@ -1040,8 +1063,8 @@ class ProbeApiTests(unittest.TestCase):
     def test_server_update_delete_and_not_found(self):
         client, headers = self.make_client()
         created = client.post("/api/probe/servers", json={"ip": "10.2.2.2"}, headers=headers).json()
-        response = client.patch(f"/api/probe/servers/{created['id']}", json={"label": "改名"}, headers=headers)
-        self.assertEqual(response.json()["label"], "改名")
+        response = client.patch(f"/api/probe/servers/{created['id']}", json={"labels": ["改名"]}, headers=headers)
+        self.assertEqual(response.json()["labels"], ["改名"])
         response = client.delete(f"/api/probe/servers/{created['id']}", headers=headers)
         self.assertTrue(response.json()["ok"])
         response = client.patch("/api/probe/servers/99999", json={"label": "x"}, headers=headers)
@@ -1668,7 +1691,7 @@ class DiscoverApiTests(unittest.TestCase):
             ("10.0.0.10", 7000, 10.0),
         ])
         rows = {row["ip"]: row for row in discover_rows(store)}
-        store.update_discover_batch([rows["10.0.0.2"]["id"]], group="east", label="fast")
+        store.update_discover_batch([rows["10.0.0.2"]["id"]], group="east", add_labels=["fast"])
         store.import_discover_results([rows["10.0.0.2"]["id"]])
 
         response = client.get(
@@ -1685,7 +1708,7 @@ class DiscoverApiTests(unittest.TestCase):
         )
         self.assertEqual(
             set(body["items"][0]),
-            {"id", "ip", "port", "latencyMs", "group", "label", "inLibrary", "discoveredAt"},
+            {"id", "ip", "port", "latencyMs", "group", "labels", "inLibrary", "discoveredAt"},
         )
         self.assertNotIn("labels", body)
         facets = client.get("/api/probe/discover/facets", headers=headers).json()
@@ -1862,8 +1885,8 @@ class RouteApiTests(unittest.TestCase):
         store.upsert_discover_results_batch([("10.0.0.1", 7000, 5.0)])
         row_id = discover_rows(store)[0]["id"]
 
-        # 新发现行默认「未路由测试」
-        self.assertEqual(discover_rows(store)[0]["label"], "未路由测试")
+        # 新发现行默认「未路由测试」（多标签哨兵格式）
+        self.assertEqual(discover_rows(store)[0]["label"], ",未路由测试,")
 
         # 节点管理：创建（Token 只回一次）→ 列表（掩码、离线）
         created = client.post("/api/probe/route/nodes", json={"name": "杭州节点"}, headers=headers).json()
@@ -1897,7 +1920,7 @@ class RouteApiTests(unittest.TestCase):
             "taskId": task["taskId"], "ok": True, "isCn2": True,
         }, headers=node_headers).json()
         self.assertEqual(report["applied"], True)
-        self.assertEqual(discover_rows(store)[0]["label"], "CN2")
+        self.assertEqual(discover_rows(store)[0]["label"], ",CN2,")
 
         # 重复回报幂等；状态端点
         self.assertEqual(client.post("/api/probe/route/report", json={
@@ -1912,7 +1935,7 @@ class RouteApiTests(unittest.TestCase):
         client.post("/api/probe/route/report", json={
             "taskId": task2["taskId"], "ok": False,
         }, headers=node_headers)
-        self.assertEqual(discover_rows(store)[0]["label"], "未路由测试")
+        self.assertEqual(discover_rows(store)[0]["label"], ",未路由测试,")
 
         # 已测 CN2 的行不再需要路由（联动入队的过滤条件）
         store.set_route_label("10.0.0.1", "CN2")
@@ -1942,7 +1965,7 @@ class RouteApiTests(unittest.TestCase):
             # 命中已落库且自动入队路由任务
             from app.probe.store import ProbeStore
             rows = discover_rows(ProbeStore(self.db_path))
-            self.assertEqual([(r["ip"], r["label"]) for r in rows], [("127.0.0.1", "未路由测试")])
+            self.assertEqual([(r["ip"], r["label"]) for r in rows], [("127.0.0.1", ",未路由测试,")])
             queue = client.get("/api/probe/route/status", headers=headers).json()
             self.assertEqual(queue["pending"] + queue["running"], 1)
             client.post("/api/probe/route/stop", headers=headers)

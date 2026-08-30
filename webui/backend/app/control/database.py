@@ -330,6 +330,36 @@ def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
         connection.commit()
 
 
+def _migrate_labels_to_multi(connection: sqlite3.Connection) -> None:
+    """label 单值 → 逗号哨兵多值格式（`,a,b,`）；幂等：已归一化的行跳过。
+
+    支持一个 IP 挂多个标签；空串表示无标签。legacy「a,b」视为已用逗号
+    分隔的多个标签。路由结论标签（CN2/非CN2/未路由测试）无逗号，安全。
+    """
+    try:
+        for table in ("probe_servers", "probe_discover_results"):
+            columns = _column_names(connection, table)
+            if not columns or "label" not in columns:
+                continue
+            rows = connection.execute(
+                f"SELECT id, label FROM {table} WHERE label != '' AND label NOT LIKE ',%'"
+            ).fetchall()
+            for row in rows:
+                parts = [part.strip() for part in str(row["label"]).split(",") if part.strip()]
+                if not parts:
+                    connection.execute(f"UPDATE {table} SET label = '' WHERE id = ?", (row["id"],))
+                else:
+                    connection.execute(
+                        f"UPDATE {table} SET label = ? WHERE id = ?",
+                        ("," + ",".join(parts) + ",", row["id"]),
+                    )
+    except Exception:
+        connection.rollback()
+        raise
+    else:
+        connection.commit()
+
+
 def _resolved_path(path: Path) -> Path:
     return Path(path).expanduser().resolve()
 
@@ -380,6 +410,7 @@ def initialize_database(path: Path) -> None:
             # 避免撞上前面 DML 留下的隐式事务
             _migrate_probe_discover_results(connection)
             _migrate_probe_servers(connection)
+            _migrate_labels_to_multi(connection)
         finally:
             connection.close()
 

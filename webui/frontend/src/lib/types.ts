@@ -55,7 +55,7 @@ export type SystemInfo = {
   webuiPort: number;
   version: string;
   username?: string;
-  dockerVersion?: string;
+  agentVersion?: string;
   frpImage?: string;
   frpVersion?: string;
   disk: { total: number; used: number; free: number };
@@ -192,7 +192,7 @@ export type ProbeSpeedSummary = {
 export type ProbeServer = {
   id: number;
   ip: string;
-  label: string;
+  labels: string[];
   group: string;
   createdAt: string;
   latestConnectivity: ProbeConnectivitySummary | null;
@@ -311,7 +311,7 @@ export type DiscoverResult = {
   port: number;
   latencyMs: number;
   group: string;
-  label: string;
+  labels: string[];
   inLibrary: boolean;
   discoveredAt: string;
 };
