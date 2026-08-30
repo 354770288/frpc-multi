@@ -96,6 +96,24 @@ JSON 跨洋传输 + 2215 行全量 DOM + 10s 全量轮询（后端本机仅 0.08
 | 测试 | `tests/test_database.py`（新）、`test_discover.py`、`test_probe.py` |
 | 过程记录 | `docs/aegis/work/2026-08-30-discovery-performance/`（intent/checkpoint/evidence/99-reflection） |
 
+### 1.2 五项功能追加（be981ef，2026-08-30 已上线）
+
+1. **多标签**：label 存储改逗号哨兵格式 `,a,b,`（迁移 `_migrate_labels_to_multi`，幂等）；
+   批量更新 addLabels/removeLabels；路由结论写回剥旧结论保留用户标签；
+   facets/筛选/序列化全链路适配；四条 probe_servers 插入路径全部覆盖
+2. **订阅扫描**：DiscoverStart.sourceUrl（http/https、15s、2MB），txt 一行一个网段
+3. **批量标签弹窗**：已贴标签（labels-preview 聚合 ×count）点击移除、标签云点击添加、
+   手动输入；端点 /discover/labels-preview、/servers/labels-preview
+4. **连通性判定（确认无误）**：frps_reachable=TCP 通；tunnel_established=frpc 日志
+   login+start proxy success（隐含认证通过）；firewall_open=公网 tcping 映射端口。
+   非frps/认证失败 → tunnel 失败 → fail 档，与用户理解一致
+5. **agent 版本戳**：CI AGENT_VERSION=git 短 sha → Dockerfile ENV → agent 上报
+   agentVersion/version；节点列表与系统页改显「Agent 版本」，docker_version 退休
+
+审查要点备忘：迁移函数必须 commit（close 会回滚隐式事务——曾静默失败）；
+ADD 标签的 LIKE 去重要带 ESCAPE；INSERT 路径要全部枚举（曾漏「发现→导入」）；
+跨页勾选只能被显式操作移除（按当前页裁剪是错误模式）。
+
 ## 7. 环境速查
 
 - 本地仓库 main；测试 `cd webui/backend && .venv/bin/python -m unittest discover -s tests -q`（195）；前端 `npx tsc -b && npm run build`。
