@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-10-20-probe-workers",
+  "currentTodo": "前端实施与实际部署验收",
+  "completedTodos": [
+    "后端与worker实现；独立spec与quality审查通过；父fresh242tests通过；LB37tests与独立审查通过；真实数据库迁移6表逐行保留及历史可见性验证"
+  ],
+  "activeSlice": "frontend",
+  "evidenceRefs": [
+    "webui/backend/tests/test_probe_jobs.py",
+    "webui/backend/tests/test_lb_selection.py"
+  ],
+  "blockedOn": null,
+  "nextStep": "frontend_sol实施全部frontend后独立审查/构建/浏览器验证；提交推送构建；主控和国内节点部署与真实fixture验收",
+  "updatedAt": "2026-10-21"
+}

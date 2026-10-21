@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "backend-final",
+  "type": "test",
+  "source": "webui/backend/tests",
+  "summary": "父fresh全量242项测试通过35.997秒；backend spec与quality独立审查均通过；真实库历史Console可见conn第一页1000条和speed94条；修复legacy快照可见性、端口alias、retry gate和infra分类",
+  "verifier": "coordinator"
+}

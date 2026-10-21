@@ -219,6 +219,21 @@ def validate_probe_addr(addr: str) -> str:
     return value
 
 
+def split_probe_endpoint(value, default_port=7000):
+    value=validate_probe_addr(value)
+    try:
+        ipaddress.ip_address(value)
+        return value,int(default_port)
+    except ValueError:
+        if value.count(':')==1:
+            host,raw=value.rsplit(':',1)
+            if raw.isdigit():
+                port=int(raw)
+                if not 1<=port<=65535:raise ValueError('端口必须在1-65535')
+                return validate_probe_addr(host),port
+        return value,int(default_port)
+
+
 @dataclass
 class ProbeServer:
     id: int
@@ -243,16 +258,57 @@ def _server_from_row(row) -> ProbeServer:
 
 
 class ProbeStore:
-    def __init__(self, database_path: Path):
+    def __init__(self, database_path: Path, node_id: str | None = None):
         self.database_path = database_path
+        self.node_id = node_id
         initialize_database(database_path)
 
     def _with_connection(self, callback: Callable, *args) -> T:
         connection = connect_database(self.database_path)
         try:
+            if self.node_id is not None:
+                self._source_views(connection)
             return callback(connection, *args)
         finally:
             connection.close()
+
+    def _source_views(self, connection):
+        """Reuse paginated SQL over source-scoped views, without loading all rows."""
+        node = "'" + self.node_id.replace("'", "''") + "'"
+        from ..settings import settings
+        overrides=self.get_config_overrides() if self.node_id is None else ProbeStore(self.database_path).get_config_overrides()
+        default_port=int(overrides.get('frps_port',settings.probe_options().frps_port))
+        connection.create_function('probe_endpoint_host',1,lambda value:split_probe_endpoint(value,default_port)[0])
+        connection.create_function('probe_endpoint_port',1,lambda value:split_probe_endpoint(value,default_port)[1])
+        for kind, table, fields in [
+            ('connectivity', 'probe_connectivity_results', ['frps_reachable','tunnel_established','firewall_open','detail']),
+            ('speed', 'probe_speed_results', ['frps_reachable','tunnel_ok','dl_ok','dl_bytes','dl_sec','ul_ok','ul_bytes','ul_sec','detail']),
+        ]:
+            columns = ["r.id+1000000000 AS id", 'a.ip AS server_ip', 'test_time']
+            columns.extend("COALESCE(json_extract(data,'$."+f+"'),"+("''" if f=='detail' else '0')+") AS "+f for f in fields)
+            if kind == 'speed':
+                for prefix in ('dl','ul'):
+                    columns.extend([f"COALESCE(json_extract(data,'$.{prefix}_speed_bps'),0)*8.0/1048576 AS {prefix}_speed_mbps", f"COALESCE(json_extract(data,'$.{prefix}_speed_bps'),0)/1048576.0 AS {prefix}_speed_mbs"])
+            # Legacy snapshot is read through the original table for console only.
+            projection = ','.join(columns)
+            connection.execute(f"CREATE TEMP VIEW {table} AS SELECT {projection} FROM main.probe_results r JOIN main.probe_servers a ON r.server_ip=probe_endpoint_host(a.ip) AND r.port=probe_endpoint_port(a.ip) WHERE node_id={node} AND kind='{kind}'" + (f" UNION ALL SELECT id,server_ip,test_time," + ",".join(fields + ([p+suffix for p in ('dl','ul') for suffix in ('_speed_mbps','_speed_mbs')] if kind=='speed' else [])) + f" FROM main.{table} legacy WHERE NOT EXISTS(SELECT 1 FROM main.probe_results snapshot WHERE snapshot.task_id='legacy-{kind}-'||legacy.id)" if self.node_id=='console' else ''))
+        def source_labels(packed, route_json):
+            import json
+            labels=_unpack_labels(packed)
+            legacy=any(x in {ROUTE_LABEL_CN2,ROUTE_LABEL_NON_CN2} for x in labels)
+            labels=[x for x in labels if x not in {ROUTE_LABEL_CN2,ROUTE_LABEL_NON_CN2,ROUTE_LABEL_UNTESTED}]
+            if route_json:
+                route=json.loads(route_json)
+                label=(ROUTE_LABEL_CN2 if route.get('isCn2') else ROUTE_LABEL_NON_CN2) if route.get('ok') else ROUTE_LABEL_UNTESTED
+            else:
+                label='路由来源未知' if legacy else ROUTE_LABEL_UNTESTED
+            return _pack_labels([*labels,label])
+        connection.create_function('probe_source_labels',2,source_labels)
+        connection.execute(f"""CREATE TEMP VIEW probe_discover_results AS
+            SELECT d.id,d.ip,d.ip_sort,d.port,o.latency_ms,d.server_group,
+            probe_source_labels(d.label,(SELECT data FROM main.probe_results r WHERE r.node_id={node} AND r.kind='route' AND r.server_ip=d.ip AND r.port=d.port ORDER BY r.id DESC LIMIT 1)) AS label,o.discovered_at
+            FROM main.probe_discover_results d JOIN main.probe_discover_observations o
+            ON o.ip=d.ip AND o.port=d.port WHERE o.node_id={node}""")
 
     # ---- 服务器清单 ----
 
@@ -483,6 +539,11 @@ class ProbeStore:
                     "ON CONFLICT(ip, port) DO UPDATE SET ip_sort = excluded.ip_sort, "
                     "latency_ms = excluded.latency_ms, discovered_at = excluded.discovered_at",
                     [(*row[:4], _pack_labels([ROUTE_LABEL_UNTESTED]), row[4]) for row in cleaned],
+                )
+                connection.executemany(
+                    "INSERT INTO probe_discover_observations(node_id,ip,port,latency_ms,discovered_at) VALUES('console',?,?,?,?) "
+                    "ON CONFLICT(node_id,ip,port) DO UPDATE SET latency_ms=excluded.latency_ms,discovered_at=excluded.discovered_at",
+                    [(row[0],row[2],row[3],row[4]) for row in cleaned],
                 )
                 eligible: set[str] = set()
                 unique_ips = list(dict.fromkeys(row[0] for row in cleaned))
@@ -872,6 +933,9 @@ class ProbeStore:
     def list_servers_with_status(self) -> list[dict]:
         """服务器清单 + 每 IP 最新的连通性/速率结果（相关子查询取最新一条）。"""
 
+        if self.node_id is None:
+            return ProbeStore(self.database_path, node_id='console').list_servers_with_status()
+
         def read(connection):
             rows = connection.execute(
                 """
@@ -888,12 +952,12 @@ class ProbeStore:
                     p.test_time AS s_test_time
                 FROM probe_servers s
                 LEFT JOIN probe_connectivity_results c
-                    ON c.id = (
+                    ON c.server_ip = s.ip AND c.id = (
                         SELECT id FROM probe_connectivity_results
                         WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1
                     )
                 LEFT JOIN probe_speed_results p
-                    ON p.id = (
+                    ON p.server_ip = s.ip AND p.id = (
                         SELECT id FROM probe_speed_results
                         WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1
                     )
@@ -965,7 +1029,7 @@ class ProbeStore:
             total = connection.execute(
                 "SELECT COUNT(*) FROM probe_servers s"
                 " LEFT JOIN probe_connectivity_results c"
-                " ON c.id = (SELECT id FROM probe_connectivity_results"
+                " ON c.server_ip = s.ip AND c.id = (SELECT id FROM probe_connectivity_results"
                 " WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1)"
                 + where_sql,
                 params,
@@ -983,12 +1047,12 @@ class ProbeStore:
                     p.test_time AS s_test_time
                 FROM probe_servers s
                 LEFT JOIN probe_connectivity_results c
-                    ON c.id = (
+                    ON c.server_ip = s.ip AND c.id = (
                         SELECT id FROM probe_connectivity_results
                         WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1
                     )
                 LEFT JOIN probe_speed_results p
-                    ON p.id = (
+                    ON p.server_ip = s.ip AND p.id = (
                         SELECT id FROM probe_speed_results
                         WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1
                     )
@@ -1044,6 +1108,7 @@ class ProbeStore:
                     test_time,
                 ),
             )
+            self._snapshot_local_result(connection,"connectivity",result,test_time)
             connection.commit()
 
         self._with_connection(write)
@@ -1079,9 +1144,22 @@ class ProbeStore:
                     test_time,
                 ),
             )
+            self._snapshot_local_result(connection,"speed",result,test_time)
             connection.commit()
 
         self._with_connection(write)
+
+    def _snapshot_local_result(self, connection, kind, result, test_time):
+        import json
+        from ..settings import settings
+        row_id=connection.execute('SELECT last_insert_rowid()').fetchone()[0]
+        configured=connection.execute("SELECT value FROM probe_settings WHERE key='frps_port'").fetchone()
+        default_port=int(configured[0]) if configured else settings.probe_options().frps_port
+        host,port=split_probe_endpoint(result['server_ip'],default_port)
+        connection.execute(
+            "INSERT OR IGNORE INTO probe_results(task_id,job_id,node_id,kind,server_ip,port,test_time,data) VALUES(?,'','console',?,?,?,?,?)",
+            ('legacy-'+kind+'-'+str(row_id),kind,host,port,test_time,json.dumps(result)),
+        )
 
     def list_connectivity_history(self, *, ip: str | None = None, limit: int = 200) -> list[dict]:
         bounded = min(max(limit, 1), 1000)
@@ -1136,7 +1214,7 @@ class ProbeStore:
     def get_config_overrides(self) -> dict:
         def read(connection):
             rows = connection.execute("SELECT key, value FROM probe_settings").fetchall()
-            return {row["key"]: row["value"] for row in rows}
+            return {row["key"]: row["value"] for row in rows if row["key"] in PROBE_CONFIG_FIELDS}
 
         return self._with_connection(read)
 
@@ -1205,10 +1283,10 @@ class ProbeStore:
                     SELECT s.ip,
                         (SELECT test_time FROM probe_speed_results
                          WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1) AS tested_at,
-                        (SELECT dl_speed_mbps FROM probe_speed_results
-                         WHERE server_ip = s.ip AND dl_ok = 1 ORDER BY id DESC LIMIT 1) AS dl_speed_mbps,
-                        (SELECT ul_speed_mbps FROM probe_speed_results
-                         WHERE server_ip = s.ip AND ul_ok = 1 ORDER BY id DESC LIMIT 1) AS ul_speed_mbps
+                        (SELECT CASE WHEN dl_ok=1 THEN dl_speed_mbps ELSE NULL END FROM probe_speed_results
+                         WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1) AS dl_speed_mbps,
+                        (SELECT CASE WHEN ul_ok=1 THEN ul_speed_mbps ELSE NULL END FROM probe_speed_results
+                         WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1) AS ul_speed_mbps
                     FROM probe_servers s
                 ) latest
                 """

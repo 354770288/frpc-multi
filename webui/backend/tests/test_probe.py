@@ -978,6 +978,8 @@ class ProbeApiTests(unittest.TestCase):
         env.update(extra_env)
         app = self.load_probe_app(**env)
         client = TestClient(app)
+        client.__enter__()
+        self.addCleanup(client.__exit__, None, None, None)
         response = client.post("/api/auth/login", json={"username": "admin", "password": "password"})
         token = response.json()["token"]
         return client, {"Authorization": f"Bearer {token}"}
@@ -1082,6 +1084,22 @@ class ProbeApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
 
 
+    def test_remote_full_history_without_imported_asset(self):
+        client, headers = self.make_client(PROBE_FRPC_BIN='/missing/frpc')
+        node=client.post('/api/probe/nodes',json={'name':'remote'},headers=headers).json()
+        worker_headers={'X-Probe-Token':node['token']}
+        job=client.post('/api/probe/jobs',json={'mode':'full','nodeIds':[node['id']],'ips':['192.0.2.1:7001']},headers=headers)
+        self.assertEqual(job.status_code,200)
+        route=client.post('/api/probe/worker/claim',headers=worker_headers).json()['task']
+        client.post('/api/probe/worker/report',json={'taskId':route['taskId'],'attemptId':route['attemptId'],'result':{'ok':False}},headers=worker_headers)
+        conn=client.post('/api/probe/worker/claim',headers=worker_headers).json()['task']
+        client.post('/api/probe/worker/report',json={'taskId':conn['taskId'],'attemptId':conn['attemptId'],'result':{'frps_reachable':False}},headers=worker_headers)
+        history=client.get('/api/probe/history/connectivity?nodeId='+node['id'],headers=headers).json()
+        self.assertEqual(len(history),1);self.assertEqual(history[0]['port'],7001)
+        self.assertEqual(history[0]['serverIp'],'192.0.2.1');self.assertEqual(history[0]['nodeId'],node['id'])
+        self.assertEqual(client.get('/api/probe/servers',headers=headers).json()['total'],0)
+
+
 class ProbeConfigApiTests(unittest.TestCase):
     """面板可调配置：读取默认值、保存覆盖、校验拒绝、启动测试时生效。"""
 
@@ -1114,6 +1132,8 @@ class ProbeConfigApiTests(unittest.TestCase):
         env.update(extra_env)
         app = self.load_probe_app(**env)
         client = TestClient(app)
+        client.__enter__()
+        self.addCleanup(client.__exit__, None, None, None)
         response = client.post("/api/auth/login", json={"username": "admin", "password": "password"})
         token = response.json()["token"]
         return client, {"Authorization": f"Bearer {token}"}
@@ -1357,6 +1377,8 @@ class DiscoverApiTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
         client = TestClient(app)
+        client.__enter__()
+        self.addCleanup(client.__exit__, None, None, None)
         token = client.post("/api/auth/login", json={"username": "admin", "password": "password"}).json()["token"]
         return client, {"Authorization": f"Bearer {token}"}
 
@@ -1708,7 +1730,7 @@ class DiscoverApiTests(unittest.TestCase):
         )
         self.assertEqual(
             set(body["items"][0]),
-            {"id", "ip", "port", "latencyMs", "group", "labels", "inLibrary", "discoveredAt"},
+            {"id", "ip", "port", "latencyMs", "group", "labels", "inLibrary", "discoveredAt", "nodeId", "nodeName", "latestRoute"},
         )
         self.assertNotIn("labels", body)
         facets = client.get("/api/probe/discover/facets", headers=headers).json()
@@ -1873,6 +1895,8 @@ class RouteApiTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
         client = TestClient(app)
+        client.__enter__()
+        self.addCleanup(client.__exit__, None, None, None)
         token = client.post("/api/auth/login", json={"username": "admin", "password": "password"}).json()["token"]
         return client, {"Authorization": f"Bearer {token}"}
 
@@ -1920,7 +1944,8 @@ class RouteApiTests(unittest.TestCase):
             "taskId": task["taskId"], "ok": True, "isCn2": True,
         }, headers=node_headers).json()
         self.assertEqual(report["applied"], True)
-        self.assertEqual(discover_rows(store)[0]["label"], ",CN2,")
+        self.assertEqual(discover_rows(store)[0]["label"], ",未路由测试,")
+        self.assertTrue(client.get("/api/probe/results/route?nodeId="+created["id"],headers=headers).json()["items"][0]["isCn2"])
 
         # 重复回报幂等；状态端点
         self.assertEqual(client.post("/api/probe/route/report", json={
@@ -1947,6 +1972,9 @@ class RouteApiTests(unittest.TestCase):
         self.assertIn("probe_route_start", actions)
 
     def test_scan_auto_route_enqueues(self):
+        capabilities = mock.patch("app.probe.worker.runtime_capabilities", return_value=["discover","route","connectivity","speed"])
+        capabilities.start()
+        self.addCleanup(capabilities.stop)
         client, headers = self.make_client()
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.bind(("127.0.0.1", 0))
@@ -1967,7 +1995,7 @@ class RouteApiTests(unittest.TestCase):
             rows = discover_rows(ProbeStore(self.db_path))
             self.assertEqual([(r["ip"], r["label"]) for r in rows], [("127.0.0.1", ",未路由测试,")])
             queue = client.get("/api/probe/route/status", headers=headers).json()
-            self.assertEqual(queue["pending"] + queue["running"], 1)
+            self.assertEqual(queue["pending"] + queue["running"] + queue["done"] + queue["failed"], 1)
             client.post("/api/probe/route/stop", headers=headers)
         finally:
             server.close()

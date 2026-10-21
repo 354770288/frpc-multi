@@ -13,13 +13,15 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from ..auth import require_auth
 from ..settings import settings
 from .discover import discover_runner
 from .engine import ProbeOptions
+from .jobs import ProbeJobStore, CAPABILITIES
+from .adapters import LegacyProbeAdapter, LegacyDiscoverAdapter, serial_options
 from .persistence import DiscoverPersistenceError, DiscoverScanCoordinator
 from .route import load_route_nodes, route_hub, save_route_nodes
 from .runner import MODES, ProbeRunner
@@ -30,11 +32,23 @@ from .store import (
 router = APIRouter(prefix="/api/probe", dependencies=[Depends(require_auth)])
 
 # 路由测试节点专用（Token 鉴权，不走面板登录）：claim / report
-node_router = APIRouter(prefix="/api/probe/route")
+node_router = APIRouter(prefix="/api/probe")
 
 
 def probe_store() -> ProbeStore:
     return ProbeStore(settings.database_path)
+
+
+def _enrich_source(items, node_id):
+    store=job_store()
+    try:name=store.get_node(node_id)['name']
+    except KeyError:name=node_id
+    routes=store.latest_results(node_id,'route')
+    from .jobs import split_endpoint
+    default_port=_effective_options().frps_port
+    lookup={(r['server_ip'],r['port']):r for r in routes}
+    fallback={r['server_ip']:r for r in routes}
+    return [{**item,'nodeId':node_id,'nodeName':name,'port':item.get('port',split_endpoint(item['ip'],default_port)[1]),'latestRoute':lookup.get((item['ip'],item['port'])) if 'port' in item else lookup.get(split_endpoint(item['ip'],default_port))} for item in items]
 
 
 def audit(username: str, action: str, *, success: bool = True, message: str = "") -> None:
@@ -46,14 +60,23 @@ def audit(username: str, action: str, *, success: bool = True, message: str = ""
 
 
 # 模块级单例：与进程同生命周期；store 每次 start 时重建（跟随 DATABASE_PATH）
-runner = ProbeRunner(probe_store)
+def job_store():
+    return ProbeJobStore(settings.database_path)
+
+
+def source_store(node_id):
+    job_store()  # initialize provenance migration before reading the scoped views
+    return ProbeStore(settings.database_path, node_id=node_id)
+
+
+runner = LegacyProbeAdapter(job_store)
 
 
 def _enqueue_discovered_route(ip: str) -> bool:
     return route_hub.enqueue(ip)
 
 
-discover_scans = DiscoverScanCoordinator(discover_runner, probe_store, _enqueue_discovered_route)
+discover_scans = LegacyDiscoverAdapter(job_store, lambda: _effective_options())
 
 # 面板可调配置：snake（存储/引擎）↔ camel（API/前端）
 _CAMEL_KEYS = {
@@ -277,21 +300,22 @@ def list_servers(
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
     sort: Literal["ip", "group", "conn", "speed", "time"] = "group",
     order: Literal["asc", "desc"] = "asc",
+    nodeId: str = "console",
 ):
-    result = probe_store().query_servers(ServerPageQuery(
+    result = source_store(nodeId).query_servers(ServerPageQuery(
         page=page, page_size=page_size, q=q, group=group, label=label,
         conn=conn, sort=sort, order=order,
     ))
     return {
-        "items": [_public_server(row) for row in result["items"]],
+        "items": _enrich_source([_public_server(row) for row in result["items"]], nodeId),
         "page": result["page"], "pageSize": result["pageSize"],
         "total": result["total"], "sort": result["sort"], "order": result["order"],
     }
 
 
 @router.get("/servers/facets")
-def server_facets():
-    return probe_store().server_facets()
+def server_facets(nodeId: str = "console"):
+    return source_store(nodeId).server_facets()
 
 
 @router.get("/servers/groups")
@@ -437,20 +461,15 @@ class TestStart(BaseModel):
     mode: str = "connectivity"
     ips: list[str] | None = None
     group: str | None = None
+    nodeIds: list[str] | None = None
 
 
 @router.post("/test")
 def start_test(payload: TestStart, user: Annotated[str, Depends(require_auth)]):
     if payload.mode not in MODES:
         raise HTTPException(status_code=400, detail=f"mode 必须是 {'/'.join(sorted(MODES))}")
-    if not Path(settings.probe_frpc_bin).exists():
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"未找到 frpc 二进制: {settings.probe_frpc_bin}。"
-                "容器部署内置 frpc；本地开发请设置 PROBE_FRPC_BIN 指向本机 frpc。"
-            ),
-        )
+    if (not payload.nodeIds or 'console' in payload.nodeIds) and not Path(settings.probe_frpc_bin).exists():
+        raise HTTPException(400,'未找到 frpc 二进制，请设置 PROBE_FRPC_BIN')
     store = probe_store()
     if payload.ips:
         try:
@@ -465,6 +484,12 @@ def start_test(payload: TestStart, user: Annotated[str, Depends(require_auth)]):
             ips = [s.ip for s in servers]
     if not ips:
         raise HTTPException(status_code=400, detail="没有可测试的服务器")
+    if payload.nodeIds:
+        try:
+            job = job_store().create_job(payload.mode, payload.nodeIds, ips=ips, port=_effective_options().frps_port, options=serial_options(_effective_options()))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"ok": True, "mode": payload.mode, "count": len(ips), "jobId": job["id"]}
     ok, err = runner.start(payload.mode, ips, _effective_options())
     if not ok:
         raise HTTPException(status_code=409, detail=err)
@@ -498,20 +523,23 @@ def list_history(
     kind: str,
     ip: str | None = None,
     limit: int = Query(default=200, ge=1, le=1000),
+    nodeId: str = "console",
 ):
-    store = probe_store()
+    if kind == "route":
+        return job_store().history(nodeId, kind, ip, limit)
+    rows=job_store().history(nodeId,kind,ip,limit)
     if kind == "connectivity":
-        return [_public_conn(row) for row in store.list_connectivity_history(ip=ip, limit=limit)]
+        return [{**_public_conn(row),"nodeId":nodeId,"port":row["port"]} for row in rows]
     if kind == "speed":
-        return [_public_speed(row) for row in store.list_speed_history(ip=ip, limit=limit)]
+        return [{**_public_speed(row),"nodeId":nodeId,"port":row["port"]} for row in rows]
     raise HTTPException(status_code=404, detail="history 类型必须是 connectivity 或 speed")
 
 
 @router.delete("/history/{kind}")
-def clear_history(kind: str, user: Annotated[str, Depends(require_auth)]):
+def clear_history(kind: str, user: Annotated[str, Depends(require_auth)], nodeId: str="console"):
     if kind not in {"connectivity", "speed"}:
         raise HTTPException(status_code=404, detail="history 类型必须是 connectivity 或 speed")
-    deleted = probe_store().clear_history(kind)
+    deleted = job_store().clear_history(nodeId,kind)
     audit(user, "probe_clear_history", message=f"{kind} × {deleted}")
     return {"deleted": deleted}
 
@@ -520,8 +548,8 @@ def clear_history(kind: str, user: Annotated[str, Depends(require_auth)]):
 # 统计
 # ---------------------------------------------------------------------------
 @router.get("/dashboard")
-def dashboard():
-    return probe_store().dashboard()
+def dashboard(nodeId: str = "console"):
+    return source_store(nodeId).dashboard()
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +563,8 @@ class DiscoverStart(BaseModel):
     concurrency: int = 500
     timeout: float = 1.5
     autoRoute: bool = False
+    autoFull: bool = False
+    nodeIds: list[str] | None = None
 
 
 def _fetch_targets_from_url(url: str) -> str:
@@ -608,6 +638,9 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
         timeout=payload.timeout,
     )
     try:
+        if payload.nodeIds or payload.autoFull:
+            job = job_store().create_job("discover", payload.nodeIds or ["console"], targets=params.targets, exclude=params.exclude, port=port, auto_route=payload.autoRoute, auto_full=payload.autoFull, concurrency=params.concurrency, timeout=params.timeout, options=serial_options(_effective_options()))
+            return {"running": True, "jobId": job["id"], "total": job["options"]["total"]}
         discover_scans.start(params, auto_route=payload.autoRoute)
     except DiscoverPersistenceError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -646,9 +679,10 @@ def discover_results(
     library: Literal["all", "imported", "new"] = "all",
     sort: Literal["discoveredAt", "ip", "latency"] = "discoveredAt",
     order: Literal["asc", "desc"] = "desc",
+    nodeId: str = "console",
 ):
     store_sort = "time" if sort == "discoveredAt" else sort
-    result = probe_store().query_discover_results(DiscoverPageQuery(
+    result = source_store(nodeId).query_discover_results(DiscoverPageQuery(
         page=page, page_size=page_size, q=q, group=group, label=label,
         library=library, sort=store_sort, order=order,
     ))
@@ -663,14 +697,14 @@ def discover_results(
         "discoveredAt": row["discovered_at"],
     } for row in result["items"]]
     return {
-        "items": items, "page": result["page"], "pageSize": result["pageSize"],
+        "items": _enrich_source(items, nodeId), "page": result["page"], "pageSize": result["pageSize"],
         "total": result["total"], "sort": sort, "order": result["order"],
     }
 
 
 @router.get("/discover/facets")
-def discover_facets():
-    return probe_store().discover_facets()
+def discover_facets(nodeId: str = "console"):
+    return source_store(nodeId).discover_facets()
 
 
 class IdsPayload(BaseModel):
@@ -746,10 +780,11 @@ def rename_group(payload: GroupRename, user: Annotated[str, Depends(require_auth
 # CN2 路由追踪（节点轮询模型：claim / report + 面板管理）
 # ---------------------------------------------------------------------------
 class RouteReport(BaseModel):
-    taskId: int
+    taskId: str | int
     ok: bool = True
     isCn2: bool = False
     error: str = ""
+    hops: list[dict] = []
 
 
 class RouteStart(BaseModel):
@@ -761,118 +796,246 @@ class RouteNodeCreate(BaseModel):
 
 
 def _route_node_by_token(token: str) -> dict | None:
-    import hmac as _hmac
-
-    for node in load_route_nodes(probe_store()):
-        if node.get("token") and _hmac.compare_digest(node["token"], token):
-            return node
-    return None
+    try:
+        return job_store().authenticate(token)
+    except ValueError:
+        return None
 
 
 def _mask_route_token(token: str) -> str:
-    if len(token) <= 8:
-        return "*" * len(token)
-    return f"{token[:4]}…{token[-4:]}"
+    return token[:4]+"…"+token[-4:] if len(token)>8 else "*"*len(token)
 
 
 def _require_route_node(x_route_token: str) -> dict:
-    node = _route_node_by_token(x_route_token or "")
+    node = _route_node_by_token(x_route_token)
     if node is None:
-        raise HTTPException(status_code=401, detail="路由节点 Token 无效")
-    from .route import route_hub
-    route_hub.touch(node["name"])
+        raise HTTPException(401,"节点 Token 无效")
+    job_store().heartbeat(node['id'],node['version'],['route'],[])
     return node
 
 
-@node_router.post("/claim")
+@node_router.post("/route/claim")
 def route_claim(x_route_token: str = Header(default="")):
-    """测试节点轮询领任务（原子领取；掉线超时任务已自动回收重派）。"""
-    node = _require_route_node(x_route_token)
-    task = route_hub.claim(node["name"])
-    if task is None:
-        return {"task": None}
-    return {"task": task}
+    node=_require_route_node(x_route_token)
+    task=job_store().claim(node['id'],['route'])
+    # The old script only echoes taskId. Encode the attempt into that opaque ID,
+    # preserving fencing even though legacy nodes have no heartbeat protocol.
+    if task:
+        task={**task,'taskId':task['taskId']+':'+task['attemptId']}
+    return {'task':task}
 
 
-@node_router.post("/report")
+@node_router.post("/route/report")
 def route_report(payload: RouteReport, x_route_token: str = Header(default="")):
-    """测试节点回报结果 → 写入发现行保留标签（CN2/非CN2/未路由测试）。"""
-    from .route import route_label, route_hub
-
-    node = _require_route_node(x_route_token)
-    task = route_hub.report(payload.taskId, ok=payload.ok, is_cn2=payload.isCn2)
-    if task is None:
-        return {"ok": True, "applied": False}  # 未知/已完成任务幂等接受
-    label = route_label(payload.ok, payload.isCn2)
-    probe_store().set_route_label(task.ip, label)
-    return {"ok": True, "applied": True, "ip": task.ip, "label": label}
+    node=_require_route_node(x_route_token)
+    task,separator,attempt=str(payload.taskId).partition(':')
+    if not separator:return {'ok':True,'applied':False}
+    return job_store().report(node['id'],task,attempt,result={'ok':payload.ok,'isCn2':payload.isCn2,'error':payload.error,'hops':payload.hops})
 
 
 @router.get("/route/status")
 def route_status_view():
-    from .route import route_hub
-    return route_hub.status()
+    return job_store().stage_status('route')
 
 
 @router.post("/route/stop")
 def route_stop(user: Annotated[str, Depends(require_auth)]):
-    from .route import route_hub
-    cleared = route_hub.stop()
-    audit(user, "probe_route_stop", message=f"清除待测任务 {cleared} 个")
-    return {"cleared": cleared}
+    return {'cleared':job_store().stop_stage('route')}
 
 
 @router.post("/route/start")
 def route_start(payload: RouteStart, user: Annotated[str, Depends(require_auth)]):
-    from .route import route_hub
-
-    if not payload.ids:
-        raise HTTPException(status_code=400, detail="请勾选要测试的记录")
-    rows = probe_store().get_discover_results_by_ids(payload.ids)
-    enqueued = sum(1 for row in rows if route_hub.enqueue(row["ip"]))
-    audit(user, "probe_route_start", message=f"入队 {enqueued} 台（勾选 {len(payload.ids)}）")
-    return {"enqueued": enqueued}
+    rows=probe_store().get_discover_results_by_ids(payload.ids)
+    if not rows:raise HTTPException(400,'请勾选要测试的记录')
+    nodes=[n['id'] for n in job_store().list_nodes() if n['kind']!='console' and 'route' in n['capabilities']] or ['console']
+    job=job_store().create_job('route',nodes,ips=[r['ip'] for r in rows],port=_effective_options().frps_port)
+    audit(user,'probe_route_start',message=job['id'])
+    return {'enqueued':len(rows)*len(nodes)}
 
 
 @router.get("/route/nodes")
 def route_nodes_list():
-    from .route import route_hub
-
-    return [{
-        "name": node["name"],
-        "tokenMasked": _mask_route_token(node.get("token", "")),
-        "online": route_hub.is_online(node["name"]),
-    } for node in load_route_nodes(probe_store())]
+    return [n for n in job_store().list_nodes() if n['kind']!='console']
 
 
 @router.post("/route/nodes")
 def route_nodes_create(payload: RouteNodeCreate, user: Annotated[str, Depends(require_auth)]):
-    from .route import generate_node_token
-
-    name = payload.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="节点名称不能为空")
-    if len(name) > 64:
-        raise HTTPException(status_code=400, detail="节点名称过长（最多 64 字符）")
-    store = probe_store()
-    nodes = load_route_nodes(store)
-    if any(node["name"] == name for node in nodes):
-        raise HTTPException(status_code=400, detail=f"节点「{name}」已存在")
-    token = generate_node_token()
-    nodes.append({"name": name, "token": token})
-    save_route_nodes(store, nodes)
-    audit(user, "probe_route_node_create", message=name)
-    # Token 只在创建时完整返回一次
-    return {"name": name, "token": token}
+    try:
+        node=job_store().create_node(payload.name,kind='legacy')
+        audit(user,'probe_route_node_create',message=payload.name)
+        return node
+    except Exception as exc:
+        import sqlite3
+        if isinstance(exc,(ValueError,sqlite3.IntegrityError)):raise HTTPException(400,str(exc)) from exc
+        raise
 
 
 @router.delete("/route/nodes/{name}")
 def route_nodes_delete(name: str, user: Annotated[str, Depends(require_auth)]):
-    store = probe_store()
-    nodes = load_route_nodes(store)
-    remaining = [node for node in nodes if node["name"] != name]
-    if len(remaining) == len(nodes):
-        raise HTTPException(status_code=404, detail=f"节点「{name}」不存在")
-    save_route_nodes(store, remaining)
-    audit(user, "probe_route_node_delete", message=name)
-    return {"ok": True}
+    node=next((n for n in job_store().list_nodes() if n['name']==name),None)
+    if not node:raise HTTPException(404,'节点不存在')
+    job_store().delete_node(node['id']);return {'ok':True}
+
+
+class NodeCreate(BaseModel):
+    name: str
+
+
+class JobCreate(BaseModel):
+    mode: Literal['discover','route','connectivity','speed','full']
+    nodeIds: list[str]
+    ips: list[str] | None = None
+    targets: str | list[str] | None = None
+    sourceUrl: str = ""
+    exclude: str | list[str] | None = None
+    port: int | None = None
+    autoRoute: bool = False
+    autoFull: bool = False
+    concurrency: int = 6
+    timeout: float = 1.5
+
+
+class JobAction(BaseModel):
+    taskIds: list[str] | None = None
+
+
+@router.get('/nodes')
+def nodes_list():return {'items':job_store().list_nodes()}
+
+
+@router.post('/nodes')
+def nodes_create(payload: NodeCreate, request: Request):
+    import sqlite3
+    import shlex
+    try:
+        node=job_store().create_node(payload.name)
+        url=str(request.base_url).rstrip('/')
+        node['installCommand']='curl -fsSL '+shlex.quote(url+'/api/probe/worker/install.sh')+' -o /tmp/frpc-probe-install.sh && sudo env CONSOLE_URL='+shlex.quote(url)+' PROBE_TOKEN='+shlex.quote(node['token'])+' bash /tmp/frpc-probe-install.sh'
+        return node
+    except (ValueError,sqlite3.IntegrityError) as exc:raise HTTPException(400,str(exc)) from exc
+
+
+@router.delete('/nodes/{node_id}')
+def nodes_delete(node_id: str):
+    try:job_store().delete_node(node_id)
+    except KeyError as exc:raise HTTPException(404,'节点不存在') from exc
+    except ValueError as exc:raise HTTPException(400,str(exc)) from exc
+    return {'ok':True}
+
+
+@router.post('/jobs')
+def jobs_create(payload: JobCreate):
+    if payload.mode=='discover' and payload.sourceUrl.strip():
+        manual=payload.targets if isinstance(payload.targets,str) else ','.join(payload.targets or [])
+        payload.targets=_fetch_targets_from_url(payload.sourceUrl)+'\n'+manual
+    ips=payload.ips
+    if payload.mode!='discover' and not ips and not payload.targets:
+        ips=[s.ip for s in probe_store().list_servers()]
+    try:
+        return job_store().create_job(payload.mode,payload.nodeIds,ips=ips,targets=payload.targets,exclude=payload.exclude,port=payload.port or _effective_options().frps_port,auto_route=payload.autoRoute,auto_full=payload.autoFull,concurrency=payload.concurrency,timeout=payload.timeout,options=serial_options(_effective_options()))
+    except ValueError as exc:raise HTTPException(400,str(exc)) from exc
+
+
+@router.get('/jobs')
+def jobs_list():return {'items':job_store().list_jobs()}
+
+
+@router.get('/jobs/{job_id}')
+def jobs_detail(job_id: str,page: int=Query(default=1,ge=1),pageSize: int=Query(default=200,ge=1,le=500)):
+    try:return job_store().get_job(job_id,page,pageSize)
+    except KeyError as exc:raise HTTPException(404,'任务不存在') from exc
+
+
+@router.post('/jobs/{job_id}/{action}')
+def jobs_action(job_id: str,action: Literal['stop','skip','retry'],payload: JobAction = JobAction()):
+    try:return job_store().action(job_id,action,payload.taskIds)
+    except KeyError as exc:raise HTTPException(404,'任务不存在') from exc
+
+
+@router.get('/results/{kind}')
+def results_latest(kind: Literal['route','connectivity','speed'],nodeId: str='console',ip: str | None=None):
+    items=job_store().latest_results(nodeId,kind)
+    return {'items':[r for r in items if ip is None or r['server_ip']==ip]}
+
+
+@router.get('/compare')
+def results_compare(ip: str,port: int=7000):
+    items=[]
+    for node in job_store().list_nodes():
+        values={kind:next((r for r in job_store().latest_results(node['id'],kind) if r['server_ip']==ip and r['port']==port),None) for kind in ('route','connectivity','speed')}
+        with job_store()._db() as c:
+            observation=c.execute('SELECT latency_ms,discovered_at FROM probe_discover_observations WHERE node_id=? AND ip=? AND port=?',(node['id'],ip,port)).fetchone()
+        items.append({'node':node,'discovery':dict(observation) if observation else None,**values})
+    return {'items':items}
+
+
+def _worker_node(token):
+    try:return job_store().authenticate(token)
+    except ValueError as exc:raise HTTPException(401,str(exc)) from exc
+
+
+class WorkerHeartbeat(BaseModel):
+    version: str = ''
+    capabilities: list[str] = []
+    attempts: list[dict[str,str]] = []
+
+
+class WorkerProgress(BaseModel):
+    taskId: str
+    attemptId: str
+    seq: int
+    hits: list[dict] = []
+    progress: dict = {}
+
+
+class WorkerReport(BaseModel):
+    taskId: str
+    attemptId: str
+    result: dict | None = None
+    infraError: str | None = None
+
+
+@node_router.post('/worker/heartbeat')
+def worker_heartbeat(payload: WorkerHeartbeat,x_probe_token: str=Header(default='')):
+    node=_worker_node(x_probe_token)
+    return job_store().heartbeat(node['id'],payload.version,payload.capabilities,payload.attempts)
+
+
+@node_router.post('/worker/claim')
+def worker_claim(x_probe_token: str=Header(default='')):
+    node=_worker_node(x_probe_token)
+    return {'task':job_store().claim(node['id'])}
+
+
+@node_router.post('/worker/progress')
+def worker_progress(payload: WorkerProgress,x_probe_token: str=Header(default='')):
+    node=_worker_node(x_probe_token)
+    try:return job_store().progress(node['id'],payload.taskId,payload.attemptId,payload.seq,hits=payload.hits,progress=payload.progress)
+    except (ValueError,KeyError,TypeError) as exc:raise HTTPException(400,str(exc)) from exc
+
+
+@node_router.post('/worker/report')
+def worker_report(payload: WorkerReport,x_probe_token: str=Header(default='')):
+    node=_worker_node(x_probe_token)
+    return job_store().report(node['id'],payload.taskId,payload.attemptId,result=payload.result,infra_error=payload.infraError)
+
+
+@node_router.get('/worker/bundle.tar.gz')
+def worker_bundle_download():
+    from fastapi.responses import Response
+    from .package import worker_bundle
+    return Response(worker_bundle(),media_type='application/gzip')
+
+
+@node_router.get('/worker/install.sh')
+def worker_install_download():
+    from fastapi.responses import Response
+    return Response(Path(__file__).with_name('install.sh').read_text(),media_type='text/x-shellscript')
+
+
+@node_router.get('/worker/bundle.sha256')
+def worker_bundle_checksum():
+    import hashlib
+    from fastapi.responses import Response
+    from .package import worker_bundle
+    return Response(hashlib.sha256(worker_bundle()).hexdigest()+'  worker.tar.gz\n',media_type='text/plain')

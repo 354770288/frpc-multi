@@ -19,7 +19,7 @@ ENV PYTHONUNBUFFERED=1     AGENT_VERSION=${AGENT_VERSION}
 
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl; \
+    apt-get install -y --no-install-recommends ca-certificates curl mtr-tiny; \
     arch="$(uname -m)"; \
     curl -fsSL "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_VERSION}.tgz" -o /tmp/docker.tgz; \
     tar -xzf /tmp/docker.tgz -C /tmp; \

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "production-backup",
+  "type": "deployment",
+  "source": "23.19.228.204:/data/console-before-probe-workers-20261021.db",
+  "summary": "SQLite在线备份成功；旧镜像tag frpc-multi:rollback-probe-workers-20261021；国内节点10.144.1.5旧frpc-route在线；临时frps17000配置verify成功，尚未启动",
+  "verifier": "coordinator"
+}

@@ -98,6 +98,40 @@ CREATE TABLE IF NOT EXISTS probe_discover_results (
     UNIQUE (ip, port)
 );
 
+CREATE TABLE IF NOT EXISTS probe_nodes (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, token TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL DEFAULT 'worker', version TEXT NOT NULL DEFAULT '',
+    capabilities TEXT NOT NULL DEFAULT '[]', last_seen REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS probe_jobs (
+    id TEXT PRIMARY KEY, mode TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'running',
+    options TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS probe_tasks (
+    id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES probe_jobs(id),
+    node_id TEXT NOT NULL, stage TEXT NOT NULL, ip TEXT NOT NULL DEFAULT '',
+    port INTEGER NOT NULL, payload TEXT NOT NULL DEFAULT '{}',
+    state TEXT NOT NULL DEFAULT 'pending', attempt_id TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+    lease_until REAL NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0,
+    progress TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_probe_tasks_claim ON probe_tasks(node_id,state,created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_probe_task_pipeline ON probe_tasks(job_id,node_id,stage,ip,port) WHERE stage != 'discover';
+CREATE INDEX IF NOT EXISTS idx_probe_tasks_job ON probe_tasks(job_id,state);
+CREATE TABLE IF NOT EXISTS probe_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL DEFAULT '',
+    job_id TEXT NOT NULL, node_id TEXT NOT NULL, kind TEXT NOT NULL,
+    server_ip TEXT NOT NULL, port INTEGER NOT NULL, test_time TEXT NOT NULL,
+    data TEXT NOT NULL, UNIQUE(task_id,attempt_id)
+);
+CREATE INDEX IF NOT EXISTS idx_probe_results_source ON probe_results(node_id,kind,server_ip,port,id);
+CREATE TABLE IF NOT EXISTS probe_discover_observations (
+    node_id TEXT NOT NULL, ip TEXT NOT NULL, port INTEGER NOT NULL,
+    latency_ms REAL NOT NULL, discovered_at TEXT NOT NULL,
+    PRIMARY KEY(node_id,ip,port)
+);
+
 CREATE TABLE IF NOT EXISTS lb_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

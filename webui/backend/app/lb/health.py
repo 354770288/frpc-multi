@@ -165,9 +165,9 @@ class PoolHealthMonitor:
 
 def best_ip_for_domain(domain: LbDomain, probe_store: ProbeStore, monitor: PoolHealthMonitor) -> str | None:
     """域名池内的最优健康 IP（供 syncer 与 failover 判定共用）。"""
-    rows = [row for row in probe_store.list_servers_with_status()
-            if row["server_group"] == domain.group_name]
-    return select_best_ip(rows, monitor.is_healthy)
+    from .selection import selection_for_domain
+
+    return selection_for_domain(domain, probe_store, monitor)["bestIp"]
 
 
 # 模块级单例：调度线程写入，API 读取（与 probe runner 相同的模式）

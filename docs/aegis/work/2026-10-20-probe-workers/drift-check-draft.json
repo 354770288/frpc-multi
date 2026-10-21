@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-10-20-probe-workers",
+  "taskIntentRef": "docs/aegis/work/2026-10-20-probe-workers/task-intent-draft.json",
+  "baselineRefs": [
+    "docs/aegis/baseline/2026-08-30-initial-baseline.md",
+    "chat/PERF_OPT_HANDOFF_2026-08-29.md"
+  ],
+  "scopeStatus": "not-yet-verified",
+  "compatStatus": "not-yet-verified",
+  "retirementStatus": "not-yet-verified",
+  "newRiskSignals": [],
+  "decision": "needs-baseline-readback"
+}

@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from ..models import now_iso
 from ..probe.store import ProbeStore
 from .cloudflare import CloudflareClient, CloudflareError
-from .health import PoolHealthMonitor, best_ip_for_domain, select_best_ip
+from .health import PoolHealthMonitor
+from .selection import selection_for_domain
 from .store import LbDomain, LbStore
 
 # 同步很快（每条记录一个 API 调用），全局锁串行避免手动 + 定时并发互踩
@@ -37,6 +38,7 @@ class SyncResult:
     unmanaged_count: int = 0
     errors: list[str] = field(default_factory=list)
     message: str = ""
+    selection: dict = field(default_factory=dict)
 
 
 def sync_domain(domain: LbDomain, probe_store: ProbeStore, lb_store: LbStore,
@@ -51,13 +53,14 @@ def sync_domain(domain: LbDomain, probe_store: ProbeStore, lb_store: LbStore,
                        if row["server_group"] == domain.group_name]
         pool_ips = {row["ip"] for row in status_rows}
         monitor = monitor or _default_monitor()
-        target_ip = select_best_ip(status_rows, monitor.is_healthy) if pool_ips else None
+        selection = selection_for_domain(domain, probe_store, monitor)
+        target_ip = selection["bestIp"] if pool_ips else None
         healthy_size = sum(1 for ip in pool_ips if monitor.is_healthy(ip))
 
         try:
             records = cf.list_a_records(domain.zone_id, domain.name)
         except CloudflareError as exc:
-            result = SyncResult(ok=False, pool_size=len(pool_ips),
+            result = SyncResult(ok=False, pool_size=len(pool_ips), selection=selection,
                                 errors=[f"读取 DNS 记录失败: {exc}"])
             _finish(lb_store, domain, result)
             return result
@@ -87,6 +90,7 @@ def sync_domain(domain: LbDomain, probe_store: ProbeStore, lb_store: LbStore,
                 pool_size=len(pool_ips), healthy_size=0,
                 unmanaged_count=unmanaged_count,
                 errors=[f"池内 {len(pool_ips)} 台均不健康，保留现有记录 {previous_ip or '（无）'}"],
+                selection=selection,
             )
             _finish(lb_store, domain, result)
             return result
@@ -118,6 +122,7 @@ def sync_domain(domain: LbDomain, probe_store: ProbeStore, lb_store: LbStore,
             healthy_size=healthy_size,
             unmanaged_count=unmanaged_count,
             errors=errors,
+            selection=selection,
         )
         _finish(lb_store, domain, result)
         return result
@@ -130,6 +135,9 @@ def _default_monitor() -> PoolHealthMonitor:
 
 def _finish(lb_store: LbStore, domain: LbDomain, result: SyncResult) -> None:
     parts = [f"池 {result.pool_size} 台（健康 {result.healthy_size}）"]
+    if result.selection:
+        parts.append(f"观测 {result.selection['nodeId']} · {result.selection['reason']}"
+                     f" · {result.selection.get('observedAt') or '无有效时间'}")
     if result.switched:
         parts.append(f"切换 {result.previous_ip} → {result.target_ip}")
     elif result.target_ip:
@@ -167,5 +175,6 @@ def summarize(result: SyncResult) -> dict:
         "unmanagedCount": result.unmanaged_count,
         "errors": result.errors,
         "message": result.message,
+        "selection": result.selection,
         "syncedAt": now_iso(),
     }

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import socket
+from contextlib import contextmanager
 import subprocess
 import tempfile
 import threading
@@ -111,15 +112,35 @@ class ProbeOptions:
 # ────────────── tcping ──────────────
 
 
-def tcping(host: str, port: int, timeout: float = 5.0) -> tuple[bool, str]:
+@contextmanager
+def _watch_socket(sock, cancel):
+    """Interrupt blocking connect/transfer when a worker loses its lease."""
+    done=threading.Event()
+    def watch():
+        while not done.wait(.1):
+            if cancel():
+                try:sock.shutdown(socket.SHUT_RDWR)
+                except OSError:pass
+                sock.close()
+                return
+    thread=None
+    if cancel is not None:
+        thread=threading.Thread(target=watch,daemon=True);thread.start()
+    try:yield
+    finally:
+        done.set()
+        if thread is not None:thread.join(timeout=.2)
+
+
+def tcping(host: str, port: int, timeout: float = 5.0, cancel: CancelCheck | None = None) -> tuple[bool, str]:
     """socket 模拟 tcping。返回 (是否成功, 延迟 ms 或错误信息)。"""
     try:
         start = time.time()
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect((host, port))
-        elapsed = (time.time() - start) * 1000
-        sock.close()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            with _watch_socket(sock,cancel):
+                sock.connect((host, port))
+            elapsed = (time.time() - start) * 1000
         return True, f"{elapsed:.1f}ms"
     except socket.timeout:
         return False, "连接超时"
@@ -141,7 +162,7 @@ def tcping_with_retry(
     for attempt in range(max(retries, 1)):
         if cancel is not None and attempt > 0 and cancel():
             return False, "已取消"
-        ok, info = tcping(host, port, timeout)
+        ok, info = tcping(host, port, timeout, cancel) if cancel is not None else tcping(host, port, timeout)
         if ok:
             return True, info
         if info == "连接被拒绝":
@@ -163,6 +184,9 @@ class _LocalTcpService:
         self.server_socket: socket.socket | None = None
         self.running = False
         self.thread: threading.Thread | None = None
+        self._clients: set[socket.socket] = set()
+        self._handlers: set[threading.Thread] = set()
+        self._clients_lock = threading.Lock()
 
     def start(self) -> tuple[bool, str]:
         try:
@@ -172,6 +196,7 @@ class _LocalTcpService:
             sock.bind(("0.0.0.0", self.port))
             sock.listen(5)
         except OSError as exc:
+            sock.close()
             return False, f"本地端口 {self.port} 无法监听: {exc}"
         self.server_socket = sock
         self.running = True
@@ -188,7 +213,19 @@ class _LocalTcpService:
                 continue
             except OSError:
                 break
-            handler = threading.Thread(target=self._serve, args=(client,), daemon=True)
+            def serve(client=client):
+                try:self._serve(client)
+                finally:
+                    with self._clients_lock:
+                        self._clients.discard(client)
+                        self._handlers.discard(threading.current_thread())
+            handler = threading.Thread(target=serve, daemon=True)
+            with self._clients_lock:
+                if not self.running:
+                    client.close()
+                    break
+                self._clients.add(client)
+                self._handlers.add(handler)
             handler.start()
 
     def _serve(self, client: socket.socket) -> None:  # pragma: no cover - 子类实现
@@ -203,6 +240,13 @@ class _LocalTcpService:
                 pass
         if self.thread is not None:
             self.thread.join(timeout=3)
+        with self._clients_lock:
+            clients=list(self._clients);handlers=list(self._handlers)
+        for client in clients:
+            try:client.shutdown(socket.SHUT_RDWR)
+            except OSError:pass
+            client.close()
+        for handler in handlers:handler.join(timeout=1)
 
 
 class LocalEchoServer(_LocalTcpService):
@@ -395,8 +439,11 @@ class FrpcProcess:
                 self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+                self.proc.wait(timeout=2)
         if self._reader is not None:
             self._reader.join(timeout=3)
+        if self.proc is not None and self.proc.stdout is not None:
+            self.proc.stdout.close()
 
 
 class _TempConfig:
@@ -407,9 +454,14 @@ class _TempConfig:
             "w", encoding="utf-8", suffix=".toml", prefix="probe-", delete=False,
             dir=str(work_dir) if work_dir else None,
         )
-        handle.write(content)
-        handle.close()
         self.path = Path(handle.name)
+        try:
+            handle.write(content)
+        except BaseException:
+            handle.close()
+            self.path.unlink(missing_ok=True)
+            raise
+        handle.close()
 
     def __enter__(self) -> Path:
         return self.path
@@ -463,37 +515,38 @@ def download_speed_test(
     max_duration = options.speed_duration
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(options.speed_socket_timeout)
-        sock.connect((host, port))
-        start = time.time()
-        last_report = start
-        cancelled = False
-        while True:
-            now = time.time()
-            elapsed = now - start
-            if elapsed >= max_duration:
-                result["cutoff"] = True
-                break
-            if cancel is not None and cancel():
-                cancelled = True
-                break
-            remaining = max_duration - elapsed
-            sock.settimeout(min(remaining + 1, options.speed_socket_timeout))
-            data = sock.recv(65536)
-            if not data:
-                break
-            total += len(data)
-            if on_progress is not None and now - last_report >= 0.5:
-                on_progress(
-                    f"⬇️ 下载 {format_size(total)}  速率: {format_speed(total / elapsed)}"
-                    f"  剩余: {max_duration - int(elapsed)}s"
-                )
-                last_report = now
-        result = _settle(result, total, start, result["cutoff"])
-        if cancelled:
-            # 取消的测试结果不具参考性，交由调用方按取消语义丢弃
-            result["success"] = False
-            result["error"] = "已取消"
+        with _watch_socket(sock,cancel):
+            sock.settimeout(options.speed_socket_timeout)
+            sock.connect((host, port))
+            start = time.time()
+            last_report = start
+            cancelled = False
+            while True:
+                now = time.time()
+                elapsed = now - start
+                if elapsed >= max_duration:
+                    result["cutoff"] = True
+                    break
+                if cancel is not None and cancel():
+                    cancelled = True
+                    break
+                remaining = max_duration - elapsed
+                sock.settimeout(min(remaining + 1, options.speed_socket_timeout))
+                data = sock.recv(65536)
+                if not data:
+                    break
+                total += len(data)
+                if on_progress is not None and now - last_report >= 0.5:
+                    on_progress(
+                        f"⬇️ 下载 {format_size(total)}  速率: {format_speed(total / elapsed)}"
+                        f"  剩余: {max_duration - int(elapsed)}s"
+                    )
+                    last_report = now
+            result = _settle(result, total, start, result["cutoff"])
+            if cancelled:
+                # 取消的测试结果不具参考性，交由调用方按取消语义丢弃
+                result["success"] = False
+                result["error"] = "已取消"
     except socket.timeout:
         # 时限触发的超时也按已传数据结算（与原版兜底一致）
         result = _settle(result, total, start if start else time.time(), True)
@@ -526,44 +579,45 @@ def upload_speed_test(
     max_duration = options.speed_duration
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(options.speed_socket_timeout)
-        sock.connect((host, port))
-        start = time.time()
-        last_report = start
-        cancelled = False
-        while True:
-            now = time.time()
-            elapsed = now - start
-            if elapsed >= max_duration:
-                result["cutoff"] = True
-                break
-            if cancel is not None and cancel():
-                cancelled = True
-                break
-            remaining = max_duration - elapsed
-            sock.settimeout(min(remaining + 1, options.speed_socket_timeout))
+        with _watch_socket(sock,cancel):
+            sock.settimeout(options.speed_socket_timeout)
+            sock.connect((host, port))
+            start = time.time()
+            last_report = start
+            cancelled = False
+            while True:
+                now = time.time()
+                elapsed = now - start
+                if elapsed >= max_duration:
+                    result["cutoff"] = True
+                    break
+                if cancel is not None and cancel():
+                    cancelled = True
+                    break
+                remaining = max_duration - elapsed
+                sock.settimeout(min(remaining + 1, options.speed_socket_timeout))
+                try:
+                    sock.sendall(_PAYLOAD_BLOCK)
+                except socket.timeout:
+                    result["cutoff"] = True
+                    break
+                total += len(_PAYLOAD_BLOCK)
+                if on_progress is not None and now - last_report >= 0.5:
+                    on_progress(
+                        f"⬆️ 上传 {format_size(total)}  速率: {format_speed(total / elapsed)}"
+                        f"  剩余: {max_duration - int(elapsed)}s"
+                    )
+                    last_report = now
             try:
-                sock.sendall(_PAYLOAD_BLOCK)
-            except socket.timeout:
-                result["cutoff"] = True
-                break
-            total += len(_PAYLOAD_BLOCK)
-            if on_progress is not None and now - last_report >= 0.5:
-                on_progress(
-                    f"⬆️ 上传 {format_size(total)}  速率: {format_speed(total / elapsed)}"
-                    f"  剩余: {max_duration - int(elapsed)}s"
-                )
-                last_report = now
-        try:
-            sock.shutdown(socket.SHUT_WR)
-            sock.settimeout(5)
-            sock.recv(1024)
-        except OSError:
-            pass
-        result = _settle(result, total, start, result["cutoff"])
-        if cancelled:
-            result["success"] = False
-            result["error"] = "已取消"
+                sock.shutdown(socket.SHUT_WR)
+                sock.settimeout(5)
+                sock.recv(1024)
+            except OSError:
+                pass
+            result = _settle(result, total, start, result["cutoff"])
+            if cancelled:
+                result["success"] = False
+                result["error"] = "已取消"
     except socket.timeout:
         result = _settle(result, total, start if start else time.time(), True)
         if not result["success"]:
@@ -617,6 +671,7 @@ def run_connectivity_probe(
     echo = LocalEchoServer(options.conn_local_port)
     started, err = echo.start()
     if not started:
+        result["infraError"] = err
         result["detail"] = err
         return result
 
@@ -627,6 +682,7 @@ def run_connectivity_probe(
             frpc = FrpcProcess(cfg, options)
             started, err = frpc.start()
             if not started:
+                result["infraError"] = err
                 result["detail"] = err
                 return result
             ok, err = frpc.wait_proxies(1, options.tunnel_wait, cancel)
@@ -647,6 +703,7 @@ def run_connectivity_probe(
             else:
                 result["detail"] = f"防火墙未放行端口 {options.conn_remote_port}: {info}"
     except Exception as exc:  # noqa: BLE001 - 单 IP 失败不应中断批量任务
+        result["infraError"] = f"{type(exc).__name__}: {exc}"
         result["detail"] = f"测试异常: {exc}"
     finally:
         if frpc is not None:
@@ -692,11 +749,13 @@ def run_speed_probe(
     sink = LocalDataSink(options.ul_local_port)
     started, err = source.start()
     if not started:
+        result["infraError"] = err
         result["detail"] = err
         return result
     started, err = sink.start()
     if not started:
         source.stop()
+        result["infraError"] = err
         result["detail"] = err
         return result
 
@@ -707,6 +766,7 @@ def run_speed_probe(
             frpc = FrpcProcess(cfg, options)
             started, err = frpc.start()
             if not started:
+                result["infraError"] = err
                 result["detail"] = err
                 return result
             ok, err = frpc.wait_proxies(2, options.tunnel_wait, cancel)
@@ -741,6 +801,7 @@ def run_speed_probe(
         elif not result["ul_ok"]:
             result["detail"] = f"上传失败: {ul.get('error', '')}"
     except Exception as exc:  # noqa: BLE001
+        result["infraError"] = f"{type(exc).__name__}: {exc}"
         result["detail"] = f"测试异常: {exc}"
     finally:
         if frpc is not None:

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-10-20-probe-workers",
+  "lastCheckpointRef": "docs/aegis/work/2026-10-20-probe-workers/todo-checkpoint-draft.json",
+  "resumeInstruction": "backend冻结通过242tests；frontend_sol独占frontend实施，模型显式gpt-6.1-sol medium。parent独占Git/deploy/docs。先list_agents与gitstatus，不重启已完成任务",
+  "knownPartialWork": [
+    "后端与worker实现；独立spec与quality审查通过；父fresh242tests通过；LB37tests与独立审查通过；真实数据库迁移6表逐行保留及历史可见性验证"
+  ],
+  "mustReadBeforeContinuing": [
+    "docs/aegis/work/2026-10-20-probe-workers/10-intent.md",
+    "docs/aegis/work/2026-10-20-probe-workers/20-checkpoint.md",
+    "docs/aegis/work/2026-10-20-probe-workers/todo-checkpoint-draft.json"
+  ],
+  "unsafeToAssume": [
+    "尚未部署或切换全局选优；主控4694f3ed-605a-4b09-832a-e5ab3f19d16d，国内915f185e-8bdb-4f2d-8527-612aed2d80b0的Netcatty会话可能需重连。主控23.19.228.204:35477，国内10.144.1.5:22。备份/data/console-before-probe-workers-20261021.db及旧镜像tag已建。临时fixture在/opt/frpc-multi/acceptance-20261021未启动。"
+  ]
+}

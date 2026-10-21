@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "affectedLayers": [],
+  "owners": [],
+  "invariants": [],
+  "compatBoundary": "保留资产与用户标签、旧路由节点兼容、主控健康检查、手动导入",
+  "nonGoals": []
+}

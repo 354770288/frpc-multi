@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "实施已批准计划并在23.19.228.204和国内节点部署验收",
+  "goal": "实施已批准计划并在23.19.228.204和国内节点部署验收",
+  "successEvidence": [],
+  "stopCondition": "Stop when success evidence is satisfied or a blocker/risk requires pause.",
+  "nonGoals": [],
+  "scope": "持久化分布式测试任务、节点程序、前端对比、国内观测选优、升级部署",
+  "changeKinds": [
+    "feature"
+  ],
+  "riskHints": []
+}

@@ -73,7 +73,8 @@ def _public_domain(domain, store: ProbeStore) -> dict:
 @router.get("/health")
 def pool_health_view():
     """池内 IP 健康快照 + 各启用域名的当前指向与最优健康 IP。"""
-    from .health import best_ip_for_domain, pool_health
+    from .health import pool_health
+    from .selection import selection_for_domain
 
     store = lb_store()
     probe = probe_store()
@@ -83,15 +84,41 @@ def pool_health_view():
         if not domain.enabled:
             continue
         pool = [s.ip for s in probe.list_servers() if s.server_group == domain.group_name]
+        selection = selection_for_domain(domain, probe, pool_health)
         domains.append({
             "domainId": domain.id,
             "name": domain.name,
             "group": domain.group_name,
             "currentIp": domain.current_ip,
-            "bestIp": best_ip_for_domain(domain, probe, pool_health),
+            "bestIp": selection["bestIp"],
+            "selection": selection,
             "poolIps": pool,
         })
     return {"states": list(states.values()), "domains": domains}
+
+
+class SelectionConfigUpdate(BaseModel):
+    nodeId: str
+    maxAgeHours: int = 24
+
+
+@router.get("/selection-config")
+def get_selection_config():
+    from .selection import selection_config
+
+    return selection_config(lb_store())
+
+
+@router.put("/selection-config")
+def update_selection_config(payload: SelectionConfigUpdate, user: Annotated[str, Depends(require_auth)]):
+    from .selection import save_selection_config
+
+    try:
+        result = save_selection_config(lb_store(), payload.nodeId, payload.maxAgeHours)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit(user, "lb_selection_config", message=f"node={payload.nodeId} age={payload.maxAgeHours}h")
+    return result
 
 
 # ---------------------------------------------------------------------------

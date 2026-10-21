@@ -43,6 +43,7 @@ async def lifespan(app: FastAPI):
     agent_task: asyncio.Task | None = None
     agent_client = None
     scheduler_stop = None
+    probe_stop = None
     if settings.is_agent:
         from .agent.client import AgentWsClient
 
@@ -52,6 +53,9 @@ async def lifespan(app: FastAPI):
         from .lb.scheduler import start_scheduler
 
         scheduler_stop = start_scheduler(settings)
+        from .probe.console import start_console_worker
+        import os
+        probe_stop = start_console_worker(settings.database_path,frpc_bin=settings.probe_frpc_bin,version=os.environ.get("AGENT_VERSION","dev"))
     try:
         yield
     finally:
@@ -63,6 +67,8 @@ async def lifespan(app: FastAPI):
                 await agent_task
         if scheduler_stop is not None:
             scheduler_stop.set()
+        if probe_stop is not None:
+            probe_stop()
 
 
 app = FastAPI(title="frpc 多实例管理面板", version="0.2.0", lifespan=lifespan)

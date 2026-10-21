@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-10-20-probe-workers",
+  "requiredBaselineRefs": [
+    "docs/aegis/baseline/2026-08-30-initial-baseline.md",
+    "chat/PERF_OPT_HANDOFF_2026-08-29.md"
+  ],
+  "deliveredContextRefs": [],
+  "acknowledgedBeforePlanRefs": [],
+  "citedInPlanRefs": [],
+  "missingRefs": [
+    "docs/aegis/baseline/2026-08-30-initial-baseline.md",
+    "chat/PERF_OPT_HANDOFF_2026-08-29.md"
+  ],
+  "decision": "needs-baseline-readback"
+}

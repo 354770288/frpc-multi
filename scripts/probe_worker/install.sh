@@ -1,0 +1,1 @@
+../../webui/backend/app/probe/install.sh

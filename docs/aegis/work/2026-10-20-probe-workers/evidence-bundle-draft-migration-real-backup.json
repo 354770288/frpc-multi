@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "migration-real-backup",
+  "type": "migration",
+  "source": "线上备份的本地副本（受限临时目录）",
+  "summary": "真实库重复迁移后6张原资产/历史/分组/域名表逐行完全一致；2319服务器35938发现2392连通94测速9分组4域名；integrity_check=ok；Console来源分页本机15ms/36ms，facets122ms，dashboard10ms",
+  "verifier": "coordinator"
+}

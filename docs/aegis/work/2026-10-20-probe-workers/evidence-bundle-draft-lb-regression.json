@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "lb-regression",
+  "type": "test",
+  "source": "webui/backend/tests/test_lb_selection.py",
+  "summary": "37项LB回归通过；含真实统一Console任务及外部节点最新失败覆盖旧成功；需求与质量独立复审通过",
+  "verifier": "coordinator"
+}
