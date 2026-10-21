@@ -33,3 +33,27 @@ No evidence has been recorded yet.
 - Source: webui/backend/tests
 - Summary: 父fresh全量242项测试通过35.997秒；backend spec与quality独立审查均通过；真实库历史Console可见conn第一页1000条和speed94条；修复legacy快照可见性、端口alias、retry gate和infra分类
 - Verifier: coordinator
+
+## EvidenceBundleDraft
+
+- Artifact key: workspace-validator
+- Type: diagnostic
+- Source: aegis-workspace.py check
+- Summary: 工作记录proof bundle已生成；修复INDEX旧相对路径遗漏。治理文档校验仍因历史BASELINE-GOVERNANCE格式与当前helper要求不同而失败（任务开始时已存在）；文档要求显式用户审查才改，未更改该治理文档。产品与测试验证独立通过。
+- Verifier: coordinator
+
+## EvidenceBundleDraft
+
+- Artifact key: ui-browser
+- Type: browser
+- Source: 127.0.0.1:18081隔离QA
+- Summary: 观测来源QA vsConsole指标隔离；0ms与上传0Mbps保留；跨节点对比路由59.43跳点；第1和2页选2目标换来源保留；quick能力不足后scope仍2目标；2node×2target=4pending；skip1 stop3 retry4与刷新同jobID恢复通过；全局LB观测节点/24h保存成功。新增stageCounts全批次聚合26focused通过；最新后端243全量通过35.766s
+- Verifier: coordinator
+
+## EvidenceBundleDraft
+
+- Artifact key: frontend-final
+- Type: test
+- Source: webui/frontend; /tmp/frpc-probe-frontend-race-check.cjs
+- Summary: 前端独立spec/quality复审通过；父fresh npm run build通过index-tZWTmKbC.js；真实源码harness 5异步竞态+8地址解析边界通过；类型检查通过。后端stageCounts聚合及升级命令接口集成最新243tests通过。主控旧服务当前无运行测试/扫描/路由任务。
+- Verifier: coordinator

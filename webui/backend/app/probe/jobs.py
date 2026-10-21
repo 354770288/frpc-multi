@@ -352,6 +352,8 @@ class ProbeJobStore:
         d=dict(row);d['options']=json.loads(d['options']);d['createdAt']=d.pop('created_at')
         d['counts']={r['state']:r['n'] for r in c.execute('SELECT state,COUNT(*) n FROM probe_tasks WHERE job_id=? GROUP BY state',(d['id'],))}
         d['nodeIds']=[r[0] for r in c.execute('SELECT DISTINCT node_id FROM probe_tasks WHERE job_id=?',(d['id'],))]
+        d['stageCounts']=[{'nodeId':r['node_id'],'stage':r['stage'],'state':r['state'],'count':r['n']}
+                          for r in c.execute('SELECT node_id,stage,state,COUNT(*) n FROM probe_tasks WHERE job_id=? GROUP BY node_id,stage,state ORDER BY node_id,stage,state',(d['id'],))]
         d['taskTotal']=sum(d['counts'].values())
         aggregate=c.execute("SELECT COALESCE(SUM(json_extract(progress,'$.scanned')),0),COALESCE(SUM(json_extract(progress,'$.foundCount')),0) FROM probe_tasks WHERE job_id=? AND stage='discover'",(d['id'],)).fetchone()
         d['progress']={'scanned':aggregate[0],'foundCount':aggregate[1]}

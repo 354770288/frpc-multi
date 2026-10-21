@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "ui-browser",
+  "type": "browser",
+  "source": "127.0.0.1:18081隔离QA",
+  "summary": "观测来源QA vsConsole指标隔离；0ms与上传0Mbps保留；跨节点对比路由59.43跳点；第1和2页选2目标换来源保留；quick能力不足后scope仍2目标；2node×2target=4pending；skip1 stop3 retry4与刷新同jobID恢复通过；全局LB观测节点/24h保存成功。新增stageCounts全批次聚合26focused通过；最新后端243全量通过35.766s",
+  "verifier": "coordinator"
+}

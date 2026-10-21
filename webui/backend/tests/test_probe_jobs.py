@@ -187,6 +187,18 @@ class ProbeJobsTests(unittest.TestCase):
         self.job('speed');self.finish(self.a,self.store.claim(self.a),{'dl_ok':False,'ul_ok':False})
         self.assertIsNone(source.dashboard()['speed']['avgDownloadMbps'])
 
+    def test_stage_counts_cover_whole_job_independent_of_task_page(self):
+        job = self.job(nodes=[self.a, self.b], ips=['192.0.2.1', '192.0.2.2', '192.0.2.3'])
+        self.store.claim(self.a)
+        detail = self.store.get_job(job['id'], page=1, page_size=1)
+        self.assertEqual(len(detail['tasks']), 1)
+        counts = detail['stageCounts']
+        self.assertEqual(sum(row['count'] for row in counts), 6)
+        self.assertEqual(sum(row['count'] for row in counts if row['nodeId'] == self.a), 3)
+        self.assertEqual(sum(row['count'] for row in counts if row['nodeId'] == self.b), 3)
+        self.assertEqual(sum(row['count'] for row in counts if row['state'] == 'running'), 1)
+        self.assertTrue(all(row['stage'] == 'connectivity' for row in counts))
+
 
     def test_runtime_capabilities_require_dependencies(self):
         from app.probe.worker import runtime_capabilities

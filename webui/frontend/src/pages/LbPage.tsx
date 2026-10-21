@@ -6,6 +6,7 @@ import {
 import { toast } from 'sonner';
 import { lbApi, probeApi } from '../lib/api';
 import { formatLastSeen } from '../lib/format';
+import { LbSelectionCard, SelectionReason } from './probe/LbSelectionCard';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -112,6 +113,7 @@ export function LbPage() {
               onSaved={load}
             />
           )}
+          <LbSelectionCard onSaved={load} />
           <Card>
             <CardHeader><CardTitle className="text-sm">工作原理（单 A 主备）</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-2 text-[11px] leading-5 text-muted-foreground">
@@ -176,12 +178,14 @@ export function LbPage() {
                           <div className="flex items-center gap-1.5" title={pendingSwitch ? `健康监测建议切换到 ${domainHealth?.bestIp}` : undefined}>
                             <span className="font-mono text-[12px]">{domain.currentIp}</span>
                             {pendingSwitch
-                              ? <Badge tone="warning">切换中 → {domainHealth?.bestIp}</Badge>
-                              : <Badge tone="success" dot>在线</Badge>}
+                              ? <Badge tone="warning">建议 → {domainHealth?.bestIp}</Badge>
+                              : <Badge tone={poolStates.some((state) => state?.ip === domain.currentIp && state.ok === false) ? 'danger' : 'muted'} dot>{poolStates.some((state) => state?.ip === domain.currentIp && state.ok === false) ? '健康检查失败' : '当前指向'}</Badge>}
                           </div>
                         ) : (
                           <span className="text-xs text-muted-foreground">未同步</span>
                         )}
+                        {domainHealth?.selection && <div className="mt-2"><SelectionReason selection={domainHealth.selection} /></div>}
+                        <Link to={`/probe?${new URLSearchParams({ tab: 'test', group: domain.group, nodeId: domainHealth?.selection.nodeId || 'console' })}`} className="mt-2 inline-block text-[11px] text-primary underline underline-offset-2">选择节点手动完整测试此分组 →</Link>
                       </Td>
                       <Td>
                         <span className="font-mono text-xs tabular-nums" title={poolStates.map((s) => s ? `${s.ip} ${s.ok === false ? '✗' : '✓'}` : '').filter(Boolean).join('\n')}>

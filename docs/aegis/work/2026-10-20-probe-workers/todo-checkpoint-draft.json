@@ -1,16 +1,15 @@
 {
   "schemaVersion": "aegis.schema.v0",
   "taskId": "2026-10-20-probe-workers",
-  "currentTodo": "前端实施与实际部署验收",
+  "currentTodo": "前端quality两项修复和复审、提交推送构建、真实部署验收",
   "completedTodos": [
-    "后端与worker实现；独立spec与quality审查通过；父fresh242tests通过；LB37tests与独立审查通过；真实数据库迁移6表逐行保留及历史可见性验证"
+    "后端ec30a27已本地提交；最新243项后端tests通过；前端specPASS/buildPASS；browser来源隔离/0值/hops/跨页保留/quick目标锁/2节点2目标4任务/skip-stop-retry-刷新恢复通过；LB配置本地保存通过"
   ],
-  "activeSlice": "frontend",
+  "activeSlice": "frontend-review",
   "evidenceRefs": [
-    "webui/backend/tests/test_probe_jobs.py",
-    "webui/backend/tests/test_lb_selection.py"
+    "webui/backend/tests/test_probe_jobs.py"
   ],
   "blockedOn": null,
-  "nextStep": "frontend_sol实施全部frontend后独立审查/构建/浏览器验证；提交推送构建；主控和国内节点部署与真实fixture验收",
+  "nextStep": "frontend_sol修IPv6对比与旧job action回写竞态；lb_quality_review复跑其harness；父build/审diff后提交推送、等待CI、备份再部署主控+国内节点、frps17000全链路和测试DNS",
   "updatedAt": "2026-10-21"
 }

@@ -899,18 +899,30 @@ class JobAction(BaseModel):
     taskIds: list[str] | None = None
 
 
+def _installer_command(url: str, token: str | None = None) -> str:
+    import shlex
+    command = 'curl -fsSL ' + shlex.quote(url + '/api/probe/worker/install.sh') + ' -o /tmp/frpc-probe-install.sh && sudo '
+    if token is not None:
+        command += 'env CONSOLE_URL=' + shlex.quote(url) + ' PROBE_TOKEN=' + shlex.quote(token) + ' '
+    return command + 'bash /tmp/frpc-probe-install.sh'
+
+
 @router.get('/nodes')
-def nodes_list():return {'items':job_store().list_nodes()}
+def nodes_list(request: Request):
+    nodes = job_store().list_nodes()
+    for node in nodes:
+        if node['id'] != 'console':
+            node['installCommand'] = _installer_command(str(request.base_url).rstrip('/'))
+    return {'items': nodes}
 
 
 @router.post('/nodes')
 def nodes_create(payload: NodeCreate, request: Request):
     import sqlite3
-    import shlex
     try:
         node=job_store().create_node(payload.name)
         url=str(request.base_url).rstrip('/')
-        node['installCommand']='curl -fsSL '+shlex.quote(url+'/api/probe/worker/install.sh')+' -o /tmp/frpc-probe-install.sh && sudo env CONSOLE_URL='+shlex.quote(url)+' PROBE_TOKEN='+shlex.quote(node['token'])+' bash /tmp/frpc-probe-install.sh'
+        node['installCommand'] = _installer_command(url, node['token'])
         return node
     except (ValueError,sqlite3.IntegrityError) as exc:raise HTTPException(400,str(exc)) from exc
 

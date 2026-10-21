@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "workspace-validator",
+  "type": "diagnostic",
+  "source": "aegis-workspace.py check",
+  "summary": "工作记录proof bundle已生成；修复INDEX旧相对路径遗漏。治理文档校验仍因历史BASELINE-GOVERNANCE格式与当前helper要求不同而失败（任务开始时已存在）；文档要求显式用户审查才改，未更改该治理文档。产品与测试验证独立通过。",
+  "verifier": "coordinator"
+}

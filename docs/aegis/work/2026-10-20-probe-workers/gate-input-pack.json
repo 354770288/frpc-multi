@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "baselineRefs": [
+    "docs/aegis/baseline/2026-08-30-initial-baseline.md",
+    "chat/PERF_OPT_HANDOFF_2026-08-29.md"
+  ],
+  "impactStatement": "docs/aegis/work/2026-10-20-probe-workers/impact-statement-draft.json",
+  "compatPlan": "保留资产与用户标签、旧路由节点兼容、主控健康检查、手动导入",
+  "retirementPlan": "not-yet-verified",
+  "evidenceBundle": [
+    "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-backend-final.json",
+    "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-lb-regression.json",
+    "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-migration-real-backup.json",
+    "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-production-backup.json"
+  ]
+}

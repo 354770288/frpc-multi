@@ -7,8 +7,6 @@ import type {
   DiscoverPage,
   DiscoverQuery,
   DiscoverSort,
-  DiscoverStatus,
-  RouteStatusView,
 } from '../../lib/types';
 
 const EMPTY_PAGE: DiscoverPage = {
@@ -18,7 +16,7 @@ const EMPTY_FACETS: DiscoverFacets = { labels: [], groups: [], imported: 0, new:
 
 type PageRefreshOptions = { recoverOutOfRange?: boolean };
 
-export function useDiscovery(active: boolean) {
+export function useDiscovery(active: boolean, nodeId = 'console') {
   const [query, setQuery] = useState<DiscoverQuery>({
     page: 1,
     pageSize: 50,
@@ -32,20 +30,20 @@ export function useDiscovery(active: boolean) {
   const [page, setPage] = useState<DiscoverPage>(EMPTY_PAGE);
   const [facets, setFacets] = useState<DiscoverFacets>(EMPTY_FACETS);
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [scanStatus, setScanStatus] = useState<DiscoverStatus | null>(null);
-  const [routeStatus, setRouteStatus] = useState<RouteStatusView | null>(null);
+  const [selectedTargets, setSelectedTargets] = useState<Map<number, string>>(new Map());
+
+  useEffect(() => {
+    pageController.current?.abort(); facetController.current?.abort();
+    pageGeneration.current++; facetGeneration.current++;
+    setPage(EMPTY_PAGE);
+    setFacets(EMPTY_FACETS);
+    setQuery((current) => ({ ...current, page: 1 }));
+  }, [nodeId]);
 
   const pageController = useRef<AbortController | null>(null);
   const facetController = useRef<AbortController | null>(null);
   const pageGeneration = useRef(0);
   const facetGeneration = useRef(0);
-  // 扫描/路由的「之前在跑」状态必须是 hook 级 ref：ScanDialog.onStarted 等外部
-  // setter 也要能 seed，否则短扫描在一个空闲轮询周期内完成时 terminal 转换被漏检
-  const previousScanRunning = useRef(false);
-  const previousRouteActive = useRef(false);
-  // 轮询协调器在 effect 闭包内，外部通过 nudge 请求立即跑一拍（进入 1.5s 节奏）
-  const pollNudge = useRef<() => void>(() => {});
-
   const isVisible = useCallback(
     () => active && document.visibilityState === 'visible',
     [active],
@@ -59,7 +57,7 @@ export function useDiscovery(active: boolean) {
     const generation = ++pageGeneration.current;
     const requested = queryRef.current;
     try {
-      const next = await probeApi.discoverResults(requested, controller.signal);
+      const next = await probeApi.discoverResults(requested, controller.signal, nodeId);
       if (controller.signal.aborted || generation !== pageGeneration.current) return;
       const lastPage = Math.max(1, Math.ceil(next.total / next.pageSize));
       if (options.recoverOutOfRange && requested.page > lastPage) {
@@ -67,17 +65,11 @@ export function useDiscovery(active: boolean) {
         return;
       }
       setPage(next);
-      const imported = new Set(next.items.filter((item) => item.inLibrary).map((item) => item.id));
-      if (imported.size) {
-        setSelected((current) => {
-          const retained = new Set([...current].filter((id) => !imported.has(id)));
-          return retained.size === current.size ? current : retained;
-        });
-      }
+      setSelectedTargets((current) => { const updated = new Map(current); for (const item of next.items) updated.set(item.id, `${item.ip}:${item.port}`); return updated; });
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) throw error;
     }
-  }, [isVisible]);
+  }, [isVisible, nodeId]);
 
   const refreshFacets = useCallback(async () => {
     if (!isVisible()) return;
@@ -86,12 +78,12 @@ export function useDiscovery(active: boolean) {
     facetController.current = controller;
     const generation = ++facetGeneration.current;
     try {
-      const next = await probeApi.discoverFacets(controller.signal);
+      const next = await probeApi.discoverFacets(controller.signal, nodeId);
       if (!controller.signal.aborted && generation === facetGeneration.current) setFacets(next);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) throw error;
     }
-  }, [isVisible]);
+  }, [isVisible, nodeId]);
 
   const refreshAll = useCallback(async (options: PageRefreshOptions = {}) => {
     await Promise.all([refreshPage(options), refreshFacets()]);
@@ -108,112 +100,13 @@ export function useDiscovery(active: boolean) {
   }, [active, isVisible, refreshFacets]);
 
   useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let polling = false;
-    let restartAfterPoll = false;
-    let visibilityGeneration = 0;
-
-    const abortDiscoveryRequests = () => {
-      pageController.current?.abort();
-      facetController.current?.abort();
-    };
-
-    const schedule = (delay: number) => {
-      if (cancelled || !isVisible()) return;
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timer = undefined;
-        void tick();
-      }, delay);
-    };
-
-    pollNudge.current = () => {
-      restartAfterPoll = true;
-      schedule(0);
-    };
-
-    const tick = async () => {
-      if (cancelled || !isVisible()) return;
-      if (polling) {
-        restartAfterPoll = true;
-        return;
-      }
-      polling = true;
-      const generation = visibilityGeneration;
-      let nextDelay = 6000;
-      try {
-        const [nextScan, nextRoute] = await Promise.all([
-          probeApi.discoverStatus(),
-          probeApi.routeStatus(),
-        ]);
-        if (cancelled || generation !== visibilityGeneration || !isVisible()) return;
-        setScanStatus(nextScan);
-        setRouteStatus(nextRoute);
-
-        const terminal = (previousScanRunning.current && !nextScan.running)
-          || (previousRouteActive.current && !nextRoute.active);
-        if (terminal) await refreshAll();
-        else if (nextScan.running || nextRoute.active) await refreshPage();
-
-        if (cancelled || generation !== visibilityGeneration || !isVisible()) return;
-        previousScanRunning.current = nextScan.running;
-        previousRouteActive.current = nextRoute.active;
-        nextDelay = nextScan.running || nextRoute.active ? 1500 : 6000;
-      } catch {
-        nextDelay = 6000;
-      } finally {
-        polling = false;
-        if (cancelled || !isVisible()) return;
-        if (restartAfterPoll || generation !== visibilityGeneration) {
-          restartAfterPoll = false;
-          schedule(0);
-        } else {
-          schedule(nextDelay);
-        }
-      }
-    };
-
-    const onVisibilityChange = () => {
-      visibilityGeneration += 1;
-      if (!isVisible()) {
-        if (timer) clearTimeout(timer);
-        timer = undefined;
-        abortDiscoveryRequests();
-        return;
-      }
-      if (timer) clearTimeout(timer);
-      timer = undefined;
-      void refreshAll().catch(() => {});
-      void tick();
-    };
-
-    if (isVisible()) void tick();
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => {
-      cancelled = true;
-      pollNudge.current = () => {};
-      if (timer) clearTimeout(timer);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      abortDiscoveryRequests();
-    };
-  }, [isVisible, refreshAll, refreshPage]);
-
-  // 外部置 running/active 时同步 seed 轮询 ref 并立即提速，避免短任务在空闲周期内漏检
-  const setScanStatusExternal = useCallback((next: DiscoverStatus | null) => {
-    if (next?.running) {
-      previousScanRunning.current = true;
-      pollNudge.current();
-    }
-    setScanStatus(next);
-  }, []);
-  const setRouteStatusExternal = useCallback((next: RouteStatusView | null) => {
-    if (next?.active) {
-      previousRouteActive.current = true;
-      pollNudge.current();
-    }
-    setRouteStatus(next);
-  }, []);
+    if (!active) return;
+    const tick = () => { if (isVisible()) void refreshAll({ recoverOutOfRange: true }).catch(() => {}); };
+    tick();
+    const timer = setInterval(tick, 6000);
+    document.addEventListener('visibilitychange', tick);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', tick); pageController.current?.abort(); facetController.current?.abort(); };
+  }, [active, isVisible, refreshAll]);
 
   const updateQuery = useCallback((changes: Partial<DiscoverQuery>, resetPage = true) => {
     setQuery((current) => ({ ...current, ...changes, page: resetPage ? 1 : (changes.page ?? current.page) }));
@@ -263,10 +156,7 @@ export function useDiscovery(active: boolean) {
     facets,
     selected,
     setSelected,
-    scanStatus,
-    setScanStatus: setScanStatusExternal,
-    routeStatus,
-    setRouteStatus: setRouteStatusExternal,
+    selectedTargets,
     setSearch,
     setGroup,
     setLabel,

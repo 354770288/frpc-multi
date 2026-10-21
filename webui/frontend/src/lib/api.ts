@@ -1,6 +1,7 @@
 import { getAuthToken, notifyUnauthorized, AuthError } from './auth';
 import type {
   AuditLog,
+  TestNode, ProbeJobInput, ProbeJob, ProbeJobDetail, ProbeComparison, LbSelectionConfig,
   CloudflareInfo,
   CloudflareZone,
   DiscoverFacets,
@@ -24,7 +25,6 @@ import type {
   NodeWithInstall,
   ProbeConnectivityHistory,
   ProbeDashboard,
-  ProbeServer,
   ProbeSpeedHistory,
   ProbeTestConfig,
   ProbeTestStatus,
@@ -155,8 +155,17 @@ export type ProbeServerPayload = {
 };
 
 export const probeApi = {
-  servers: (query: ServerQuery, signal?: AbortSignal) => {
+  testNodes: () => api<{ items: TestNode[] }>('/api/probe/nodes'),
+  createTestNode: (name: string) => api<TestNode & { token: string }>('/api/probe/nodes', { method: 'POST', body: JSON.stringify({ name }) }),
+  deleteTestNode: (id: string) => api<{ ok: boolean }>(`/api/probe/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  jobs: () => api<{ items: ProbeJob[] }>('/api/probe/jobs'),
+  createJob: (payload: ProbeJobInput) => api<ProbeJobDetail>('/api/probe/jobs', { method: 'POST', body: JSON.stringify(payload) }),
+  job: (id: string, page = 1, pageSize = 200) => api<ProbeJobDetail>(`/api/probe/jobs/${encodeURIComponent(id)}?page=${page}&pageSize=${pageSize}`),
+  jobAction: (id: string, action: 'stop' | 'skip' | 'retry', taskIds?: string[]) => api<{ ok: boolean; changed: number }>(`/api/probe/jobs/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify({ taskIds }) }),
+  compare: (ip: string, port: number) => api<{ items: ProbeComparison[] }>(`/api/probe/compare?${new URLSearchParams({ ip, port: String(port) })}`),
+  servers: (query: ServerQuery, signal?: AbortSignal, nodeId = 'console') => {
     const params = new URLSearchParams({
+      nodeId,
       page: String(query.page),
       pageSize: String(query.pageSize),
       q: query.q?.trim() ?? '',
@@ -169,8 +178,8 @@ export const probeApi = {
     if (query.label !== undefined) params.set('label', query.label);
     return api<ServerPage>(`/api/probe/servers?${params.toString()}`, { signal });
   },
-  serverFacets: (signal?: AbortSignal) =>
-    api<ServerFacets>('/api/probe/servers/facets', { signal }),
+  serverFacets: (signal?: AbortSignal, nodeId = 'console') =>
+    api<ServerFacets>(`/api/probe/servers/facets?nodeId=${encodeURIComponent(nodeId)}`, { signal }),
   groups: () => api<GroupInfo[]>('/api/probe/servers/groups'),
   createGroup: (name: string, color?: GroupColor) =>
     api<{ ok: boolean; name: string }>('/api/probe/servers/groups', {
@@ -213,25 +222,25 @@ export const probeApi = {
   testStatus: () => api<ProbeTestStatus>('/api/probe/test/status'),
   skipCurrent: () => api<{ ok: boolean }>('/api/probe/test/skip', { method: 'POST' }),
   stopTest: () => api<{ ok: boolean }>('/api/probe/test/stop', { method: 'POST' }),
-  connectivityHistory: (ip?: string, limit = 200) => {
-    const params = new URLSearchParams({ limit: String(limit) });
+  connectivityHistory: (ip?: string, limit = 200, nodeId = 'console') => {
+    const params = new URLSearchParams({ limit: String(limit), nodeId });
     if (ip) params.set('ip', ip);
     return api<ProbeConnectivityHistory[]>(`/api/probe/history/connectivity?${params.toString()}`);
   },
-  speedHistory: (ip?: string, limit = 200) => {
-    const params = new URLSearchParams({ limit: String(limit) });
+  speedHistory: (ip?: string, limit = 200, nodeId = 'console') => {
+    const params = new URLSearchParams({ limit: String(limit), nodeId });
     if (ip) params.set('ip', ip);
     return api<ProbeSpeedHistory[]>(`/api/probe/history/speed?${params.toString()}`);
   },
-  clearHistory: (kind: 'connectivity' | 'speed') =>
-    api<{ deleted: number }>(`/api/probe/history/${kind}`, { method: 'DELETE' }),
+  clearHistory: (kind: 'connectivity' | 'speed', nodeId = 'console') =>
+    api<{ deleted: number }>(`/api/probe/history/${kind}?nodeId=${encodeURIComponent(nodeId)}`, { method: 'DELETE' }),
   getConfig: () => api<ProbeTestConfig>('/api/probe/config'),
   updateConfig: (values: Record<string, string | number>) =>
     api<ProbeTestConfig>('/api/probe/config', {
       method: 'POST',
       body: JSON.stringify({ values })
     }),
-  dashboard: () => api<ProbeDashboard>('/api/probe/dashboard'),
+  dashboard: (nodeId = 'console') => api<ProbeDashboard>(`/api/probe/dashboard?nodeId=${encodeURIComponent(nodeId)}`),
   renameGroup: (old: string, name: string) =>
     api<{ renamed: string }>('/api/probe/servers/groups/rename', {
       method: 'PATCH', body: JSON.stringify({ old, new: name })
@@ -244,8 +253,9 @@ export const probeApi = {
   }),
   discoverStatus: () => api<DiscoverStatus>('/api/probe/discover/status'),
   discoverStop: () => api<{ stopped: boolean }>('/api/probe/discover/stop', { method: 'POST' }),
-  discoverResults: (query: DiscoverQuery, signal?: AbortSignal) => {
+  discoverResults: (query: DiscoverQuery, signal?: AbortSignal, nodeId = 'console') => {
     const params = new URLSearchParams({
+      nodeId,
       page: String(query.page),
       pageSize: String(query.pageSize),
       q: query.q?.trim() ?? '',
@@ -258,8 +268,8 @@ export const probeApi = {
     if (query.label !== undefined) params.set('label', query.label);
     return api<DiscoverPage>(`/api/probe/discover/results?${params.toString()}`, { signal });
   },
-  discoverFacets: (signal?: AbortSignal) =>
-    api<DiscoverFacets>('/api/probe/discover/facets', { signal }),
+  discoverFacets: (signal?: AbortSignal, nodeId = 'console') =>
+    api<DiscoverFacets>(`/api/probe/discover/facets?nodeId=${encodeURIComponent(nodeId)}`, { signal }),
   discoverUpdateBatch: (ids: number[], changes: { group?: string; addLabels?: string[]; removeLabels?: string[] }) =>
     api<{ updated: number }>('/api/probe/discover/results/batch', {
       method: 'PATCH', body: JSON.stringify({ ids, group: changes.group ?? null, addLabels: changes.addLabels ?? [], removeLabels: changes.removeLabels ?? [] })
@@ -296,6 +306,8 @@ export const probeApi = {
 };
 
 export const lbApi = {
+  selectionConfig: () => api<LbSelectionConfig>('/api/lb/selection-config'),
+  saveSelectionConfig: (config: LbSelectionConfig) => api<LbSelectionConfig>('/api/lb/selection-config', { method: 'PUT', body: JSON.stringify(config) }),
   cloudflare: () => api<CloudflareInfo>('/api/lb/cloudflare'),
   saveCloudflareToken: (token: string) =>
     api<CloudflareInfo>('/api/lb/cloudflare', { method: 'PUT', body: JSON.stringify({ token }) }),

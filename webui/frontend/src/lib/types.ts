@@ -190,6 +190,10 @@ export type ProbeSpeedSummary = {
 };
 
 export type ProbeServer = {
+  nodeId: string;
+  nodeName: string;
+  port: number;
+  latestRoute: ProbeRouteResult | null;
   id: number;
   ip: string;
   labels: string[];
@@ -200,6 +204,8 @@ export type ProbeServer = {
 };
 
 export type ProbeConnectivityHistory = {
+  nodeId: string;
+  port: number;
   id: number;
   serverIp: string;
   frpsReachable: boolean;
@@ -210,6 +216,8 @@ export type ProbeConnectivityHistory = {
 };
 
 export type ProbeSpeedHistory = {
+  nodeId: string;
+  port: number;
   id: number;
   serverIp: string;
   frpsReachable: boolean;
@@ -306,6 +314,9 @@ export type DiscoverQuery = {
 };
 
 export type DiscoverResult = {
+  nodeId: string;
+  nodeName: string;
+  latestRoute: ProbeRouteResult | null;
   id: number;
   ip: string;
   port: number;
@@ -443,6 +454,7 @@ export type LbHealthState = {
 };
 
 export type LbHealthDomain = {
+  selection: LbSelection;
   domainId: number;
   name: string;
   group: string;
@@ -488,3 +500,19 @@ export type LbSyncLog = {
   message: string;
   createdAt: string;
 };
+
+// Persistent source-aware probe jobs.
+export type ProbeMode = 'discover' | 'route' | 'connectivity' | 'speed' | 'full';
+export type TestNode = { id: string; name: string; kind: 'console' | 'worker' | 'legacy'; version: string; capabilities: string[]; online: boolean; lastSeen: string | null; createdAt: string; tokenMasked: string; installCommand: string };
+export type ProbeJobInput = { mode: ProbeMode; nodeIds: string[]; ips?: string[]; targets?: string | string[]; sourceUrl?: string; exclude?: string | string[]; port?: number; autoRoute?: boolean; autoFull?: boolean; concurrency?: number; timeout?: number };
+export type ProbeTaskState = 'pending' | 'running' | 'cancelling' | 'done' | 'failed' | 'skipped' | 'stopped';
+export type ProbeTask = { taskId: string; attemptId: string | null; jobId: string; nodeId: string; stage: string; ip: string; port: number; state: ProbeTaskState; attempts: number; seq: number; progress: Record<string, unknown>; error: string; payload: Record<string, unknown>; createdAt: string; result: Record<string, unknown> | null };
+export type ProbeJob = { id: string; mode: ProbeMode; state: string; options: Record<string, unknown>; counts: Partial<Record<ProbeTaskState, number>>; nodeIds: string[]; taskTotal: number; stageCounts: { nodeId: string; stage: string; state: ProbeTaskState; count: number }[]; progress: { scanned: number; foundCount: number }; createdAt: string };
+export type ProbeJobDetail = ProbeJob & { tasks: ProbeTask[]; page: number; pageSize: number };
+export type ProbeResultBase = { id: number; node_id: string; server_ip: string; port: number; test_time: string; detail?: string };
+export type ProbeRouteResult = ProbeResultBase & { ok: boolean; isCn2: boolean; hops: { hop: number; host: string; loss: number; avg: number | null }[]; error: string };
+export type ProbeConnResult = ProbeResultBase & { frps_reachable: boolean; tunnel_established: boolean; firewall_open: boolean };
+export type ProbeSpeedResult = ProbeResultBase & { dl_ok: boolean; ul_ok: boolean; dl_speed_bps: number; ul_speed_bps: number; dl_speed_mbps: number; ul_speed_mbps: number };
+export type ProbeComparison = { node: TestNode; discovery: { latency_ms: number; discovered_at: string } | null; route: ProbeRouteResult | null; connectivity: ProbeConnResult | null; speed: ProbeSpeedResult | null };
+export type LbSelectionConfig = { nodeId: string; maxAgeHours: number; healthSource: 'console' };
+export type LbSelection = LbSelectionConfig & { observedAt: string | null; validCandidates: number; bestIp: string | null; reason: 'console_observation' | 'no_healthy_candidates' | 'keep_healthy_current' | 'node_observation' | 'healthy_ip_order' };

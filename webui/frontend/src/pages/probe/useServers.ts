@@ -16,7 +16,7 @@ const EMPTY_FACETS: ServerFacets = { labels: [], groups: [] };
 
 type PageRefreshOptions = { recoverOutOfRange?: boolean };
 
-export function useServers(active: boolean) {
+export function useServers(active: boolean, nodeId = 'console') {
   const [query, setQuery] = useState<ServerQuery>({
     page: 1,
     pageSize: 50,
@@ -31,6 +31,14 @@ export function useServers(active: boolean) {
   const [facets, setFacets] = useState<ServerFacets>(EMPTY_FACETS);
   // 跨页勾选：id → ip（一键测试需要 IP 列表，跨页后不能只靠当前页推导）
   const [selected, setSelected] = useState<Map<number, string>>(new Map());
+
+  useEffect(() => {
+    pageController.current?.abort(); facetController.current?.abort();
+    pageGeneration.current++; facetGeneration.current++;
+    setPage(EMPTY_PAGE);
+    setFacets(EMPTY_FACETS);
+    setQuery((current) => ({ ...current, page: 1 }));
+  }, [nodeId]);
 
   const pageController = useRef<AbortController | null>(null);
   const facetController = useRef<AbortController | null>(null);
@@ -50,7 +58,7 @@ export function useServers(active: boolean) {
     const generation = ++pageGeneration.current;
     const requested = queryRef.current;
     try {
-      const next = await probeApi.servers(requested, controller.signal);
+      const next = await probeApi.servers(requested, controller.signal, nodeId);
       if (controller.signal.aborted || generation !== pageGeneration.current) return;
       const lastPage = Math.max(1, Math.ceil(next.total / next.pageSize));
       if (options.recoverOutOfRange && requested.page > lastPage) {
@@ -63,7 +71,7 @@ export function useServers(active: boolean) {
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) throw error;
     }
-  }, [isVisible]);
+  }, [isVisible, nodeId]);
 
   const refreshFacets = useCallback(async () => {
     if (!isVisible()) return;
@@ -72,12 +80,12 @@ export function useServers(active: boolean) {
     facetController.current = controller;
     const generation = ++facetGeneration.current;
     try {
-      const next = await probeApi.serverFacets(controller.signal);
+      const next = await probeApi.serverFacets(controller.signal, nodeId);
       if (!controller.signal.aborted && generation === facetGeneration.current) setFacets(next);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) throw error;
     }
-  }, [isVisible]);
+  }, [isVisible, nodeId]);
 
   const refreshAll = useCallback(async (options: PageRefreshOptions = {}) => {
     await Promise.all([refreshPage(options), refreshFacets()]);
