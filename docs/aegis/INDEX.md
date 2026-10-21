@@ -8,6 +8,16 @@
 - Previous checkpoint: `docs/aegis/work/2026-08-30-discovery-performance/20-checkpoint.md`
 - Previous evidence: `docs/aegis/work/2026-08-30-discovery-performance/90-evidence.md`
 - Previous reflection: `docs/aegis/work/2026-08-30-discovery-performance/99-reflection.md`
+
+| Date | Kind | Path | Title |
+| --- | --- | --- | --- |
+| 2026-08-30 | baseline | docs/aegis/baseline/2026-08-30-initial-baseline.md | 原始基线快照 |
+| 2026-08-30 | plan | docs/aegis/plans/2026-08-30-discovery-performance.md | 网段发现性能计划 |
+| 2026-10-20 | plan | docs/aegis/plans/2026-10-20-probe-workers.md | 全功能测试节点计划 |
+| 2026-08-30 | work | docs/aegis/work/2026-08-30-discovery-performance/10-intent.md | 原任务意图 |
+| 2026-08-30 | work | docs/aegis/work/2026-08-30-discovery-performance/20-checkpoint.md | 原任务检查点 |
+| 2026-08-30 | work | docs/aegis/work/2026-08-30-discovery-performance/90-evidence.md | 原任务证据 |
+| 2026-08-30 | work | docs/aegis/work/2026-08-30-discovery-performance/99-reflection.md | 原任务回顾 |
 | 2026-10-20 | work | docs/aegis/work/2026-10-20-probe-workers/10-intent.md | 全功能测试节点 intent |
 | 2026-10-20 | work | docs/aegis/work/2026-10-20-probe-workers/20-checkpoint.md | 全功能测试节点 checkpoint |
 | 2026-10-20 | work | docs/aegis/work/2026-10-20-probe-workers/90-evidence.md | 全功能测试节点 evidence |
@@ -28,3 +38,4 @@
 | 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-workspace-validator.json | 2026-10-20-probe-workers evidence workspace-validator |
 | 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-ui-browser.json | 2026-10-20-probe-workers evidence ui-browser |
 | 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-frontend-final.json | 2026-10-20-probe-workers evidence frontend-final |
+| 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-dns-endpoint.json | 2026-10-20-probe-workers evidence dns-endpoint |

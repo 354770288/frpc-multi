@@ -106,6 +106,28 @@ class SelectionTests(unittest.TestCase):
         self.records["connectivity"] = [{**self.record("1.1.1.10", frps_reachable=True), "port": 7001}]
         self.assertEqual(self.decide()["validCandidates"], 0)
 
+    def test_custom_port_ranking_returns_dns_address_only(self):
+        self.probe.create_server(ip='1.1.1.3:7001', server_group='pool')
+        self.records['connectivity'] = [self.record('1.1.1.3', port=7001, frps_reachable=True)]
+        self.assertEqual(self.decide()['bestIp'], '1.1.1.3')
+        self.domain.current_ip = '1.1.1.3'
+        self.records['connectivity'] = []
+        self.assertEqual(self.decide()['reason'], 'keep_healthy_current')
+        self.assertEqual(self.decide()['bestIp'], '1.1.1.3')
+
+    def test_custom_port_sync_writes_valid_a_record(self):
+        import ipaddress
+        from app.lb.syncer import sync_domain
+        from tests.test_lb import FakeCloudflare
+
+        self.probe.create_server(ip='1.1.1.3:7001', server_group='pool')
+        self.records['connectivity'] = [self.record('1.1.1.3', port=7001, frps_reachable=True)]
+        cf = FakeCloudflare()
+        result = sync_domain(self.domain, self.probe, self.lb, cf, self.monitor)
+        self.assertTrue(result.ok)
+        self.assertEqual(cf.ips(self.domain.name), ['1.1.1.3'])
+        ipaddress.IPv4Address(cf.ips(self.domain.name)[0])
+
     def test_all_unhealthy_preserves_no_selection(self):
         self.unhealthy("1.1.1.10")
         self.unhealthy("1.1.1.2")
@@ -120,6 +142,19 @@ class SelectionTests(unittest.TestCase):
 
 
 class SelectionIntegrationTests(unittest.TestCase):
+    def test_console_custom_port_ranking_returns_host(self):
+        from app.probe.jobs import ProbeJobStore
+
+        with tempfile.TemporaryDirectory() as root:
+            db = Path(root) / 'test.db'
+            lb, probe, jobs = LbStore(db), ProbeStore(db), ProbeJobStore(db)
+            probe.create_server(ip='1.1.1.3:7001', server_group='pool')
+            domain = lb.create_domain(name='test.example.com', zone_id='z', zone_name='example.com', group_name='pool')
+            jobs.create_job('connectivity', ['console'], ips=['1.1.1.3:7001'])
+            task = jobs.claim('console')
+            jobs.report('console', task['taskId'], task['attemptId'], result={'frps_reachable': True})
+            self.assertEqual(selection_for_domain(domain, probe, PoolHealthMonitor())['bestIp'], '1.1.1.3')
+
     def test_console_jobs_visible_to_default_lb_selection(self):
         from app.probe.jobs import ProbeJobStore
 

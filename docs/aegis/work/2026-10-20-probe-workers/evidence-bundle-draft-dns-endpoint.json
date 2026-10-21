@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "dns-endpoint",
+  "type": "test",
+  "source": "app/lb/selection.py; tests/test_lb_selection.py",
+  "summary": "部署前复现带端口候选地址成为无效A内容；修复DNS输出与健康API池为裸host，观测仍按host+port。40项LBtests通过，独立spec与quality均PASS。原ff49736 CI构建成功，新窄修复将另发镜像。",
+  "verifier": "coordinator"
+}

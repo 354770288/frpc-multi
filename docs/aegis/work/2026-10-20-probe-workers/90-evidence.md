@@ -57,3 +57,11 @@ No evidence has been recorded yet.
 - Source: webui/frontend; /tmp/frpc-probe-frontend-race-check.cjs
 - Summary: 前端独立spec/quality复审通过；父fresh npm run build通过index-tZWTmKbC.js；真实源码harness 5异步竞态+8地址解析边界通过；类型检查通过。后端stageCounts聚合及升级命令接口集成最新243tests通过。主控旧服务当前无运行测试/扫描/路由任务。
 - Verifier: coordinator
+
+## EvidenceBundleDraft
+
+- Artifact key: dns-endpoint
+- Type: test
+- Source: app/lb/selection.py; tests/test_lb_selection.py
+- Summary: 部署前复现带端口候选地址成为无效A内容；修复DNS输出与健康API池为裸host，观测仍按host+port。40项LBtests通过，独立spec与quality均PASS。原ff49736 CI构建成功，新窄修复将另发镜像。
+- Verifier: coordinator

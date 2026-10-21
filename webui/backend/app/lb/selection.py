@@ -72,7 +72,8 @@ def selection_for_domain(domain: LbDomain, probe: ProbeStore, monitor) -> dict:
     if not healthy:
         return view
     if source == "console":
-        view.update(bestIp=select_best_ip(healthy, lambda _: True), reason="console_observation")
+        selected = select_best_ip(healthy, lambda _: True)
+        view.update(bestIp=_endpoint(selected, 7000)[0] if selected else None, reason="console_observation")
         return view
 
     from ..probe.jobs import ProbeJobStore
@@ -98,14 +99,16 @@ def selection_for_domain(domain: LbDomain, probe: ProbeStore, monitor) -> dict:
         ranked.append({"ip": row["ip"], "c_frps_reachable": bool(conn and conn.get("frps_reachable")),
                        "s_dl_speed_mbps": (float(speed.get("dl_speed_bps", 0)) * 8 / 1024**2
                                            if speed and speed.get("dl_ok") else 0)})
-    view.update(validCandidates=len(observed), observedAt=max(timestamps) if timestamps else None)
-    current_healthy = any(r["ip"] == domain.current_ip for r in healthy)
-    if current_healthy and domain.current_ip not in observed:
+    observed_hosts = {_endpoint(addr, default_port)[0] for addr in observed}
+    view.update(validCandidates=len(observed_hosts), observedAt=max(timestamps) if timestamps else None)
+    current_healthy = any(_endpoint(r["ip"], default_port)[0] == domain.current_ip for r in healthy)
+    if current_healthy and domain.current_ip not in observed_hosts:
         view.update(bestIp=domain.current_ip, reason="keep_healthy_current")
     elif observed:
         ranked.sort(key=lambda r: _order(r["ip"]))
         ranked.sort(key=lambda r: (r["c_frps_reachable"], r["s_dl_speed_mbps"]), reverse=True)
-        view.update(bestIp=ranked[0]["ip"], reason="node_observation")
+        view.update(bestIp=_endpoint(ranked[0]["ip"], default_port)[0], reason="node_observation")
     else:
-        view.update(bestIp=min((r["ip"] for r in healthy), key=_order), reason="healthy_ip_order")
+        selected = min((r["ip"] for r in healthy), key=_order)
+        view.update(bestIp=_endpoint(selected, default_port)[0], reason="healthy_ip_order")
     return view

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from ..models import now_iso
 from ..probe.store import ProbeStore
 from .cloudflare import CloudflareClient, CloudflareError
-from .health import PoolHealthMonitor
+from .health import PoolHealthMonitor, split_addr
 from .selection import selection_for_domain
 from .store import LbDomain, LbStore
 
@@ -51,7 +51,7 @@ def sync_domain(domain: LbDomain, probe_store: ProbeStore, lb_store: LbStore,
     with _sync_lock:
         status_rows = [row for row in probe_store.list_servers_with_status()
                        if row["server_group"] == domain.group_name]
-        pool_ips = {row["ip"] for row in status_rows}
+        pool_ips = {split_addr(row["ip"], 7000)[0] for row in status_rows}
         monitor = monitor or _default_monitor()
         selection = selection_for_domain(domain, probe_store, monitor)
         target_ip = selection["bestIp"] if pool_ips else None

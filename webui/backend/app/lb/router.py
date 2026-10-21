@@ -73,7 +73,7 @@ def _public_domain(domain, store: ProbeStore) -> dict:
 @router.get("/health")
 def pool_health_view():
     """池内 IP 健康快照 + 各启用域名的当前指向与最优健康 IP。"""
-    from .health import pool_health
+    from .health import pool_health, split_addr
     from .selection import selection_for_domain
 
     store = lb_store()
@@ -83,7 +83,7 @@ def pool_health_view():
     for domain in store.list_domains():
         if not domain.enabled:
             continue
-        pool = [s.ip for s in probe.list_servers() if s.server_group == domain.group_name]
+        pool = sorted({split_addr(s.ip, 7000)[0] for s in probe.list_servers() if s.server_group == domain.group_name})
         selection = selection_for_domain(domain, probe, pool_health)
         domains.append({
             "domainId": domain.id,
