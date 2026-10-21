@@ -242,3 +242,39 @@ class ProbeJobsTests(unittest.TestCase):
         self.assertTrue(row['c_frps_reachable']);self.assertEqual(row['s_dl_speed_mbps'],8)
         self.assertEqual(len(jobs.history('console','connectivity')),1)
         self.assertEqual(source.dashboard()['speed']['avgDownloadMbps'],8)
+
+    def test_source_page_uses_bounded_indexed_projection(self):
+        import ipaddress
+        from dataclasses import replace
+
+        base = int(ipaddress.IPv4Address('198.18.0.1'))
+        ips = [str(ipaddress.IPv4Address(base + i)) for i in range(300)]
+        ProbeStore(self.path).import_servers([{'ip': ip} for ip in ips])
+        with self.store._db() as c:
+            c.executemany(
+                'INSERT INTO probe_results(task_id,job_id,node_id,kind,server_ip,port,test_time,data) VALUES(?,?,?,?,?,?,?,?)',
+                [(f'perf-{i}-{generation}', '', self.a, 'connectivity', ip, 7000,
+                  '2026-10-21T00:00:00+00:00', json.dumps({'frps_reachable': generation != 3}))
+                 for i, ip in enumerate(ips) for generation in range(4)],
+            )
+
+        class BudgetStore(ProbeStore):
+            def _source_views(self, connection):
+                steps = 0
+                def budget():
+                    nonlocal steps
+                    steps += 1000
+                    return steps > 500_000
+                connection.set_progress_handler(budget, 1000)
+                super()._source_views(connection)
+
+        source = BudgetStore(self.path, node_id=self.a)
+        page = source.query_servers(replace(ServerPageQuery(), page_size=1))
+        self.assertEqual(page['total'], 300)
+        self.assertEqual(len(page['items']), 1)
+        self.assertFalse(page['items'][0]['c_frps_reachable'])
+        self.assertEqual(len(source.list_connectivity_history(ip=ips[0])), 4)
+        filtered = self.store.latest_results(self.a, 'connectivity', ips=ips[:1])
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]['server_ip'], ips[0])
+        self.assertEqual(self.store.latest_results(self.a, 'connectivity', ips=[]), [])

@@ -402,10 +402,12 @@ class ProbeJobStore:
         return d
 
     def latest_results(self,node_id,kind,max_age_seconds=None,ips=None):
+        wanted = None if ips is None else tuple(dict.fromkeys(ips))
+        if wanted == ():
+            return []
         with self._db() as c:
-            rows=c.execute('SELECT r.* FROM probe_results r WHERE node_id=? AND kind=? AND id=(SELECT MAX(x.id) FROM probe_results x WHERE x.node_id=r.node_id AND x.kind=r.kind AND x.server_ip=r.server_ip AND x.port=r.port)',(node_id,kind)).fetchall()
-            if ips is not None:
-                wanted=set(ips);rows=[r for r in rows if r['server_ip'] in wanted]
+            address_filter = ' AND r.server_ip IN (' + ','.join('?' for _ in wanted) + ')' if wanted is not None else ''
+            rows=c.execute('SELECT r.* FROM probe_results r WHERE node_id=? AND kind=?' + address_filter + ' AND id=(SELECT MAX(x.id) FROM probe_results x WHERE x.node_id=r.node_id AND x.kind=r.kind AND x.server_ip=r.server_ip AND x.port=r.port)',(node_id,kind,*(wanted or ()))).fetchall()
             cutoff=time.time()-max_age_seconds if max_age_seconds is not None else None
             return [self._flatten(r) for r in rows if cutoff is None or datetime.fromisoformat(r['test_time'].replace('Z','+00:00')).timestamp()>=cutoff]
 

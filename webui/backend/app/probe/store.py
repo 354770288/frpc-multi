@@ -273,13 +273,16 @@ class ProbeStore:
             connection.close()
 
     def _source_views(self, connection):
-        """Reuse paginated SQL over source-scoped views, without loading all rows."""
+        """Index one latest result per asset, keeping history in the canonical store."""
         node = "'" + self.node_id.replace("'", "''") + "'"
         from ..settings import settings
         overrides=self.get_config_overrides() if self.node_id is None else ProbeStore(self.database_path).get_config_overrides()
         default_port=int(overrides.get('frps_port',settings.probe_options().frps_port))
         connection.create_function('probe_endpoint_host',1,lambda value:split_probe_endpoint(value,default_port)[0])
         connection.create_function('probe_endpoint_port',1,lambda value:split_probe_endpoint(value,default_port)[1])
+        # Normalize each asset once. Parsing addresses inside a historical-result
+        # JOIN prevents index seeks and multiplies work by assets × history.
+        connection.execute('CREATE TEMP TABLE _probe_endpoint_assets AS SELECT ip, probe_endpoint_host(ip) AS host, probe_endpoint_port(ip) AS port FROM main.probe_servers')
         for kind, table, fields in [
             ('connectivity', 'probe_connectivity_results', ['frps_reachable','tunnel_established','firewall_open','detail']),
             ('speed', 'probe_speed_results', ['frps_reachable','tunnel_ok','dl_ok','dl_bytes','dl_sec','ul_ok','ul_bytes','ul_sec','detail']),
@@ -289,9 +292,21 @@ class ProbeStore:
             if kind == 'speed':
                 for prefix in ('dl','ul'):
                     columns.extend([f"COALESCE(json_extract(data,'$.{prefix}_speed_bps'),0)*8.0/1048576 AS {prefix}_speed_mbps", f"COALESCE(json_extract(data,'$.{prefix}_speed_bps'),0)/1048576.0 AS {prefix}_speed_mbs"])
-            # Legacy snapshot is read through the original table for console only.
             projection = ','.join(columns)
-            connection.execute(f"CREATE TEMP VIEW {table} AS SELECT {projection} FROM main.probe_results r JOIN main.probe_servers a ON r.server_ip=probe_endpoint_host(a.ip) AND r.port=probe_endpoint_port(a.ip) WHERE node_id={node} AND kind='{kind}'" + (f" UNION ALL SELECT id,server_ip,test_time," + ",".join(fields + ([p+suffix for p in ('dl','ul') for suffix in ('_speed_mbps','_speed_mbs')] if kind=='speed' else [])) + f" FROM main.{table} legacy WHERE NOT EXISTS(SELECT 1 FROM main.probe_results snapshot WHERE snapshot.task_id='legacy-{kind}-'||legacy.id)" if self.node_id=='console' else ''))
+            latest = (f"SELECT {projection} FROM _probe_endpoint_assets a JOIN main.probe_results r ON r.id=("
+                      f"SELECT id FROM main.probe_results latest WHERE latest.node_id={node} AND latest.kind='{kind}' "
+                      "AND latest.server_ip=a.host AND latest.port=a.port ORDER BY latest.id DESC LIMIT 1)")
+            if self.node_id == 'console':
+                # Preserve unsnapshotted legacy writes until initialization imports
+                # them, without copying the entire historical table per request.
+                latest += (" UNION ALL SELECT id,server_ip,test_time," +
+                           ",".join(fields + ([p+suffix for p in ('dl','ul') for suffix in ('_speed_mbps','_speed_mbs')] if kind=='speed' else [])) +
+                           f" FROM main.{table} legacy WHERE NOT EXISTS(SELECT 1 FROM main.probe_results snapshot WHERE snapshot.task_id='legacy-{kind}-'||legacy.id) "
+                           f"AND legacy.id=(SELECT MAX(id) FROM main.{table} older WHERE older.server_ip=legacy.server_ip)")
+            indexed_table = '_source_' + table
+            connection.execute(f'CREATE TEMP TABLE {indexed_table} AS ' + latest)
+            connection.execute(f'CREATE INDEX source_{kind}_latest ON {indexed_table}(server_ip,id)')
+            connection.execute(f'CREATE TEMP VIEW {table} AS SELECT * FROM {indexed_table}')
         def source_labels(packed, route_json):
             import json
             labels=_unpack_labels(packed)
@@ -1163,6 +1178,9 @@ class ProbeStore:
 
     def list_connectivity_history(self, *, ip: str | None = None, limit: int = 200) -> list[dict]:
         bounded = min(max(limit, 1), 1000)
+        if self.node_id is not None:
+            from .jobs import ProbeJobStore
+            return ProbeJobStore(self.database_path).history(self.node_id, 'connectivity', ip, bounded)
 
         def read(connection):
             if ip:
@@ -1181,6 +1199,9 @@ class ProbeStore:
 
     def list_speed_history(self, *, ip: str | None = None, limit: int = 200) -> list[dict]:
         bounded = min(max(limit, 1), 1000)
+        if self.node_id is not None:
+            from .jobs import ProbeJobStore
+            return ProbeJobStore(self.database_path).history(self.node_id, 'speed', ip, bounded)
 
         def read(connection):
             if ip:
