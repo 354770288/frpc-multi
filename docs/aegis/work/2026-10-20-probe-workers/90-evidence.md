@@ -65,3 +65,11 @@ No evidence has been recorded yet.
 - Source: app/lb/selection.py; tests/test_lb_selection.py
 - Summary: 部署前复现带端口候选地址成为无效A内容；修复DNS输出与健康API池为裸host，观测仍按host+port。40项LBtests通过，独立spec与quality均PASS。原ff49736 CI构建成功，新窄修复将另发镜像。
 - Verifier: coordinator
+
+## EvidenceBundleDraft
+
+- Artifact key: rollout-query-repair
+- Type: performance
+- Source: 主控隔离容器+真实只读备份；tests/test_probe_jobs.py
+- Summary: bf38e29首次上线服务器分页超过10秒，已回滚旧镜像，旧服务分页0.392秒；根因为source视图历史×资产地址函数JOIN和相关子查询。修复为每资产索引seek最新结果、临时索引只读投影，历史直接canonical。回归旧实现触发500000 SQLite VM步骤上限，新实现27focused通过。主控同机Linux容器真实备份：page49ms/allstatus57ms/dashboard32ms，integrity ok，历史1000首屏/测速94保留。点查IP过滤下推SQL。国内官方frp缓存传输SHA256两端一致，二进制0.68.1已验证，安装器支持显式FRPC_ARCHIVE避免下载受限。
+- Verifier: coordinator

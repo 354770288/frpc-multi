@@ -26,6 +26,8 @@ journalctl -u frpc-probe -n 50
 
 面板确认节点名称、版本、在线状态及四项能力。旧节点未升级时仍支持路由测试。
 
+若节点下载 GitHub 发布包受限，可先将官方 `frp_0.68.1_linux_amd64.tar.gz`（arm64 节点使用对应包）传到节点，再执行 `sudo env FRPC_ARCHIVE=/path/to/frp.tar.gz bash /tmp/frpc-probe-install.sh`。安装器会使用明确指定的本地归档并校验二进制版本；普通安装继续从官方发布地址下载。
+
 ## 任务与结果
 
 - 创建任务时明确选择节点，后续阶段固定在该节点运行。节点离线时任务等待该节点恢复。

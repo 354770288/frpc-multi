@@ -38,9 +38,15 @@ rm "$tmp/bundle.sha256"
 tar -xzf "$tmp/worker.tar.gz" -C "$tmp"
 version=$(cat "$tmp/VERSION")
 case "$version" in ''|*[!a-zA-Z0-9._-]*) echo 'Invalid worker version'; exit 1;; esac
-curl --fail --silent --show-error --location "https://github.com/fatedier/frp/releases/download/v0.68.1/frp_0.68.1_linux_${arch}.tar.gz" -o "$tmp/frp.tar.gz"
+if [ -n "${FRPC_ARCHIVE:-}" ]; then
+    # Explicit offline input for hosts without a working GitHub download path.
+    cp "$FRPC_ARCHIVE" "$tmp/frp.tar.gz"
+else
+    curl --fail --silent --show-error --location --connect-timeout 10 --max-time 180 "https://github.com/fatedier/frp/releases/download/v0.68.1/frp_0.68.1_linux_${arch}.tar.gz" -o "$tmp/frp.tar.gz"
+fi
 tar -xzf "$tmp/frp.tar.gz" -C "$tmp"
 install -m 755 "$tmp/frp_0.68.1_linux_${arch}/frpc" "$tmp/frpc"
+[ "$("$tmp/frpc" --version)" = '0.68.1' ] || { echo 'Unexpected frpc version'; exit 1; }
 rm -rf "$tmp/frp_0.68.1_linux_${arch}" "$tmp/frp.tar.gz" "$tmp/worker.tar.gz"
 python3 -m compileall -q "$tmp/app"
 # A same-version reinstall still replaces atomically through a unique release dir.

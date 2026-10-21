@@ -2,9 +2,9 @@
   "schemaVersion": "aegis.schema.v0",
   "taskId": "2026-10-20-probe-workers",
   "lastCheckpointRef": "docs/aegis/work/2026-10-20-probe-workers/todo-checkpoint-draft.json",
-  "resumeInstruction": "先gitstatus/listagents；frontend_sol显式6.1sol medium正在修quality2项，别重复派实现。lb_spec_review前端spec已PASS，lb_quality_review须followup触发复审(发消息给idle不触发)。所有子agents6.1sol/medium。parent拥有Git/deploy/docs和backendstageCounts/upgradeCommand小集成修改。",
+  "resumeInstruction": "仅主agent执行，不启动/续接任何子agent；旧frontend_prep工具仍显示pending_init已发送中断，勿调用其followup/wait。使用Netcatty重连主控/国内，先查现有状态。",
   "knownPartialWork": [
-    "后端ec30a27已本地提交；最新243项后端tests通过；前端specPASS/buildPASS；browser来源隔离/0值/hops/跨页保留/quick目标锁/2节点2目标4任务/skip-stop-retry-刷新恢复通过；LB配置本地保存通过"
+    "代码bf38e29已推送且CI镜像成功；后端246tests、前端build与独立审查通过；browser与异步harness通过；备份和镜像回滚准备完成"
   ],
   "mustReadBeforeContinuing": [
     "docs/aegis/work/2026-10-20-probe-workers/10-intent.md",
@@ -12,6 +12,6 @@
     "docs/aegis/work/2026-10-20-probe-workers/todo-checkpoint-draft.json"
   ],
   "unsafeToAssume": [
-    "生产尚未部署。localQA端口18081 PID57533/session55490（合成qa/qa-local，无生产token），browser cua qaTab已登录。Netcatty主控57275e35-a7b1-47b6-a88f-d0c4526488ad，国内0da00afc-8714-4b99-8e2b-9cec722d435b。备份/data/console-before-probe-workers-20261021.db与旧镜像tag仍在；frps fixture /opt/frpc-multi/acceptance-20261021配置17000未启动。现网CF已配置有4生产域名，不更改它们做故障演练，创建专用临时域名验收后清理。"
+    "主控镜像已pull bf38e29但未up；线上仍旧服务。备份/data/console-before-probe-workers-bf38e29.db root0600、旧image rollback-probe-workers-20261021。fixture已放/opt/frpc-multi/acceptance-20261021但未启动。现有4生产域名不作为故障试验对象。"
   ]
 }

@@ -39,3 +39,14 @@
 - webui/backend/tests/test_probe_jobs.py
 - Blocked on: none
 - Next step: frontend_sol修IPv6对比与旧job action回写竞态；lb_quality_review复跑其harness；父build/审diff后提交推送、等待CI、备份再部署主控+国内节点、frps17000全链路和测试DNS
+
+## Checkpoint Update
+
+- Current todo: 生产部署、双节点全链路、DNS验收与交接
+- Active slice: deployment
+- Completed todos:
+- 代码bf38e29已推送且CI镜像成功；后端246tests、前端build与独立审查通过；browser与异步harness通过；备份和镜像回滚准备完成
+- Evidence refs:
+- none
+- Blocked on: none
+- Next step: 检查生产无活动测试后compose更新；升级10.144.1.5原节点；frps17000扫描autoFull双节点验收及临时DNS，清理并提交交接

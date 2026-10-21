@@ -39,3 +39,5 @@
 | 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-ui-browser.json | 2026-10-20-probe-workers evidence ui-browser |
 | 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-frontend-final.json | 2026-10-20-probe-workers evidence frontend-final |
 | 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-dns-endpoint.json | 2026-10-20-probe-workers evidence dns-endpoint |
+| 2026-10-21 | baseline | docs/aegis/baseline/2026-10-21-probe-workers.md | 全功能测试节点基线 |
+| 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-rollout-query-repair.json | 2026-10-20-probe-workers evidence rollout-query-repair |
