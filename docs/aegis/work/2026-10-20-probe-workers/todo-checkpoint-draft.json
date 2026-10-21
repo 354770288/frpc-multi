@@ -1,13 +1,18 @@
 {
   "schemaVersion": "aegis.schema.v0",
   "taskId": "2026-10-20-probe-workers",
-  "currentTodo": "生产部署、双节点全链路、DNS验收与交接",
+  "currentTodo": "已完成部署验收和交接",
   "completedTodos": [
-    "代码bf38e29已推送且CI镜像成功；后端246tests、前端build与独立审查通过；browser与异步harness通过；备份和镜像回滚准备完成"
+    "da8603c主控和国内worker已上线，两个测试节点在线且四项能力齐全",
+    "后端247项与前端构建/竞态检查通过，CI39600936597成功",
+    "真实双节点8阶段、重启恢复、取消清理与独立健康DNS故障切换通过",
+    "临时资源清理完毕，2319资产与4业务域名保持，3管理节点和3实例正常"
   ],
-  "activeSlice": "deployment",
-  "evidenceRefs": [],
+  "activeSlice": "complete",
+  "evidenceRefs": [
+    "docs/aegis/work/2026-10-20-probe-workers/90-evidence.md"
+  ],
   "blockedOn": null,
-  "nextStep": "检查生产无活动测试后compose更新；升级10.144.1.5原节点；frps17000扫描autoFull双节点验收及临时DNS，清理并提交交接",
+  "nextStep": "常规使用；新增测量由页面手动发起",
   "updatedAt": "2026-10-21"
 }

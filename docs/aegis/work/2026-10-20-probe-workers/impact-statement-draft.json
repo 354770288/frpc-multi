@@ -1,8 +1,28 @@
 {
   "schemaVersion": "aegis.schema.v0",
-  "affectedLayers": [],
-  "owners": [],
-  "invariants": [],
+  "affectedLayers": [
+    "SQLite schema and query projection",
+    "probe HTTP jobs/worker",
+    "stdlib worker and systemd installer",
+    "React source-scoped UI",
+    "LB source ranking"
+  ],
+  "owners": [
+    "ProbeJobStore owns canonical jobs/results",
+    "ProbeStore owns assets/read-only source projections",
+    "Console owns live pool health",
+    "worker executes scoped attempts"
+  ],
+  "invariants": [
+    "shared assets and manual import",
+    "source-node/host/port result isolation",
+    "fenced reports and cleanup-aware locks",
+    "management Agents independent"
+  ],
   "compatBoundary": "保留资产与用户标签、旧路由节点兼容、主控健康检查、手动导入",
-  "nonGoals": []
+  "nonGoals": [
+    "scheduled full speed tests",
+    "multi-node aggregate ranking",
+    "IPv6 subnet discovery"
+  ]
 }

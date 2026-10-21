@@ -13,18 +13,26 @@ This proof bundle is an advisory Aegis Method Pack record. It does not determine
 
 - Compatibility boundary: 保留资产与用户标签、旧路由节点兼容、主控健康检查、手动导入
 - Non-goals:
-- none
+- scheduled full speed tests
+- multi-node aggregate ranking
+- IPv6 subnet discovery
 
 ## Evidence Bundle Refs
 
 - docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-backend-final.json
+- docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-deployment-final.json
+- docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-dns-endpoint.json
+- docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-frontend-final.json
 - docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-lb-regression.json
 - docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-migration-real-backup.json
 - docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-production-backup.json
+- docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-rollout-query-repair.json
+- docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-ui-browser.json
+- docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-workspace-validator.json
 
 ## Drift Check
 
-- Scope status: not-yet-verified
-- Compatibility status: not-yet-verified
-- Retirement status: not-yet-verified
-- Advisory decision: needs-baseline-readback
+- Scope status: aligned-with-approved-plan
+- Compatibility status: verified-by-regression-and-production-acceptance
+- Retirement status: legacy-adapters-and-history-retained-with-trigger
+- Advisory decision: continue

@@ -2,16 +2,16 @@
   "schemaVersion": "aegis.schema.v0",
   "taskId": "2026-10-20-probe-workers",
   "lastCheckpointRef": "docs/aegis/work/2026-10-20-probe-workers/todo-checkpoint-draft.json",
-  "resumeInstruction": "仅主agent执行，不启动/续接任何子agent；旧frontend_prep工具仍显示pending_init已发送中断，勿调用其followup/wait。使用Netcatty重连主控/国内，先查现有状态。",
-  "knownPartialWork": [
-    "代码bf38e29已推送且CI镜像成功；后端246tests、前端build与独立审查通过；browser与异步harness通过；备份和镜像回滚准备完成"
-  ],
+  "resumeInstruction": "本任务已完成。后续变更由主Agent处理；不启动或续接子Agent。若有新需求，先读最终checkpoint与基线，使用Netcatty核对当前运行状态。",
+  "knownPartialWork": [],
   "mustReadBeforeContinuing": [
     "docs/aegis/work/2026-10-20-probe-workers/10-intent.md",
     "docs/aegis/work/2026-10-20-probe-workers/20-checkpoint.md",
     "docs/aegis/work/2026-10-20-probe-workers/todo-checkpoint-draft.json"
   ],
   "unsafeToAssume": [
-    "主控镜像已pull bf38e29但未up；线上仍旧服务。备份/data/console-before-probe-workers-bf38e29.db root0600、旧image rollback-probe-workers-20261021。fixture已放/opt/frpc-multi/acceptance-20261021但未启动。现有4生产域名不作为故障试验对象。"
+    "文档交接commit与运行代码版本不同；主控和国内worker运行代码da8603c",
+    "旧frpc-route停用保留回滚；不得再次启动与新worker同时运行",
+    "验收frps和临时域名已清理；保留任务结果中的17000目标不再作为在线服务"
   ]
 }

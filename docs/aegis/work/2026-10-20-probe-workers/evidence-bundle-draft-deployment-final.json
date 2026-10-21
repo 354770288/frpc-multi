@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "deployment-final",
+  "type": "deployment",
+  "source": "23.19.228.204:8081 / 10.144.1.5 / da8603c / CI39600936597",
+  "summary": "双节点四能力8阶段done；重启恢复与取消清理通过；国内24h观测及主控独立健康DNS故障切换通过；临时记录回读0，清理完成；2319资产4业务域名3管理节点3运行实例保持正常。最终HTTP分页0.43s，SQLite完整性ok。",
+  "verifier": "coordinator"
+}

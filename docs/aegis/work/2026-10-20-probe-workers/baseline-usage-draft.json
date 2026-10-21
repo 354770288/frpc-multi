@@ -5,12 +5,18 @@
     "docs/aegis/baseline/2026-08-30-initial-baseline.md",
     "chat/PERF_OPT_HANDOFF_2026-08-29.md"
   ],
-  "deliveredContextRefs": [],
-  "acknowledgedBeforePlanRefs": [],
-  "citedInPlanRefs": [],
-  "missingRefs": [
+  "deliveredContextRefs": [
     "docs/aegis/baseline/2026-08-30-initial-baseline.md",
     "chat/PERF_OPT_HANDOFF_2026-08-29.md"
   ],
-  "decision": "needs-baseline-readback"
+  "acknowledgedBeforePlanRefs": [
+    "docs/aegis/baseline/2026-08-30-initial-baseline.md",
+    "chat/PERF_OPT_HANDOFF_2026-08-29.md"
+  ],
+  "citedInPlanRefs": [
+    "docs/aegis/baseline/2026-08-30-initial-baseline.md",
+    "chat/PERF_OPT_HANDOFF_2026-08-29.md"
+  ],
+  "missingRefs": [],
+  "decision": "continue"
 }

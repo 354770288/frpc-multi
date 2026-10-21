@@ -1,16 +1,22 @@
 {
   "schemaVersion": "aegis.schema.v0",
   "baselineRefs": [
-    "docs/aegis/baseline/2026-08-30-initial-baseline.md",
-    "chat/PERF_OPT_HANDOFF_2026-08-29.md"
+    "docs/aegis/baseline/2026-10-21-probe-workers.md",
+    "docs/aegis/adr/ADR-0001-durable-probe-workers.md"
   ],
   "impactStatement": "docs/aegis/work/2026-10-20-probe-workers/impact-statement-draft.json",
   "compatPlan": "保留资产与用户标签、旧路由节点兼容、主控健康检查、手动导入",
-  "retirementPlan": "not-yet-verified",
+  "retirementPlan": "legacy-adapters-and-history-retained-with-trigger",
   "evidenceBundle": [
     "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-backend-final.json",
+    "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-deployment-final.json",
+    "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-dns-endpoint.json",
+    "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-frontend-final.json",
     "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-lb-regression.json",
     "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-migration-real-backup.json",
-    "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-production-backup.json"
+    "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-production-backup.json",
+    "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-rollout-query-repair.json",
+    "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-ui-browser.json",
+    "docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-workspace-validator.json"
   ]
 }

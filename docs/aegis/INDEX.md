@@ -41,3 +41,5 @@
 | 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-dns-endpoint.json | 2026-10-20-probe-workers evidence dns-endpoint |
 | 2026-10-21 | baseline | docs/aegis/baseline/2026-10-21-probe-workers.md | 全功能测试节点基线 |
 | 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-rollout-query-repair.json | 2026-10-20-probe-workers evidence rollout-query-repair |
+| 2026-10-21 | adr | docs/aegis/adr/ADR-0001-durable-probe-workers.md | ADR-0001 - 统一持久化测试任务与独立观测来源 |
+| 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-deployment-final.json | 全功能测试节点最终部署验收 |
