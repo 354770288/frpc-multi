@@ -6,7 +6,8 @@
 - [x] Fixed IP:7000 task semantics and current-result lookup; legacy non-7000 history remains readable.
 - [x] Persisted primary/backup policy API with validation and deletion guard.
 - [x] Desktop test-node management for explicit primary/backup ordering.
-- [ ] New task creation automatically assigns only to configured primary.
+- [x] New task creation automatically assigns only to configured primary.
+- [ ] Remove execution-node and port selectors from task creation UI; summarize saved primary/backup policy.
 - [ ] Durable scan recovery, fenced failover, bounded retries, and unified current results.
 - [ ] Domestic primary/backup scheduler and unified result projection.
 - [ ] Classification schema, scalable query APIs, and reversible migration.
@@ -15,10 +16,10 @@
 
 ## ResumeStateHint
 
-- Current status: fixed-port and persisted node-policy API/UI slices verified and committed; broader plan remains active.
-- Active slice: make new task creation resolve exactly one configured primary; reject unsafe multi-node fan-out while retaining the old worker protocol for already assigned jobs.
-- Completed: fixed target port 7000 across task creation paths; server result projection matches fixed port regardless of frps_port setting; HTTP validation maps to 400 including compatibility and route-start paths; historical alternate-port record remains retrievable; persisted policy validates stable worker IDs, preserves backup order, permits offline nodes, fails closed on corrupt state, protects referenced-node deletion; desktop test-node page explicitly saves primary and ordered backups, marks suggestions unsaved, preserves offline choices, and prevents stale-response/during-save draft loss.
-- Next: implement primary-only task assignment and preserve legacy compatibility for in-flight jobs; then add lease-based failover and unified current results.
+- Current status: fixed-port, persisted node-policy API/UI, and atomic primary-assignment slices verified; broader plan remains active.
+- Active slice: remove execution-node selectors, use the configured primary summary in test creation/discovery, and remove test-port editing while keeping target port 7000 explicit.
+- Completed: fixed target port 7000 across task creation paths; server result projection matches fixed port regardless of frps_port setting; HTTP validation maps to 400 including compatibility and route-start paths; historical alternate-port record remains retrievable; persisted policy validates stable worker IDs, preserves backup order, permits offline nodes, fails closed on corrupt state, protects referenced-node deletion; desktop test-node page explicitly saves primary and ordered backups; public task creation resolves the saved primary and checks policy plus inserts tasks atomically.
+- Next: align frontend submissions with primary-only assignment, then add lease-based failover and unified current results.
 
 ## Execution Readiness View
 

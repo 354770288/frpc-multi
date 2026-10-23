@@ -18,12 +18,10 @@ from pydantic import BaseModel
 
 from ..auth import require_auth
 from ..settings import settings
-from .discover import discover_runner
 from .engine import ProbeOptions
 from .constants import PROBE_TEST_PORT
 from .jobs import ProbeJobStore, CAPABILITIES
 from .adapters import LegacyProbeAdapter, LegacyDiscoverAdapter, serial_options
-from .persistence import DiscoverPersistenceError, DiscoverScanCoordinator
 from .route import load_route_nodes, route_hub, save_route_nodes
 from .runner import MODES, ProbeRunner
 from .store import (
@@ -469,8 +467,6 @@ class TestStart(BaseModel):
 def start_test(payload: TestStart, user: Annotated[str, Depends(require_auth)]):
     if payload.mode not in MODES:
         raise HTTPException(status_code=400, detail=f"mode 必须是 {'/'.join(sorted(MODES))}")
-    if (not payload.nodeIds or 'console' in payload.nodeIds) and not Path(settings.probe_frpc_bin).exists():
-        raise HTTPException(400,'未找到 frpc 二进制，请设置 PROBE_FRPC_BIN')
     store = probe_store()
     if payload.ips:
         try:
@@ -485,14 +481,8 @@ def start_test(payload: TestStart, user: Annotated[str, Depends(require_auth)]):
             ips = [s.ip for s in servers]
     if not ips:
         raise HTTPException(status_code=400, detail="没有可测试的服务器")
-    if payload.nodeIds:
-        try:
-            job = job_store().create_job(payload.mode, payload.nodeIds, ips=ips, port=PROBE_TEST_PORT, options=serial_options(_effective_options()))
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        return {"ok": True, "mode": payload.mode, "count": len(ips), "jobId": job["id"]}
     try:
-        ok, err = runner.start(payload.mode, ips, _effective_options())
+        ok, err = runner.start(payload.mode, ips, _effective_options(), requested_node_ids=payload.nodeIds)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
@@ -621,9 +611,7 @@ class GroupRename(BaseModel):
 
 @router.post("/discover/start")
 def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_auth)]):
-    from .discover import (
-        MAX_CONCURRENCY, MAX_TIMEOUT, MIN_CONCURRENCY, MIN_TIMEOUT, DiscoverParams, discover_runner,
-    )
+    from .discover import MAX_CONCURRENCY, MAX_TIMEOUT, MIN_CONCURRENCY, MIN_TIMEOUT, DiscoverParams
 
     targets_text = payload.targets
     if payload.sourceUrl.strip():
@@ -647,12 +635,9 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
         timeout=payload.timeout,
     )
     try:
-        if payload.nodeIds or payload.autoFull:
-            job = job_store().create_job("discover", payload.nodeIds or ["console"], targets=params.targets, exclude=params.exclude, port=port, auto_route=payload.autoRoute, auto_full=payload.autoFull, concurrency=params.concurrency, timeout=params.timeout, options=serial_options(_effective_options()))
-            return {"running": True, "jobId": job["id"], "total": job["options"]["total"]}
-        discover_scans.start(params, auto_route=payload.autoRoute)
-    except DiscoverPersistenceError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        discover_scans.start(params, auto_route=payload.autoRoute, auto_full=payload.autoFull,
+                              requested_node_ids=payload.nodeIds)
+        result = discover_scans.status()
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -662,7 +647,7 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
           message=f"目标 {(targets_text.strip())[:120]} 端口 {port} 并发 {payload.concurrency}"
                   + (f" · 订阅 {payload.sourceUrl.strip()[:80]}" if payload.sourceUrl.strip() else "")
                   + (" · 自动路由追踪" if payload.autoRoute else ""))
-    return discover_scans.status()
+    return result
 
 
 @router.get("/discover/status")
@@ -856,13 +841,12 @@ def route_stop(user: Annotated[str, Depends(require_auth)]):
 def route_start(payload: RouteStart, user: Annotated[str, Depends(require_auth)]):
     rows=probe_store().get_discover_results_by_ids(payload.ids)
     if not rows:raise HTTPException(400,'请勾选要测试的记录')
-    nodes=[n['id'] for n in job_store().list_nodes() if n['kind']!='console' and 'route' in n['capabilities']] or ['console']
     try:
-        job=job_store().create_job('route',nodes,ips=[r['ip'] for r in rows],port=PROBE_TEST_PORT)
+        job=job_store().create_primary_job('route',ips=[r['ip'] for r in rows],port=PROBE_TEST_PORT)
     except ValueError as exc:
         raise HTTPException(400,str(exc)) from exc
     audit(user,'probe_route_start',message=job['id'])
-    return {'enqueued':len(rows)*len(nodes)}
+    return {'enqueued':len(rows)}
 
 
 @router.get("/route/nodes")
@@ -898,7 +882,7 @@ class NodeCreate(BaseModel):
 
 class JobCreate(BaseModel):
     mode: Literal['discover','route','connectivity','speed','full']
-    nodeIds: list[str]
+    nodeIds: list[str] | None = None
     ips: list[str] | None = None
     targetScope: Literal['explicit','all'] | None = None
     targets: str | list[str] | None = None
@@ -984,7 +968,7 @@ def jobs_create(payload: JobCreate):
     if payload.mode!='discover' and not ips and not payload.targets:
         ips=[s.ip for s in probe_store().list_servers()]
     try:
-        return job_store().create_job(payload.mode,payload.nodeIds,ips=ips,targets=payload.targets,exclude=payload.exclude,port=PROBE_TEST_PORT,auto_route=payload.autoRoute,auto_full=payload.autoFull,concurrency=payload.concurrency,timeout=payload.timeout,options=serial_options(_effective_options()))
+        return job_store().create_primary_job(payload.mode,payload.nodeIds,ips=ips,targets=payload.targets,exclude=payload.exclude,port=PROBE_TEST_PORT,auto_route=payload.autoRoute,auto_full=payload.autoFull,concurrency=payload.concurrency,timeout=payload.timeout,options=serial_options(_effective_options()))
     except ValueError as exc:raise HTTPException(400,str(exc)) from exc
 
 

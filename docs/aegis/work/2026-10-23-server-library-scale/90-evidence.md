@@ -32,7 +32,7 @@ Confidence for this slice: A for fixed-port behavior and directly affected probe
 - Code-quality review: one concurrent-delete status inconsistency was fixed and independently rechecked; no remaining findings.
 - Regression coverage: eligible/ineligible and offline nodes, order and uniqueness, non-persisted suggestion, corrupt policy repair, fail-closed deletion, unchanged in-flight jobs, and concurrent legacy deletion mapping.
 
-The UI now consumes this endpoint, but task creation does not yet assign by the saved policy. Capacity, lease failover, unified results, and production node selection remain unverified.
+At the policy-backend/UI slice boundary, task creation had not yet been connected to the saved policy; the following assignment slice records that integration. Capacity, lease failover, unified results, and production node selection remain unverified.
 
 ## Slice: desktop test-node policy UI
 
@@ -42,4 +42,14 @@ The UI now consumes this endpoint, but task creation does not yet assign by the 
 - Spec review: no remaining findings after unsaved-suggestion and in-flight-save handling fixes.
 - Code-quality review: no actionable findings.
 
-The UI now edits policy without assigning tasks; task creation and lease failover remain subsequent slices.
+The UI policy editor itself did not assign tasks; assignment was implemented and verified in the next slice. Lease failover and unified current results remain subsequent slices.
+
+## Slice: atomic primary-only task assignment
+
+- `./.venv/bin/python -m unittest tests.test_probe` — exit 0; 74 tests passed.
+- `./.venv/bin/python -m unittest tests.test_probe_jobs` — exit 0; 45 tests passed.
+- `git diff --check` — exit 0.
+- Spec review: no remaining findings after adding compatibility selection regressions.
+- Code-quality review: no blocking or correctness findings; optional future HTTP claim/report coverage noted.
+
+Policy validation, node eligibility, job creation, and task insertion run in one immediate write transaction. Compatibility entry points reject multiple, duplicate, or non-primary node IDs before busy-state responses and revalidate in the creation transaction. Backup failover and unified result projection remain unimplemented.

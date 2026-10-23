@@ -22,6 +22,8 @@ class ProbeJobsTests(unittest.TestCase):
         return self.store.create_job(mode,nodes or [self.a],ips=ips or ['192.0.2.1'],**kw)
     def finish(self,node,task,result=None,infra_error=None):
         return self.store.report(node,task['taskId'],task['attemptId'],result=result or {},infra_error=infra_error)
+    def set_primary(self, node=None):
+        return self.store.set_execution_policy(node or self.a, [])
     def expire(self,task):
         with self.store._db() as c:c.execute('UPDATE probe_tasks SET lease_until=0 WHERE id=?',(task['taskId'],))
     def test_multi_node_every_target_isolated_and_port(self):
@@ -121,6 +123,144 @@ class ProbeJobsTests(unittest.TestCase):
         self.store.set_execution_policy(self.b, [])
         self.store.delete_node(self.a)
         self.assertEqual(self.store.get_execution_policy()['primaryNodeId'], self.b)
+
+    def test_public_job_assignment_requires_and_uses_saved_primary(self):
+        from fastapi import HTTPException
+        from app.probe.router import JobCreate, jobs_create
+        import app.probe.router as router
+
+        payload = JobCreate(mode='connectivity', ips=['192.0.2.20'])
+        before = len(self.store.list_jobs())
+        from app.probe.engine import ProbeOptions
+        with patch.object(router, 'job_store', return_value=self.store), \
+             patch.object(router, '_effective_options', return_value=ProbeOptions()):
+            with self.assertRaises(HTTPException) as unconfigured:
+                jobs_create(payload)
+            self.assertEqual(unconfigured.exception.status_code, 400)
+            self.assertIn('配置测试节点', unconfigured.exception.detail)
+            self.assertEqual(len(self.store.list_jobs()), before)
+
+            self.set_primary(self.a)
+            omitted = jobs_create(payload)
+            matched = jobs_create(JobCreate(mode='connectivity', nodeIds=[self.a], ips=['192.0.2.21']))
+            self.assertEqual({t['nodeId'] for t in omitted['tasks']}, {self.a})
+            self.assertEqual({t['nodeId'] for t in matched['tasks']}, {self.a})
+
+            for requested in ([self.b], [self.a, self.b], [self.a, self.a]):
+                with self.subTest(requested=requested):
+                    count = len(self.store.list_jobs())
+                    with self.assertRaises(HTTPException) as rejected:
+                        jobs_create(JobCreate(mode='connectivity', nodeIds=requested, ips=['192.0.2.22']))
+                    self.assertEqual(rejected.exception.status_code, 400)
+                    self.assertEqual(len(self.store.list_jobs()), count)
+
+    def test_primary_assignment_reads_policy_and_inserts_tasks_in_same_write_transaction(self):
+        self.set_primary(self.a)
+        seen = {}
+        original_policy = self.store._stored_execution_policy
+        original_task = self.store._task
+
+        def policy_spy(connection):
+            seen['policy_connection'] = connection
+            seen['policy_in_transaction'] = connection.in_transaction
+            return original_policy(connection)
+
+        def task_spy(connection, *args, **kwargs):
+            seen['task_connection'] = connection
+            seen['task_in_transaction'] = connection.in_transaction
+            return original_task(connection, *args, **kwargs)
+
+        self.store._stored_execution_policy = policy_spy
+        self.store._task = task_spy
+        self.store.get_execution_policy = lambda: (_ for _ in ()).throw(
+            AssertionError('job assignment must not read policy in a separate transaction'))
+
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.23'])
+
+        self.assertEqual({task['nodeId'] for task in job['tasks']}, {self.a})
+        self.assertTrue(seen['policy_in_transaction'])
+        self.assertTrue(seen['task_in_transaction'])
+        self.assertIs(seen['policy_connection'], seen['task_connection'])
+
+    def test_primary_discovery_route_and_legacy_adapters_stay_single_node(self):
+        from app.probe.adapters import LegacyDiscoverAdapter, LegacyProbeAdapter
+        from app.probe.discover import DiscoverParams
+        from app.probe.engine import ProbeOptions
+
+        self.set_primary(self.a)
+        discover = LegacyDiscoverAdapter(lambda: self.store, lambda: ProbeOptions())
+        discover.start(DiscoverParams(['192.0.2.0/30'], [], 7000, 4, 1.0), auto_route=True)
+        djob = self.store.get_job(discover.job_id)
+        self.assertEqual({t['nodeId'] for t in djob['tasks']}, {self.a})
+        first = self.store.claim(self.a)
+        self.store.progress(self.a, first['taskId'], first['attemptId'], 1,
+                            hits=[{'ip': '192.0.2.1', 'port': 7000, 'latencyMs': 1.0}],
+                            progress={'scanned': 1, 'foundCount': 1})
+        route_child = next(t for t in self.store.get_job(discover.job_id)['tasks'] if t['stage'] == 'route')
+        self.assertEqual(route_child['nodeId'], self.a)
+
+        legacy = LegacyProbeAdapter(lambda: self.store)
+        ok, _ = legacy.start('connectivity', ['192.0.2.30'], ProbeOptions())
+        self.assertTrue(ok)
+        self.assertEqual({t['nodeId'] for t in self.store.get_job(legacy.job_id)['tasks']}, {self.a})
+
+    def test_legacy_public_handlers_reject_non_primary_and_multiple_node_ids(self):
+        from fastapi import HTTPException
+        from app.probe.adapters import LegacyDiscoverAdapter, LegacyProbeAdapter
+        from app.probe.engine import ProbeOptions
+        from app.probe.router import DiscoverStart, TestStart, discover_start, start_test
+        import app.probe.router as router
+
+        self.set_primary(self.a)
+        probe_adapter = LegacyProbeAdapter(lambda: self.store)
+        discover_adapter = LegacyDiscoverAdapter(lambda: self.store, lambda: ProbeOptions())
+        invalid_node_selections = ([self.b], [self.a, self.b], [self.a, self.a])
+        with patch.object(router, 'runner', probe_adapter), \
+             patch.object(router, 'discover_scans', discover_adapter), \
+             patch.object(router, 'probe_store', return_value=ProbeStore(self.path)), \
+             patch.object(router, '_effective_options', return_value=ProbeOptions()), \
+             patch.object(router, 'audit'):
+            for node_ids in invalid_node_selections:
+                with self.subTest(endpoint='test', node_ids=node_ids):
+                    before = len(self.store.list_jobs())
+                    with self.assertRaises(HTTPException) as rejected:
+                        start_test(TestStart(mode='connectivity', ips=['192.0.2.40'], nodeIds=list(node_ids)), 'tester')
+                    self.assertEqual(rejected.exception.status_code, 400)
+                    self.assertEqual(len(self.store.list_jobs()), before)
+
+                with self.subTest(endpoint='discover', node_ids=node_ids):
+                    before = len(self.store.list_jobs())
+                    with self.assertRaises(HTTPException) as rejected:
+                        discover_start(DiscoverStart(targets='192.0.2.0/30', nodeIds=list(node_ids)), 'tester')
+                    self.assertEqual(rejected.exception.status_code, 400)
+                    self.assertEqual(len(self.store.list_jobs()), before)
+
+    def test_legacy_public_handlers_validate_bad_ids_before_busy_conflict(self):
+        from fastapi import HTTPException
+        from app.probe.adapters import LegacyDiscoverAdapter, LegacyProbeAdapter
+        from app.probe.engine import ProbeOptions
+        from app.probe.router import DiscoverStart, TestStart, discover_start, start_test
+        import app.probe.router as router
+
+        self.set_primary(self.a)
+        probe_adapter = LegacyProbeAdapter(lambda: self.store)
+        discover_adapter = LegacyDiscoverAdapter(lambda: self.store, lambda: ProbeOptions())
+        with patch.object(router, 'runner', probe_adapter), \
+             patch.object(router, 'discover_scans', discover_adapter), \
+             patch.object(router, 'probe_store', return_value=ProbeStore(self.path)), \
+             patch.object(router, '_effective_options', return_value=ProbeOptions()), \
+             patch.object(router, 'audit'):
+            ok, _ = probe_adapter.start('connectivity', ['192.0.2.41'], ProbeOptions())
+            self.assertTrue(ok)
+            with self.assertRaises(HTTPException) as rejected_test:
+                start_test(TestStart(mode='connectivity', ips=['192.0.2.42'], nodeIds=[self.b]), 'tester')
+            self.assertEqual(rejected_test.exception.status_code, 400)
+
+            from app.probe.discover import DiscoverParams
+            discover_adapter.start(DiscoverParams(['192.0.2.0/30'], [], 7000, 4, 1.0))
+            with self.assertRaises(HTTPException) as rejected_discover:
+                discover_start(DiscoverStart(targets='192.0.2.4/30', nodeIds=[self.b]), 'tester')
+            self.assertEqual(rejected_discover.exception.status_code, 400)
 
     def test_legacy_route_delete_maps_concurrent_missing_node_to_404(self):
         from fastapi import HTTPException
@@ -433,9 +573,14 @@ class ProbeJobsTests(unittest.TestCase):
         from fastapi import HTTPException
         from app.probe.engine import ProbeOptions
         from app.probe.router import JobCreate, DiscoverStart, jobs_create, discover_start
+        from app.probe.adapters import LegacyDiscoverAdapter
         import app.probe.router as router
 
+        self.set_primary(self.a)
+        adapter = LegacyDiscoverAdapter(lambda: self.store, lambda: ProbeOptions(frps_port=7001))
         with patch.object(router, 'job_store', return_value=self.store), \
+             patch.object(router, 'discover_scans', adapter), \
+             patch.object(router, 'audit'), \
              patch.object(router, '_effective_options', return_value=ProbeOptions(frps_port=7001)):
             with self.assertRaises(HTTPException) as rejected:
                 jobs_create(JobCreate(mode='connectivity', nodeIds=[self.a], ips=['192.0.2.1'], port=7001))
@@ -462,6 +607,7 @@ class ProbeJobsTests(unittest.TestCase):
 
         assets=ProbeStore(self.path)
         assets.create_server(ip='192.0.2.1')
+        self.set_primary(self.a)
         legacy_runner=LegacyProbeAdapter(lambda:self.store)
         with patch.object(router, 'probe_store', return_value=assets), \
              patch.object(router, 'runner', legacy_runner), \
@@ -487,6 +633,7 @@ class ProbeJobsTests(unittest.TestCase):
 
         assets=Mock()
         assets.get_discover_results_by_ids.return_value=[{'ip':'192.0.2.44:7001'}]
+        self.set_primary(self.a)
         before=len(self.store.list_jobs())
         with patch.object(router, 'probe_store', return_value=assets), \
              patch.object(router, 'job_store', return_value=self.store):

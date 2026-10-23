@@ -990,7 +990,7 @@ class ProbeApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         response = client.post("/api/probe/test", json={"mode": "connectivity"}, headers=headers)
         self.assertEqual(response.status_code, 400)
-        self.assertIn("PROBE_FRPC_BIN", response.json()["detail"])
+        self.assertIn("配置测试节点", response.json()["detail"])
 
     def test_connectivity_flow_and_audit(self):
         tcping = mock.patch("app.probe.engine.tcping", return_value=(False, "mock unreachable"))
@@ -1002,6 +1002,11 @@ class ProbeApiTests(unittest.TestCase):
             PROBE_TCPING_TIMEOUT="1",
             PROBE_TCPING_RETRIES="1",
         )
+        primary = client.post("/api/probe/nodes", json={"name": "primary-api"}, headers=headers).json()
+        configured = client.put("/api/probe/nodes/execution-policy", json={
+            "primaryNodeId": primary["id"], "backupNodeIds": [],
+        }, headers=headers)
+        self.assertEqual(configured.status_code, 200)
         # 库管理
         response = client.post("/api/probe/servers", json={"ip": "127.0.0.1", "label": "本机"}, headers=headers)
         self.assertEqual(response.status_code, 200)
@@ -1026,29 +1031,24 @@ class ProbeApiTests(unittest.TestCase):
             "/api/probe/test", json={"mode": "connectivity", "ips": ["127.0.0.1"]}, headers=headers,
         )
         self.assertEqual(response.status_code, 200)
-        status = {}
-        for _ in range(100):
-            status = client.get("/api/probe/test/status", headers=headers).json()
-            if not status["running"]:
-                break
-            time.sleep(0.2)
-        self.assertFalse(status["running"])
-        self.assertEqual(status["done"], 1)
-        self.assertEqual(len(status["recent"]), 1)
-        self.assertFalse(status["recent"][0]["ok"])
-        # 结果落历史
+        status = client.get("/api/probe/test/status", headers=headers).json()
+        self.assertTrue(status["running"])
+        self.assertEqual(status["done"], 0)
+        self.assertEqual(status["total"], 1)
+        queued = client.get(f"/api/probe/jobs/{status['jobId']}", headers=headers).json()
+        self.assertEqual(queued["nodeIds"], [primary["id"]])
+        # 结果只进入历史 after the primary worker executes the queued task.
         history = client.get("/api/probe/history/connectivity", headers=headers).json()
-        self.assertEqual(len(history), 1)
-        self.assertFalse(history[0]["frpsReachable"])
+        self.assertEqual(len(history), 0)
         # 统计
         stats = client.get("/api/probe/dashboard", headers=headers).json()
         self.assertEqual(stats["servers"], 3)
-        self.assertEqual(stats["connectivity"]["tested"], 1)
+        self.assertEqual(stats["connectivity"]["tested"], 0)
         # with-status 列表带最新结果（分页 envelope）
         servers = client.get("/api/probe/servers?pageSize=200", headers=headers).json()
         self.assertEqual(servers["total"], 3)
         by_ip = {row["ip"]: row for row in servers["items"]}
-        self.assertIsNotNone(by_ip["127.0.0.1"]["latestConnectivity"])
+        self.assertIsNone(by_ip["127.0.0.1"]["latestConnectivity"])
         self.assertIsNone(by_ip["127.0.0.1"]["latestSpeed"])
         # 审计
         logs = client.get("/api/audit-logs?limit=50", headers=headers).json()
@@ -1058,7 +1058,7 @@ class ProbeApiTests(unittest.TestCase):
         self.assertIn("probe_start_test", actions)
         # 清空历史
         response = client.delete("/api/probe/history/connectivity", headers=headers)
-        self.assertEqual(response.json()["deleted"], 1)
+        self.assertEqual(response.json()["deleted"], 0)
         self.assertEqual(client.get("/api/probe/history/connectivity", headers=headers).json(), [])
 
     def test_server_update_delete_and_not_found(self):
@@ -1189,7 +1189,7 @@ class ProbeConfigApiTests(unittest.TestCase):
         captured = {}
         original_start = probe_router.runner.start
 
-        def fake_start(mode, ips, options):
+        def fake_start(mode, ips, options, requested_node_ids=None):
             captured["options"] = options
             return True, ""
 
@@ -1386,7 +1386,14 @@ class DiscoverApiTests(unittest.TestCase):
         client.__enter__()
         self.addCleanup(client.__exit__, None, None, None)
         token = client.post("/api/auth/login", json={"username": "admin", "password": "password"}).json()["token"]
-        return client, {"Authorization": f"Bearer {token}"}
+        headers = {"Authorization": f"Bearer {token}"}
+        primary = client.post("/api/probe/nodes", json={"name": "primary-discover"}, headers=headers).json()
+        self.primary = primary
+        configured = client.put("/api/probe/nodes/execution-policy", json={
+            "primaryNodeId": primary["id"], "backupNodeIds": [],
+        }, headers=headers)
+        self.assertEqual(configured.status_code, 200)
+        return client, headers
 
     def wait_discover_terminal(self, client, headers, timeout=3):
         deadline = time.monotonic() + timeout
@@ -1463,38 +1470,22 @@ class DiscoverApiTests(unittest.TestCase):
         self.assertEqual(client.post("/api/probe/discover/start",
                                      json={"targets": "127.0.0.1", "port": 7001}, headers=headers).status_code, 400)
 
-        class Writer:
-            def close(self):
-                pass
-            async def wait_closed(self):
-                pass
-
-        async def open_connection(host, port):
-            self.assertEqual(port, 7000)
-            return None, Writer()
-
-        # Keep the real coordinator, result writer, and API lifecycle; mock only TCP.
-        from app.probe.store import ProbeStore
-        with mock.patch("app.probe.discover.asyncio.open_connection", new=open_connection):
-            started = client.post("/api/probe/discover/start", json={
-                "targets": "127.0.0.1", "concurrency": 4, "timeout": 1.0,
-            }, headers=headers)
-            self.assertEqual(started.status_code, 200)
-            self.assertEqual(started.json()["total"], 1)
-
-            # Single-IP scan completes quickly; retain assertions for reported hit state.
-            for _ in range(100):
-                status = client.get("/api/probe/discover/status", headers=headers).json()
-                if not status["running"]:
-                    break
-                time.sleep(0.05)
-            self.assertFalse(status["running"])
-            self.assertEqual(status["total"], 1)
-            self.assertEqual(status["scanned"], 1)
-            self.assertEqual(status["foundCount"], 1)
-            self.assertEqual([hit["ip"] for hit in status["recentHits"]], ["127.0.0.1"])
+        started = client.post("/api/probe/discover/start", json={
+            "targets": "127.0.0.1", "concurrency": 4, "timeout": 1.0,
+        }, headers=headers)
+        self.assertEqual(started.status_code, 200)
+        status = started.json()
+        self.assertTrue(status["running"])
+        self.assertEqual(status["total"], 1)
+        self.assertEqual(status["jobId"], client.get("/api/probe/discover/status", headers=headers).json()["jobId"])
+        from app.probe.jobs import ProbeJobStore
+        job = ProbeJobStore(self.db_path).get_job(status["jobId"])
+        self.assertEqual({task["nodeId"] for task in job["tasks"]}, {self.primary["id"]})
+        self.assertEqual(job["tasks"][0]["stage"], "discover")
 
         # 导入：按结果行 id；重复导入去重
+        from app.probe.store import ProbeStore
+        ProbeStore(self.db_path).upsert_discover_results_batch([("127.0.0.1", 7000, 1.0)])
         results = client.get("/api/probe/discover/results", headers=headers).json()
         self.assertEqual(len(results["items"]), 1)
         row = results["items"][0]
@@ -1536,183 +1527,37 @@ class DiscoverApiTests(unittest.TestCase):
         self.assertIn("probe_update_discover", actions)
         self.assertIn("probe_delete_discover", actions)
 
-        # 停止端点：无运行任务时返回 False
+        # 持久发现任务尚未被 worker 领取，停止请求会结束该任务。
         stopped = client.post("/api/probe/discover/stop", headers=headers).json()
-        self.assertFalse(stopped["stopped"])
+        self.assertTrue(stopped["stopped"])
 
-    def test_router_terminal_status_waits_for_final_partial_flush(self):
+    def test_discover_start_conflict_and_stop_use_persistent_worker_job(self):
         client, headers = self.make_client()
-        from app.probe.persistence import DiscoverScanCoordinator
-        from app.probe.store import ProbeStore
-        import app.probe.router as probe_router
-        coordinator = DiscoverScanCoordinator(
-            probe_router.discover_runner,
-            lambda: ProbeStore(self.db_path),
-            lambda _ip: True,
-        )
+        started = client.post("/api/probe/discover/start", json={
+            "targets": "10.0.0.1-10.0.0.20", "port": 7000,
+        }, headers=headers)
+        self.assertEqual(started.status_code, 200)
+        self.assertEqual({task["nodeId"] for task in
+                          __import__("app.probe.jobs", fromlist=["ProbeJobStore"]).ProbeJobStore(self.db_path).get_job(started.json()["jobId"])["tasks"]},
+                         {self.primary["id"]})
+        conflict = client.post("/api/probe/discover/start", json={
+            "targets": "127.0.0.2", "port": 7000,
+        }, headers=headers)
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(client.post("/api/probe/discover/stop", headers=headers).json(),
+                         {"stopped": True})
 
-        async def succeeds(_ip, _port):
-            return object(), type("Writer", (), {
-                "close": lambda self: None,
-                "wait_closed": lambda self: self._wait_closed(),
-                "_wait_closed": lambda self: _completed_wait(),
-            })()
-
-        async def _completed_wait():
-            return None
-
-        with mock.patch.object(probe_router, "discover_scans", coordinator), \
-             mock.patch("app.probe.discover.asyncio.open_connection", new=succeeds):
-            response = client.post("/api/probe/discover/start", json={
-                "targets": "10.0.0.1", "port": 7000, "concurrency": 1, "timeout": 0.5,
-            }, headers=headers)
-            self.assertEqual(response.status_code, 200)
-            status = self.wait_discover_terminal(client, headers)
-            results = client.get("/api/probe/discover/results", headers=headers).json()
-
-        self.assertEqual(status["error"], "")
-        self.assertEqual([item["ip"] for item in results["items"]], ["10.0.0.1"])
-        self.assertIsNone(coordinator._writer)
-
-    def test_router_stop_drains_accepted_hit(self):
+    def test_corrupt_discover_policy_maps_to_clear_http_400(self):
         client, headers = self.make_client()
-        from app.probe.persistence import DiscoverScanCoordinator
-        from app.probe.store import ProbeStore
-        import app.probe.router as probe_router
-        coordinator = DiscoverScanCoordinator(
-            probe_router.discover_runner,
-            lambda: ProbeStore(self.db_path),
-            lambda _ip: True,
-        )
-        second_attempt = threading.Event()
-        attempts = 0
-
-        class Writer:
-            def close(self):
-                pass
-
-            async def wait_closed(self):
-                pass
-
-        async def one_hit_then_hang(_ip, _port):
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                return object(), Writer()
-            second_attempt.set()
-            import asyncio
-            await asyncio.Event().wait()
-
-        with mock.patch.object(probe_router, "discover_scans", coordinator), \
-             mock.patch("app.probe.discover.asyncio.open_connection", new=one_hit_then_hang):
-            started = client.post("/api/probe/discover/start", json={
-                "targets": "10.0.0.1-10.0.0.20", "port": 7000,
-                "concurrency": 1, "timeout": 10.0,
-            }, headers=headers)
-            self.assertEqual(started.status_code, 200)
-            self.assertTrue(second_attempt.wait(2))
-            self.assertEqual(
-                client.post("/api/probe/discover/stop", headers=headers).json(),
-                {"stopped": True},
-            )
-            status = self.wait_discover_terminal(client, headers)
-            results = client.get("/api/probe/discover/results", headers=headers).json()
-
-        self.assertEqual(status["error"], "")
-        self.assertEqual([item["ip"] for item in results["items"]], ["10.0.0.1"])
-        self.assertIsNone(coordinator._writer)
-
-    def test_router_active_scan_conflict_remains_http_409(self):
-        client, headers = self.make_client()
-        import app.probe.router as probe_router
-
-        coordinator = mock.Mock()
-        coordinator.start.side_effect = RuntimeError("已有扫描在进行中")
-        with mock.patch.object(probe_router, "discover_scans", coordinator):
-            response = client.post("/api/probe/discover/start", json={
-                "targets": "127.0.0.2", "port": 7000,
-            }, headers=headers)
-
-        self.assertEqual(response.status_code, 409)
-        self.assertIn("已有扫描在进行中", response.json()["detail"])
-
-    def test_router_startup_persistence_failure_is_visible_and_reusable(self):
-        client, headers = self.make_client()
-        from app.probe.persistence import DiscoverScanCoordinator
-        from app.probe.store import ProbeStore
-        import app.probe.router as probe_router
-        fail = True
-
-        def store_factory():
-            if fail:
-                raise RuntimeError("database unavailable")
-            return ProbeStore(self.db_path)
-
-        coordinator = DiscoverScanCoordinator(
-            probe_router.discover_runner, store_factory, lambda _ip: True,
-        )
-
-        async def misses(_ip, _port):
-            raise OSError
-
-        with mock.patch.object(probe_router, "discover_scans", coordinator), \
-             mock.patch("app.probe.discover.asyncio.open_connection", new=misses):
-            failed = client.post("/api/probe/discover/start", json={
-                "targets": "127.0.0.2", "port": 7000,
-            }, headers=headers)
-            self.assertNotEqual(failed.status_code, 409)
-            self.assertEqual(failed.status_code, 500)
-            self.assertIn("database unavailable", failed.json()["detail"])
-            failed_status = client.get("/api/probe/discover/status", headers=headers).json()
-            self.assertFalse(failed_status["running"])
-            self.assertIn("database unavailable", failed_status["error"])
-
-            fail = False
-            restarted = client.post("/api/probe/discover/start", json={
-                "targets": "127.0.0.2", "port": 7000,
-            }, headers=headers)
-            self.assertEqual(restarted.status_code, 200)
-            status = self.wait_discover_terminal(client, headers)
-
-        self.assertEqual(status["error"], "")
-        self.assertIsNone(coordinator._writer)
-
-    def test_router_runtime_persistence_failure_terminates_and_surfaces(self):
-        client, headers = self.make_client()
-        from app.probe.persistence import DiscoverScanCoordinator
-        import app.probe.router as probe_router
-
-        class FailingStore:
-            def upsert_discover_results_batch(self, _hits):
-                raise RuntimeError("disk full")
-
-        coordinator = DiscoverScanCoordinator(
-            probe_router.discover_runner, FailingStore, lambda _ip: True,
-        )
-
-        class Writer:
-            def close(self):
-                pass
-
-            async def wait_closed(self):
-                pass
-
-        async def succeeds(_ip, _port):
-            return object(), Writer()
-
-        with mock.patch.object(probe_router, "discover_scans", coordinator), \
-             mock.patch("app.probe.discover.asyncio.open_connection", new=succeeds):
-            started = client.post("/api/probe/discover/start", json={
-                "targets": "10.0.0.1-10.0.1.44", "port": 7000,
-                "concurrency": 1, "timeout": 0.5,
-            }, headers=headers)
-            self.assertEqual(started.status_code, 200)
-            status = self.wait_discover_terminal(client, headers)
-
-        self.assertIn("DiscoverPersistenceError", status["error"])
-        self.assertIn("disk full", status["error"])
-        self.assertLess(status["scanned"], status["total"])
-        self.assertIsNone(coordinator._writer)
+        from app.probe.jobs import ProbeJobStore
+        jobs = ProbeJobStore(self.db_path)
+        with jobs._db() as connection:
+            connection.execute("UPDATE probe_settings SET value='{' WHERE key='probe_execution_policy'")
+        response = client.post("/api/probe/discover/start", json={
+            "targets": "127.0.0.1", "port": 7000,
+        }, headers=headers)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("重新配置测试节点", response.json()["detail"])
 
     def test_discover_results_contract_filters_facets_and_validation(self):
         from app.probe.store import ProbeStore
@@ -1909,7 +1754,13 @@ class RouteApiTests(unittest.TestCase):
         client.__enter__()
         self.addCleanup(client.__exit__, None, None, None)
         token = client.post("/api/auth/login", json={"username": "admin", "password": "password"}).json()["token"]
-        return client, {"Authorization": f"Bearer {token}"}
+        headers = {"Authorization": f"Bearer {token}"}
+        self.primary = client.post("/api/probe/nodes", json={"name": "primary-route"}, headers=headers).json()
+        configured = client.put("/api/probe/nodes/execution-policy", json={
+            "primaryNodeId": self.primary["id"], "backupNodeIds": [],
+        }, headers=headers)
+        self.assertEqual(configured.status_code, 200)
+        return client, headers
 
     def test_route_full_flow(self):
         from app.probe.route import route_hub
@@ -1927,11 +1778,11 @@ class RouteApiTests(unittest.TestCase):
         created = client.post("/api/probe/route/nodes", json={"name": "杭州节点"}, headers=headers).json()
         self.assertEqual(created["name"], "杭州节点")
         self.assertEqual(len(created["token"]), 32)
-        node_headers = {"X-Route-Token": created["token"]}
+        node_headers = {"X-Route-Token": self.primary["token"]}
         listed = client.get("/api/probe/route/nodes", headers=headers).json()
-        self.assertEqual(listed[0]["name"], "杭州节点")
-        self.assertIn("…", listed[0]["tokenMasked"])
-        self.assertFalse(listed[0]["online"])
+        legacy_listed = next(node for node in listed if node["name"] == "杭州节点")
+        self.assertIn("…", legacy_listed["tokenMasked"])
+        self.assertFalse(legacy_listed["online"])
         self.assertEqual(client.post("/api/probe/route/nodes",
                                      json={"name": "杭州节点"}, headers=headers).status_code, 400)
 
@@ -1939,38 +1790,47 @@ class RouteApiTests(unittest.TestCase):
         self.assertEqual(client.post("/api/probe/route/claim",
                                      headers={"X-Route-Token": "bad"}).status_code, 401)
 
-        # 空队列 claim → task None（同时刷新心跳 → 在线）
-        self.assertEqual(client.post("/api/probe/route/claim", headers=node_headers).json(),
+        # Worker claim → task None（同时刷新心跳 → 在线）
+        worker_headers = {"X-Probe-Token": self.primary["token"]}
+        client.post("/api/probe/worker/heartbeat", json={
+            "version": "test", "capabilities": ["discover", "route", "connectivity", "speed"],
+            "attempts": [],
+        }, headers=worker_headers)
+        self.assertEqual(client.post("/api/probe/worker/claim", headers=worker_headers).json(),
                          {"task": None})
-        self.assertTrue(client.get("/api/probe/route/nodes", headers=headers).json()[0]["online"])
+        self.assertTrue(next(node for node in client.get("/api/probe/route/nodes", headers=headers).json()
+                             if node["id"] == self.primary["id"])["online"])
 
         # 面板启动：勾选发现行入队
         started = client.post("/api/probe/route/start", json={"ids": [row_id]}, headers=headers).json()
         self.assertEqual(started, {"enqueued": 1})
 
         # 节点领取 → 回报 CN2 → 标签写入
-        task = client.post("/api/probe/route/claim", headers=node_headers).json()["task"]
+        task = client.post("/api/probe/worker/claim", headers=worker_headers).json()["task"]
         self.assertEqual(task["ip"], "10.0.0.1")
-        report = client.post("/api/probe/route/report", json={
-            "taskId": task["taskId"], "ok": True, "isCn2": True,
-        }, headers=node_headers).json()
+        report = client.post("/api/probe/worker/report", json={
+            "taskId": task["taskId"], "attemptId": task["attemptId"],
+            "result": {"ok": True, "isCn2": True},
+        }, headers=worker_headers).json()
         self.assertEqual(report["applied"], True)
         self.assertEqual(discover_rows(store)[0]["label"], ",未路由测试,")
-        self.assertTrue(client.get("/api/probe/results/route?nodeId="+created["id"],headers=headers).json()["items"][0]["isCn2"])
+        self.assertTrue(client.get("/api/probe/results/route?nodeId="+self.primary["id"],headers=headers).json()["items"][0]["isCn2"])
 
         # 重复回报幂等；状态端点
-        self.assertEqual(client.post("/api/probe/route/report", json={
-            "taskId": task["taskId"], "ok": True, "isCn2": False,
-        }, headers=node_headers).json()["applied"], False)
+        self.assertEqual(client.post("/api/probe/worker/report", json={
+            "taskId": task["taskId"], "attemptId": task["attemptId"],
+            "result": {"ok": True, "isCn2": False},
+        }, headers=worker_headers).json()["applied"], False)
         status = client.get("/api/probe/route/status", headers=headers).json()
         self.assertEqual((status["done"], status["pending"]), (1, 0))
 
         # 失败回报 → 回退「未路由测试」
         client.post("/api/probe/route/start", json={"ids": [row_id]}, headers=headers)
-        task2 = client.post("/api/probe/route/claim", headers=node_headers).json()["task"]
-        client.post("/api/probe/route/report", json={
-            "taskId": task2["taskId"], "ok": False,
-        }, headers=node_headers)
+        task2 = client.post("/api/probe/worker/claim", headers=worker_headers).json()["task"]
+        client.post("/api/probe/worker/report", json={
+            "taskId": task2["taskId"], "attemptId": task2["attemptId"],
+            "result": {"ok": False},
+        }, headers=worker_headers)
         self.assertEqual(discover_rows(store)[0]["label"], ",未路由测试,")
 
         # 已测 CN2 的行不再需要路由（联动入队的过滤条件）
@@ -1983,34 +1843,20 @@ class RouteApiTests(unittest.TestCase):
         self.assertIn("probe_route_start", actions)
 
     def test_scan_auto_route_enqueues(self):
-        capabilities = mock.patch("app.probe.worker.runtime_capabilities", return_value=["discover","route","connectivity","speed"])
-        capabilities.start()
-        self.addCleanup(capabilities.stop)
         client, headers = self.make_client()
-        class Writer:
-            def close(self):
-                pass
-            async def wait_closed(self):
-                pass
-
-        async def open_connection(host, port):
-            self.assertEqual(port, 7000)
-            return None, Writer()
-
-        with mock.patch("app.probe.discover.asyncio.open_connection", new=open_connection):
-            client.post("/api/probe/discover/start", json={
-                "targets": "127.0.0.1", "port": 7000, "concurrency": 4, "timeout": 1.0,
-                "autoRoute": True,
-            }, headers=headers)
-            for _ in range(50):
-                status = client.get("/api/probe/discover/status", headers=headers).json()
-                if not status["running"]:
-                    break
-                time.sleep(0.1)
-            # 命中已落库且自动入队路由任务
-            from app.probe.store import ProbeStore
-            rows = discover_rows(ProbeStore(self.db_path))
-            self.assertEqual([(r["ip"], r["label"]) for r in rows], [("127.0.0.1", ",未路由测试,")])
-            queue = client.get("/api/probe/route/status", headers=headers).json()
-            self.assertEqual(queue["pending"] + queue["running"] + queue["done"] + queue["failed"], 1)
-            client.post("/api/probe/route/stop", headers=headers)
+        started = client.post("/api/probe/discover/start", json={
+            "targets": "127.0.0.1", "port": 7000, "concurrency": 4, "timeout": 1.0,
+            "autoRoute": True,
+        }, headers=headers)
+        self.assertEqual(started.status_code, 200)
+        from app.probe.jobs import ProbeJobStore
+        jobs = ProbeJobStore(self.db_path)
+        task = jobs.claim(self.primary["id"])
+        self.assertEqual(task["stage"], "discover")
+        jobs.progress(self.primary["id"], task["taskId"], task["attemptId"], 1,
+                      hits=[{"ip": "127.0.0.1", "port": 7000, "latencyMs": 1.0}],
+                      progress={"scanned": 1, "foundCount": 1})
+        job = jobs.get_job(task["jobId"])
+        route_tasks = [item for item in job["tasks"] if item["stage"] == "route"]
+        self.assertEqual(len(route_tasks), 1)
+        self.assertEqual(route_tasks[0]["nodeId"], self.primary["id"])

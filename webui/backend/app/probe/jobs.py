@@ -24,6 +24,7 @@ from .store import validate_probe_addr, split_probe_endpoint as split_endpoint
 LEASE_SECONDS = 120
 CAPABILITIES = ['discover', 'route', 'connectivity', 'speed']
 TERMINAL = {'done', 'failed', 'skipped', 'stopped'}
+_LOW_LEVEL_ASSIGNMENT = object()
 
 
 def _json(value):
@@ -179,6 +180,52 @@ class ProbeJobStore:
                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (_json(value),))
         return self.get_execution_policy()
 
+    @staticmethod
+    def _normalize_requested_node_ids(requested_node_ids):
+        if requested_node_ids is None:
+            return None
+        if not isinstance(requested_node_ids, (list, tuple)):
+            raise ValueError('nodeIds 须为节点 ID 列表')
+        requested_node_ids = list(requested_node_ids)
+        try:
+            duplicate_ids = len(set(requested_node_ids)) != len(requested_node_ids)
+        except TypeError as exc:
+            raise ValueError('nodeIds 须为节点 ID 列表') from exc
+        if duplicate_ids:
+            raise ValueError('nodeIds 不能重复')
+        return requested_node_ids
+
+    def _primary_assignment(self, c, requested_node_ids):
+        try:
+            policy = self._stored_execution_policy(c)
+        except ValueError as exc:
+            raise ValueError(f'测试节点主备策略无效，请重新配置测试节点: {exc}') from exc
+        if policy is None or not policy['primaryNodeId']:
+            raise ValueError('请先配置测试节点主备策略，再创建任务')
+        primary_node_id = policy['primaryNodeId']
+        if requested_node_ids and requested_node_ids != [primary_node_id]:
+            raise ValueError('所选节点与已配置的主用测试节点不一致，请使用主用节点')
+        return primary_node_id
+
+    def validate_primary_assignment(self, requested_node_ids=None):
+        """Preflight a legacy selection before checking adapter busy state.
+
+        Task creation repeats this validation under its own write transaction.
+        """
+        requested_node_ids = self._normalize_requested_node_ids(requested_node_ids)
+        with self._db() as c:
+            return self._primary_assignment(c, requested_node_ids)
+
+    def create_primary_job(self, mode, requested_node_ids=None, **kwargs):
+        """Create one public job on the saved primary execution node.
+
+        ``create_job`` remains the low-level primitive for internal callers that
+        explicitly assign nodes. HTTP-facing callers use this wrapper so legacy
+        node selections cannot fan a job out across multiple workers.
+        """
+        requested_node_ids = self._normalize_requested_node_ids(requested_node_ids)
+        return self.create_job(mode, None, _primary_requested_node_ids=requested_node_ids, **kwargs)
+
     def get_node(self, node_id):
         with self._db() as c:
             row = c.execute('SELECT * FROM probe_nodes WHERE id=?', (node_id,)).fetchone()
@@ -223,12 +270,12 @@ class ProbeJobStore:
             c.execute("UPDATE probe_tasks SET state='pending',error='' WHERE job_id=? AND node_id=? AND stage=? AND ip=? AND port=? AND state='skipped' AND error='dependency'",(job_id,node_id,stage,ip,port))
         return task_id
 
-    def create_job(self, mode, node_ids, *, ips=None, targets=None, exclude=None, port=PROBE_TEST_PORT, options=None, auto_route=False, auto_full=False, concurrency=6, timeout=1.5):
+    def create_job(self, mode, node_ids, *, ips=None, targets=None, exclude=None, port=PROBE_TEST_PORT, options=None, auto_route=False, auto_full=False, concurrency=6, timeout=1.5, _primary_requested_node_ids=_LOW_LEVEL_ASSIGNMENT):
         if mode not in {*CAPABILITIES,'full'}:
             raise ValueError('mode 必须是 discover/route/connectivity/speed/full')
         if type(port) is not int or port != PROBE_TEST_PORT:
             raise ValueError(f'探测任务端口固定为 {PROBE_TEST_PORT}')
-        if not node_ids:
+        if _primary_requested_node_ids is _LOW_LEVEL_ASSIGNMENT and not node_ids:
             raise ValueError('需要节点')
         opts = dict(options or {})
         opts.update(autoRoute=auto_route, autoFull=auto_full, concurrency=concurrency, timeout=timeout)
@@ -251,6 +298,8 @@ class ProbeJobStore:
                 raise ValueError('并发须为1-16')
         job_id = _id()
         with self._db() as c:
+            if _primary_requested_node_ids is not _LOW_LEVEL_ASSIGNMENT:
+                node_ids = [self._primary_assignment(c, _primary_requested_node_ids)]
             selected=[]
             for node_id in dict.fromkeys(node_ids):
                 node = c.execute('SELECT * FROM probe_nodes WHERE id=?',(node_id,)).fetchone()

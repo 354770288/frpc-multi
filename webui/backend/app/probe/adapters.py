@@ -12,9 +12,11 @@ def serial_options(options):
 
 class LegacyProbeAdapter:
     def __init__(self, store_factory):self.factory=store_factory;self.job_id=None
-    def start(self,mode,ips,options):
+    def start(self,mode,ips,options,requested_node_ids=None):
+        store=self.factory()
+        store.validate_primary_assignment(requested_node_ids)
         if self.status()['running']:return False,'已有测试任务在运行'
-        job=self.factory().create_job(mode,['console'],ips=ips,port=PROBE_TEST_PORT,options=serial_options(options),concurrency=options.conn_concurrency)
+        job=store.create_primary_job(mode,requested_node_ids,ips=ips,port=PROBE_TEST_PORT,options=serial_options(options),concurrency=options.conn_concurrency)
         self.job_id=job['id'];return True,''
     def status(self):
         if not self.job_id:return _idle_state()
@@ -32,9 +34,11 @@ class LegacyProbeAdapter:
 
 class LegacyDiscoverAdapter:
     def __init__(self,store_factory,options_factory):self.factory=store_factory;self.options=options_factory;self.job_id=None
-    def start(self,params,*,auto_route=False):
+    def start(self,params,*,auto_route=False,auto_full=False,requested_node_ids=None):
+        store=self.factory()
+        store.validate_primary_assignment(requested_node_ids)
         if self.status()['running']:raise RuntimeError('已有扫描在进行中')
-        job=self.factory().create_job('discover',['console'],targets=params.targets,exclude=params.exclude,port=PROBE_TEST_PORT,auto_route=auto_route,concurrency=params.concurrency,timeout=params.timeout,options=serial_options(self.options()))
+        job=store.create_primary_job('discover',requested_node_ids,targets=params.targets,exclude=params.exclude,port=PROBE_TEST_PORT,auto_route=auto_route,auto_full=auto_full,concurrency=params.concurrency,timeout=params.timeout,options=serial_options(self.options()))
         self.job_id=job['id'];return DiscoverState(params)
     def status(self):
         if not self.job_id:return {'running':False,'params':None,'total':0,'scanned':0,'foundCount':0,'recentHits':[],'startedAt':None,'finishedAt':None,'error':''}
