@@ -25,7 +25,7 @@ class ProbeJobsTests(unittest.TestCase):
     def expire(self,task):
         with self.store._db() as c:c.execute('UPDATE probe_tasks SET lease_until=0 WHERE id=?',(task['taskId'],))
     def test_multi_node_every_target_isolated_and_port(self):
-        self.job(nodes=[self.a,self.b],ips=['192.0.2.1','192.0.2.2'],port=7001)
+        self.job(nodes=[self.a,self.b],ips=['192.0.2.1','192.0.2.2'])
         first=self.store.claim(self.a)
         parallel=self.store.claim(self.b);self.assertNotEqual(first['ip'],parallel['ip'])
         self.finish(self.b,parallel,{'frps_reachable':False})
@@ -33,7 +33,17 @@ class ProbeJobsTests(unittest.TestCase):
         other=self.store.claim(self.b);self.finish(self.b,other,{'frps_reachable':False})
         self.assertTrue(self.store.latest_results(self.a,'connectivity')[0]['frps_reachable'])
         self.assertFalse(self.store.latest_results(self.b,'connectivity')[0]['frps_reachable'])
-        self.assertEqual(self.store.latest_results(self.a,'connectivity')[0]['port'],7001)
+        self.assertEqual(self.store.latest_results(self.a,'connectivity')[0]['port'],7000)
+
+    def test_job_owner_rejects_nonfixed_ports(self):
+        with self.assertRaisesRegex(ValueError, '端口固定为 7000'):
+            self.job(port=7001)
+        with self.assertRaisesRegex(ValueError, '端口固定为 7000'):
+            self.job(port=7000.9)
+        with self.assertRaisesRegex(ValueError, '端口固定为 7000'):
+            self.job(port=True)
+        with self.assertRaisesRegex(ValueError, '端口固定为 7000'):
+            self.job(ips=['192.0.2.1:7001'])
     def test_latest_failure_overrides_success_then_ttl(self):
         self.job();t=self.store.claim(self.a);self.finish(self.a,t,{'frps_reachable':True})
         self.job();t=self.store.claim(self.a);self.finish(self.a,t,{'frps_reachable':False})
@@ -110,6 +120,19 @@ class ProbeJobsTests(unittest.TestCase):
         a=ProbeStore(self.path,node_id=self.a).query_servers(ServerPageQuery(sort='speed',order='desc'))
         self.assertEqual(a['items'][0]['ip'],'192.0.2.1');self.assertEqual(a['items'][0]['s_dl_speed_mbps'],8)
         b=ProbeStore(self.path,node_id=self.b).query_servers(ServerPageQuery());self.assertIsNone(b['items'][0]['s_test_time'])
+
+    def test_fixed_port_current_result_lookup_ignores_configured_frps_port(self):
+        assets=ProbeStore(self.path)
+        assets.create_server(ip='192.0.2.44')
+        assets.update_config_overrides({'frps_port':7001})
+        self.job(ips=['192.0.2.44'])
+        task=self.store.claim(self.a)
+        self.assertEqual(task['port'],7000)
+        self.finish(self.a,task,{'frps_reachable':True,'tunnel_established':True,'firewall_open':True})
+
+        row=ProbeStore(self.path,node_id=self.a).query_servers(ServerPageQuery())['items'][0]
+        self.assertTrue(row['c_frps_reachable'])
+        self.assertIsNotNone(row['c_test_time'])
     def test_worker_bundle_uses_canonical_sources(self):
         self.assertEqual(worker_bundle(),worker_bundle())
         with tarfile.open(fileobj=io.BytesIO(worker_bundle())) as archive:
@@ -140,12 +163,11 @@ class ProbeJobsTests(unittest.TestCase):
     def test_endpoint_ports_not_mixed_in_asset_status(self):
         assets=ProbeStore(self.path)
         assets.create_server(ip='192.0.2.1');assets.create_server(ip='192.0.2.1:7001')
-        self.job(ips=['192.0.2.1:7000','192.0.2.1:7001'])
-        first=self.store.claim(self.a);self.finish(self.a,first,{'frps_reachable':True,'tunnel_established':True,'firewall_open':True})
-        second=self.store.claim(self.a);self.assertEqual(second['port'],7001);self.finish(self.a,second,{'frps_reachable':False})
+        self.job(ips=['192.0.2.1:7000'])
+        first=self.store.claim(self.a);self.assertEqual(first['port'],7000);self.finish(self.a,first,{'frps_reachable':True,'tunnel_established':True,'firewall_open':True})
         rows={r['ip']:r for r in ProbeStore(self.path,node_id=self.a).query_servers(ServerPageQuery())['items']}
-        self.assertTrue(rows['192.0.2.1']['c_frps_reachable']);self.assertFalse(rows['192.0.2.1:7001']['c_frps_reachable'])
-        self.assertEqual(len(self.store.latest_results(self.a,'connectivity')),2)
+        self.assertTrue(rows['192.0.2.1']['c_frps_reachable']);self.assertIsNone(rows['192.0.2.1:7001']['c_frps_reachable'])
+        self.assertEqual(len(self.store.latest_results(self.a,'connectivity')),1)
 
 
     def test_local_bind_and_nonexecutable_frpc_are_infrastructure(self):
@@ -214,7 +236,7 @@ class ProbeJobsTests(unittest.TestCase):
         self.assertTrue(ProbeStore(self.path,node_id='console').query_servers(ServerPageQuery())['items'][0]['c_frps_reachable'])
         assets.update_config_overrides({'frps_port':7001})
         rows=ProbeStore(self.path,node_id='console').query_servers(ServerPageQuery())['items']
-        self.assertIsNone(rows[0]['c_test_time'])
+        self.assertTrue(rows[0]['c_frps_reachable'])
         self.assertEqual(self.store.latest_results('console','connectivity')[0]['port'],7000)
     def test_worker_lease_loss_reports_infra_after_execution(self):
         import threading
@@ -317,3 +339,70 @@ class ProbeJobsTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as mixed:
             jobs_create(JobCreate(mode='connectivity',nodeIds=[self.a],ips=['192.0.2.1'],targetScope='all'))
         self.assertEqual(mixed.exception.status_code,400)
+
+    def test_public_job_and_compat_discover_use_fixed_port(self):
+        from fastapi import HTTPException
+        from app.probe.engine import ProbeOptions
+        from app.probe.router import JobCreate, DiscoverStart, jobs_create, discover_start
+        import app.probe.router as router
+
+        with patch.object(router, 'job_store', return_value=self.store), \
+             patch.object(router, '_effective_options', return_value=ProbeOptions(frps_port=7001)):
+            with self.assertRaises(HTTPException) as rejected:
+                jobs_create(JobCreate(mode='connectivity', nodeIds=[self.a], ips=['192.0.2.1'], port=7001))
+            self.assertEqual(rejected.exception.status_code, 400)
+
+            job = jobs_create(JobCreate(mode='connectivity', nodeIds=[self.a], ips=['192.0.2.1']))
+            self.assertEqual(job['tasks'][0]['port'], 7000)
+
+            with self.assertRaises(HTTPException) as rejected_discovery:
+                discover_start(DiscoverStart(targets='192.0.2.1', port=7001, nodeIds=[self.a]), 'tester')
+            self.assertEqual(rejected_discovery.exception.status_code, 400)
+
+            discovered = discover_start(DiscoverStart(targets='192.0.2.1', nodeIds=[self.a]), 'tester')
+            self.assertEqual(discovered['total'], 1)
+            stored = self.store.get_job(discovered['jobId'])
+            self.assertEqual(stored['tasks'][0]['port'], 7000)
+
+    def test_legacy_test_api_uses_fixed_port_when_config_differs(self):
+        from fastapi import HTTPException
+        from app.probe.adapters import LegacyProbeAdapter
+        from app.probe.engine import ProbeOptions
+        from app.probe.router import TestStart, start_test
+        import app.probe.router as router
+
+        assets=ProbeStore(self.path)
+        assets.create_server(ip='192.0.2.1')
+        legacy_runner=LegacyProbeAdapter(lambda:self.store)
+        with patch.object(router, 'probe_store', return_value=assets), \
+             patch.object(router, 'runner', legacy_runner), \
+             patch.object(router, 'audit'), \
+             patch.object(router, '_effective_options', return_value=ProbeOptions(frps_port=7001)), \
+             patch.object(router.settings, 'probe_frpc_bin', '/bin/echo'):
+            with self.assertRaises(HTTPException) as rejected:
+                start_test(TestStart(mode='connectivity', ips=['192.0.2.1:7001']), 'tester')
+            self.assertEqual(rejected.exception.status_code, 400)
+            self.assertEqual(self.store.list_jobs(), [])
+
+            response = start_test(TestStart(mode='connectivity'), 'tester')
+
+        self.assertNotIn('jobId', response)
+        stored = self.store.get_job(legacy_runner.job_id)
+        self.assertEqual(stored['tasks'][0]['port'], 7000)
+
+    def test_route_start_maps_nonfixed_discovery_endpoint_to_400(self):
+        from fastapi import HTTPException
+        from app.probe.router import RouteStart, route_start
+        from unittest.mock import Mock
+        import app.probe.router as router
+
+        assets=Mock()
+        assets.get_discover_results_by_ids.return_value=[{'ip':'192.0.2.44:7001'}]
+        before=len(self.store.list_jobs())
+        with patch.object(router, 'probe_store', return_value=assets), \
+             patch.object(router, 'job_store', return_value=self.store):
+            with self.assertRaises(HTTPException) as rejected:
+                route_start(RouteStart(ids=[1]), 'tester')
+
+        self.assertEqual(rejected.exception.status_code,400)
+        self.assertEqual(len(self.store.list_jobs()),before)

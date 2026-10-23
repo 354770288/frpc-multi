@@ -993,13 +993,12 @@ class ProbeApiTests(unittest.TestCase):
         self.assertIn("PROBE_FRPC_BIN", response.json()["detail"])
 
     def test_connectivity_flow_and_audit(self):
-        server = socket.socket()
-        server.bind(("127.0.0.1", 0))
-        dead_port = server.getsockname()[1]
-        server.close()
+        tcping = mock.patch("app.probe.engine.tcping", return_value=(False, "mock unreachable"))
+        tcping.start()
+        self.addCleanup(tcping.stop)
         client, headers = self.make_client(
             PROBE_FRPC_BIN="/bin/echo",
-            PROBE_FRPS_PORT=str(dead_port),
+            PROBE_FRPS_PORT="7000",
             PROBE_TCPING_TIMEOUT="1",
             PROBE_TCPING_RETRIES="1",
         )
@@ -1086,14 +1085,21 @@ class ProbeApiTests(unittest.TestCase):
 
     def test_remote_full_history_without_imported_asset(self):
         client, headers = self.make_client(PROBE_FRPC_BIN='/missing/frpc')
-        node=client.post('/api/probe/nodes',json={'name':'remote'},headers=headers).json()
-        worker_headers={'X-Probe-Token':node['token']}
-        job=client.post('/api/probe/jobs',json={'mode':'full','nodeIds':[node['id']],'ips':['192.0.2.1:7001']},headers=headers)
-        self.assertEqual(job.status_code,200)
-        route=client.post('/api/probe/worker/claim',headers=worker_headers).json()['task']
-        client.post('/api/probe/worker/report',json={'taskId':route['taskId'],'attemptId':route['attemptId'],'result':{'ok':False}},headers=worker_headers)
-        conn=client.post('/api/probe/worker/claim',headers=worker_headers).json()['task']
-        client.post('/api/probe/worker/report',json={'taskId':conn['taskId'],'attemptId':conn['attemptId'],'result':{'frps_reachable':False}},headers=worker_headers)
+        from app.control.database import connect_database
+        from app.probe.jobs import ProbeJobStore
+
+        node=ProbeJobStore(self.db_path).create_node('remote')
+        connection=connect_database(self.db_path)
+        try:
+            connection.execute(
+                'INSERT INTO probe_results(task_id,attempt_id,job_id,node_id,kind,server_ip,port,test_time,data) '
+                'VALUES(?,?,?,?,?,?,?,?,?)',
+                ('legacy-connectivity-7001','', 'legacy-job',node['id'],'connectivity','192.0.2.1',7001,
+                 '2026-10-22T00:00:00+00:00',json.dumps({'frps_reachable':False})),
+            )
+            connection.commit()
+        finally:
+            connection.close()
         history=client.get('/api/probe/history/connectivity?nodeId='+node['id'],headers=headers).json()
         self.assertEqual(len(history),1);self.assertEqual(history[0]['port'],7001)
         self.assertEqual(history[0]['serverIp'],'192.0.2.1');self.assertEqual(history[0]['nodeId'],node['id'])
@@ -1449,26 +1455,34 @@ class DiscoverApiTests(unittest.TestCase):
 
     def test_discover_lifecycle_and_import(self):
         client, headers = self.make_client()
+        # 空目标 / 非法端口拒绝
+        self.assertEqual(client.post("/api/probe/discover/start",
+                                     json={"targets": "  "}, headers=headers).status_code, 400)
+        self.assertEqual(client.post("/api/probe/discover/start",
+                                     json={"targets": "10.0.0.0/8"}, headers=headers).status_code, 400)
+        self.assertEqual(client.post("/api/probe/discover/start",
+                                     json={"targets": "127.0.0.1", "port": 7001}, headers=headers).status_code, 400)
 
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.bind(("127.0.0.1", 0))
-        server.listen(8)
-        port = server.getsockname()[1]
-        try:
-            # 空目标 / 非法端口拒绝
-            self.assertEqual(client.post("/api/probe/discover/start",
-                                         json={"targets": "  "}, headers=headers).status_code, 400)
-            self.assertEqual(client.post("/api/probe/discover/start",
-                                         json={"targets": "10.0.0.0/8"}, headers=headers).status_code, 400)
+        class Writer:
+            def close(self):
+                pass
+            async def wait_closed(self):
+                pass
 
+        async def open_connection(host, port):
+            self.assertEqual(port, 7000)
+            return None, Writer()
+
+        # Keep the real coordinator, result writer, and API lifecycle; mock only TCP.
+        from app.probe.store import ProbeStore
+        with mock.patch("app.probe.discover.asyncio.open_connection", new=open_connection):
             started = client.post("/api/probe/discover/start", json={
-                "targets": "127.0.0.1", "port": port, "concurrency": 4, "timeout": 1.0,
+                "targets": "127.0.0.1", "concurrency": 4, "timeout": 1.0,
             }, headers=headers)
             self.assertEqual(started.status_code, 200)
-            body = started.json()
-            self.assertEqual(body["total"], 1)
+            self.assertEqual(started.json()["total"], 1)
 
-            # 单 IP 扫描可能瞬间完成（响应返回前），轮询到终态再校验
+            # Single-IP scan completes quickly; retain assertions for reported hit state.
             for _ in range(100):
                 status = client.get("/api/probe/discover/status", headers=headers).json()
                 if not status["running"]:
@@ -1480,50 +1494,47 @@ class DiscoverApiTests(unittest.TestCase):
             self.assertEqual(status["foundCount"], 1)
             self.assertEqual([hit["ip"] for hit in status["recentHits"]], ["127.0.0.1"])
 
-            # 导入：按结果行 id；重复导入去重
-            results = client.get("/api/probe/discover/results", headers=headers).json()
-            self.assertEqual(len(results["items"]), 1)
-            row = results["items"][0]
-            self.assertEqual(row["ip"], "127.0.0.1")
-            self.assertFalse(row["inLibrary"])
+        # 导入：按结果行 id；重复导入去重
+        results = client.get("/api/probe/discover/results", headers=headers).json()
+        self.assertEqual(len(results["items"]), 1)
+        row = results["items"][0]
+        self.assertEqual(row["ip"], "127.0.0.1")
+        self.assertFalse(row["inLibrary"])
 
-            self.assertEqual(client.post("/api/probe/discover/import",
-                                         json={"ids": [99999], "group": "发现"},
-                                         headers=headers).status_code, 400)
-            imported = client.post("/api/probe/discover/import", json={
-                "ids": [row["id"]], "group": "发现",
-            }, headers=headers).json()
-            self.assertEqual(imported, {"inserted": 1, "skipped": 0})
+        self.assertEqual(client.post("/api/probe/discover/import",
+                                     json={"ids": [99999], "group": "发现"},
+                                     headers=headers).status_code, 400)
+        imported = client.post("/api/probe/discover/import", json={
+            "ids": [row["id"]], "group": "发现",
+        }, headers=headers).json()
+        self.assertEqual(imported, {"inserted": 1, "skipped": 0})
 
-            # 再导一次：去重跳过；在库标记翻真
-            again = client.post("/api/probe/discover/import", json={
-                "ids": [row["id"]], "group": "发现",
-            }, headers=headers).json()
-            self.assertEqual(again, {"inserted": 0, "skipped": 1})
-            results = client.get("/api/probe/discover/results", headers=headers).json()
-            self.assertTrue(results["items"][0]["inLibrary"])
+        # 再导一次：去重跳过；在库标记翻真
+        again = client.post("/api/probe/discover/import", json={
+            "ids": [row["id"]], "group": "发现",
+        }, headers=headers).json()
+        self.assertEqual(again, {"inserted": 0, "skipped": 1})
+        results = client.get("/api/probe/discover/results", headers=headers).json()
+        self.assertTrue(results["items"][0]["inLibrary"])
 
-            # 批量改分组/标签 + 删除
-            patched = client.patch("/api/probe/discover/results/batch", json={
-                "ids": [row["id"]], "group": "发现2", "label": "低延迟",
-            }, headers=headers).json()
-            self.assertEqual(patched, {"updated": 1})
-            deleted = client.request("DELETE", "/api/probe/discover/results",
-                                     json={"ids": [row["id"]]}, headers=headers).json()
-            self.assertEqual(deleted, {"deleted": 1})
-            self.assertEqual(client.get("/api/probe/discover/results", headers=headers).json()["items"], [])
+        # 批量改分组/标签 + 删除
+        patched = client.patch("/api/probe/discover/results/batch", json={
+            "ids": [row["id"]], "group": "发现2", "label": "低延迟",
+        }, headers=headers).json()
+        self.assertEqual(patched, {"updated": 1})
+        deleted = client.request("DELETE", "/api/probe/discover/results",
+                                 json={"ids": [row["id"]]}, headers=headers).json()
+        self.assertEqual(deleted, {"deleted": 1})
+        self.assertEqual(client.get("/api/probe/discover/results", headers=headers).json()["items"], [])
 
-            # 服务器库能看到 + 审计
-            from app.probe.store import ProbeStore
-            servers = ProbeStore(self.db_path).list_servers()
-            self.assertEqual([(s.ip, s.server_group) for s in servers], [("127.0.0.1", "发现")])
-            actions = {log["action"] for log in client.get("/api/audit-logs?limit=50", headers=headers).json()}
-            self.assertIn("probe_discover_start", actions)
-            self.assertIn("probe_discover_import", actions)
-            self.assertIn("probe_update_discover", actions)
-            self.assertIn("probe_delete_discover", actions)
-        finally:
-            server.close()
+        # 服务器库能看到 + 审计
+        servers = ProbeStore(self.db_path).list_servers()
+        self.assertEqual([(s.ip, s.server_group) for s in servers], [("127.0.0.1", "发现")])
+        actions = {log["action"] for log in client.get("/api/audit-logs?limit=50", headers=headers).json()}
+        self.assertIn("probe_discover_start", actions)
+        self.assertIn("probe_discover_import", actions)
+        self.assertIn("probe_update_discover", actions)
+        self.assertIn("probe_delete_discover", actions)
 
         # 停止端点：无运行任务时返回 False
         stopped = client.post("/api/probe/discover/stop", headers=headers).json()
@@ -1976,13 +1987,19 @@ class RouteApiTests(unittest.TestCase):
         capabilities.start()
         self.addCleanup(capabilities.stop)
         client, headers = self.make_client()
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.bind(("127.0.0.1", 0))
-        server.listen(8)
-        port = server.getsockname()[1]
-        try:
+        class Writer:
+            def close(self):
+                pass
+            async def wait_closed(self):
+                pass
+
+        async def open_connection(host, port):
+            self.assertEqual(port, 7000)
+            return None, Writer()
+
+        with mock.patch("app.probe.discover.asyncio.open_connection", new=open_connection):
             client.post("/api/probe/discover/start", json={
-                "targets": "127.0.0.1", "port": port, "concurrency": 4, "timeout": 1.0,
+                "targets": "127.0.0.1", "port": 7000, "concurrency": 4, "timeout": 1.0,
                 "autoRoute": True,
             }, headers=headers)
             for _ in range(50):
@@ -1997,5 +2014,3 @@ class RouteApiTests(unittest.TestCase):
             queue = client.get("/api/probe/route/status", headers=headers).json()
             self.assertEqual(queue["pending"] + queue["running"] + queue["done"] + queue["failed"], 1)
             client.post("/api/probe/route/stop", headers=headers)
-        finally:
-            server.close()

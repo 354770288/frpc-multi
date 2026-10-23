@@ -15,6 +15,7 @@ from typing import Callable, Iterable, Literal, NamedTuple, Sequence, TypeVar
 
 from ..models import now_iso
 from ..control.database import connect_database, initialize_database
+from .constants import PROBE_TEST_PORT
 from .engine import speed_mbs, speed_mbps
 
 T = TypeVar("T")
@@ -219,7 +220,7 @@ def validate_probe_addr(addr: str) -> str:
     return value
 
 
-def split_probe_endpoint(value, default_port=7000):
+def split_probe_endpoint(value, default_port=PROBE_TEST_PORT):
     value=validate_probe_addr(value)
     try:
         ipaddress.ip_address(value)
@@ -275,9 +276,7 @@ class ProbeStore:
     def _source_views(self, connection):
         """Index one latest result per asset, keeping history in the canonical store."""
         node = "'" + self.node_id.replace("'", "''") + "'"
-        from ..settings import settings
-        overrides=self.get_config_overrides() if self.node_id is None else ProbeStore(self.database_path).get_config_overrides()
-        default_port=int(overrides.get('frps_port',settings.probe_options().frps_port))
+        default_port=PROBE_TEST_PORT
         connection.create_function('probe_endpoint_host',1,lambda value:split_probe_endpoint(value,default_port)[0])
         connection.create_function('probe_endpoint_port',1,lambda value:split_probe_endpoint(value,default_port)[1])
         # Normalize each asset once. Parsing addresses inside a historical-result

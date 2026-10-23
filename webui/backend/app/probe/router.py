@@ -20,6 +20,7 @@ from ..auth import require_auth
 from ..settings import settings
 from .discover import discover_runner
 from .engine import ProbeOptions
+from .constants import PROBE_TEST_PORT
 from .jobs import ProbeJobStore, CAPABILITIES
 from .adapters import LegacyProbeAdapter, LegacyDiscoverAdapter, serial_options
 from .persistence import DiscoverPersistenceError, DiscoverScanCoordinator
@@ -45,7 +46,7 @@ def _enrich_source(items, node_id):
     except KeyError:name=node_id
     routes=store.latest_results(node_id,'route')
     from .jobs import split_endpoint
-    default_port=_effective_options().frps_port
+    default_port=PROBE_TEST_PORT
     lookup={(r['server_ip'],r['port']):r for r in routes}
     fallback={r['server_ip']:r for r in routes}
     return [{**item,'nodeId':node_id,'nodeName':name,'port':item.get('port',split_endpoint(item['ip'],default_port)[1]),'latestRoute':lookup.get((item['ip'],item['port'])) if 'port' in item else lookup.get(split_endpoint(item['ip'],default_port))} for item in items]
@@ -486,11 +487,14 @@ def start_test(payload: TestStart, user: Annotated[str, Depends(require_auth)]):
         raise HTTPException(status_code=400, detail="没有可测试的服务器")
     if payload.nodeIds:
         try:
-            job = job_store().create_job(payload.mode, payload.nodeIds, ips=ips, port=_effective_options().frps_port, options=serial_options(_effective_options()))
+            job = job_store().create_job(payload.mode, payload.nodeIds, ips=ips, port=PROBE_TEST_PORT, options=serial_options(_effective_options()))
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"ok": True, "mode": payload.mode, "count": len(ips), "jobId": job["id"]}
-    ok, err = runner.start(payload.mode, ips, _effective_options())
+    try:
+        ok, err = runner.start(payload.mode, ips, _effective_options())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=409, detail=err)
     audit(user, "probe_start_test", message=f"{payload.mode} × {len(ips)}")
@@ -632,9 +636,9 @@ def discover_start(payload: DiscoverStart, user: Annotated[str, Depends(require_
         raise HTTPException(status_code=400, detail=f"并发需在 {MIN_CONCURRENCY}-{MAX_CONCURRENCY}")
     if not MIN_TIMEOUT <= payload.timeout <= MAX_TIMEOUT:
         raise HTTPException(status_code=400, detail=f"超时需在 {MIN_TIMEOUT}-{MAX_TIMEOUT} 秒")
-    port = payload.port or _effective_options().frps_port
-    if not 1 <= port <= 65535:
-        raise HTTPException(status_code=400, detail="端口必须在 1-65535")
+    if payload.port is not None and payload.port != PROBE_TEST_PORT:
+        raise HTTPException(status_code=400, detail=f"探测任务端口固定为 {PROBE_TEST_PORT}")
+    port = PROBE_TEST_PORT
     params = DiscoverParams(
         targets=[part.strip() for part in targets_text.replace("\n", ",").split(",") if part.strip()],
         exclude=[part.strip() for part in payload.exclude.replace("\n", ",").split(",") if part.strip()],
@@ -853,7 +857,10 @@ def route_start(payload: RouteStart, user: Annotated[str, Depends(require_auth)]
     rows=probe_store().get_discover_results_by_ids(payload.ids)
     if not rows:raise HTTPException(400,'请勾选要测试的记录')
     nodes=[n['id'] for n in job_store().list_nodes() if n['kind']!='console' and 'route' in n['capabilities']] or ['console']
-    job=job_store().create_job('route',nodes,ips=[r['ip'] for r in rows],port=_effective_options().frps_port)
+    try:
+        job=job_store().create_job('route',nodes,ips=[r['ip'] for r in rows],port=PROBE_TEST_PORT)
+    except ValueError as exc:
+        raise HTTPException(400,str(exc)) from exc
     audit(user,'probe_route_start',message=job['id'])
     return {'enqueued':len(rows)*len(nodes)}
 
@@ -943,6 +950,8 @@ def nodes_delete(node_id: str):
 
 @router.post('/jobs')
 def jobs_create(payload: JobCreate):
+    if payload.port is not None and payload.port != PROBE_TEST_PORT:
+        raise HTTPException(400, detail=f'探测任务端口固定为 {PROBE_TEST_PORT}')
     if payload.mode != 'discover' and payload.targetScope == 'explicit' and not payload.ips:
         raise HTTPException(400, '明确目标不能为空')
     if payload.mode != 'discover' and payload.targetScope == 'all' and (payload.ips or payload.targets):
@@ -954,7 +963,7 @@ def jobs_create(payload: JobCreate):
     if payload.mode!='discover' and not ips and not payload.targets:
         ips=[s.ip for s in probe_store().list_servers()]
     try:
-        return job_store().create_job(payload.mode,payload.nodeIds,ips=ips,targets=payload.targets,exclude=payload.exclude,port=payload.port or _effective_options().frps_port,auto_route=payload.autoRoute,auto_full=payload.autoFull,concurrency=payload.concurrency,timeout=payload.timeout,options=serial_options(_effective_options()))
+        return job_store().create_job(payload.mode,payload.nodeIds,ips=ips,targets=payload.targets,exclude=payload.exclude,port=PROBE_TEST_PORT,auto_route=payload.autoRoute,auto_full=payload.autoFull,concurrency=payload.concurrency,timeout=payload.timeout,options=serial_options(_effective_options()))
     except ValueError as exc:raise HTTPException(400,str(exc)) from exc
 
 

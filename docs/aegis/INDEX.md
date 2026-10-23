@@ -2,7 +2,7 @@
 
 - Baseline: `docs/aegis/baseline/2026-08-30-initial-baseline.md`
 - Plan: `docs/aegis/plans/2026-08-30-discovery-performance.md`
-- Active plan: `docs/aegis/plans/2026-10-20-probe-workers.md`
+- Active plan: `docs/aegis/plans/2026-10-23-server-library-scale.md`
 - Previous work: `docs/aegis/work/2026-08-30-discovery-performance/`
 - Previous intent: `docs/aegis/work/2026-08-30-discovery-performance/10-intent.md`
 - Previous checkpoint: `docs/aegis/work/2026-08-30-discovery-performance/20-checkpoint.md`
@@ -11,6 +11,10 @@
 
 | Date | Kind | Path | Title |
 | --- | --- | --- | --- |
+| 2026-10-23 | plan | docs/aegis/plans/2026-10-23-server-library-scale.md | 服务器分类、大规模发现与国内主备测试改造计划（修订版） |
+| 2026-10-23 | work | docs/aegis/work/2026-10-23-server-library-scale/10-intent.md | 服务器分类与大规模数据交互 intent |
+| 2026-10-23 | work | docs/aegis/work/2026-10-23-server-library-scale/20-checkpoint.md | 服务器分类与大规模数据交互 checkpoint |
+| 2026-10-23 | work | docs/aegis/work/2026-10-23-server-library-scale/90-evidence.md | 固定端口切片 evidence |
 | 2026-08-30 | baseline | docs/aegis/baseline/2026-08-30-initial-baseline.md | 原始基线快照 |
 | 2026-08-30 | plan | docs/aegis/plans/2026-08-30-discovery-performance.md | 网段发现性能计划 |
 | 2026-10-20 | plan | docs/aegis/plans/2026-10-20-probe-workers.md | 全功能测试节点计划 |

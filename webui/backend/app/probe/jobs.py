@@ -17,6 +17,7 @@ from pathlib import Path
 
 from ..control.database import connect_database, initialize_database
 from ..models import now_iso
+from .constants import PROBE_TEST_PORT
 from .discover import DiscoverParams, DiscoverRunner, parse_targets
 from .store import validate_probe_addr, split_probe_endpoint as split_endpoint
 
@@ -137,11 +138,13 @@ class ProbeJobStore:
             c.execute("UPDATE probe_tasks SET state='pending',error='' WHERE job_id=? AND node_id=? AND stage=? AND ip=? AND port=? AND state='skipped' AND error='dependency'",(job_id,node_id,stage,ip,port))
         return task_id
 
-    def create_job(self, mode, node_ids, *, ips=None, targets=None, exclude=None, port=7000, options=None, auto_route=False, auto_full=False, concurrency=6, timeout=1.5):
+    def create_job(self, mode, node_ids, *, ips=None, targets=None, exclude=None, port=PROBE_TEST_PORT, options=None, auto_route=False, auto_full=False, concurrency=6, timeout=1.5):
         if mode not in {*CAPABILITIES,'full'}:
             raise ValueError('mode 必须是 discover/route/connectivity/speed/full')
-        if not 1<=int(port)<=65535 or not node_ids:
-            raise ValueError('需要节点及有效端口')
+        if type(port) is not int or port != PROBE_TEST_PORT:
+            raise ValueError(f'探测任务端口固定为 {PROBE_TEST_PORT}')
+        if not node_ids:
+            raise ValueError('需要节点')
         opts = dict(options or {})
         opts.update(autoRoute=auto_route, autoFull=auto_full, concurrency=concurrency, timeout=timeout)
         plan = None
@@ -157,6 +160,8 @@ class ProbeJobStore:
             ips = list(dict.fromkeys(validate_probe_addr(ip) for ip in supplied))
             if not ips:
                 raise ValueError('没有可测试的服务器')
+            if any(split_endpoint(ip, PROBE_TEST_PORT)[1] != PROBE_TEST_PORT for ip in ips):
+                raise ValueError(f'探测任务端口固定为 {PROBE_TEST_PORT}')
             if not 1<=int(concurrency)<=16:
                 raise ValueError('并发须为1-16')
         job_id = _id()
