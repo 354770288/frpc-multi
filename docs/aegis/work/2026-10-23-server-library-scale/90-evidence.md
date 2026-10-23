@@ -235,3 +235,13 @@ Current limits: multi-group and include-all/any/exclude controls are available a
 Added a durable current-results projection for route, connectivity and speed. It seeds once from the first fully valid configured primary, preserves current rows across later policy changes, and only updates from accepted primary-managed reports (including accepted backup failover work). Each row retains its canonical history ID and actual node/job/task/generation/time. History clearing removes matching projection rows in the same transaction. LB keeps its health, freshness and ranking rules, reads the unified projection for candidates in the domain group, and uses fixed test port 7000 regardless of frpc instance settings. The source-free read API is available; old source-scoped history APIs remain during caller migration.
 
 Server-library status/query views and UI source-selector retirement remain the next dependent slice. Full-scale data tests and production migration remain unverified.
+
+## Slice: Console-shared saved server views (backend)
+
+- `cd webui/backend && ../../.venv/bin/python -m unittest tests.test_probe_saved_views tests.test_probe_contextual_facets tests.test_probe_selection_jobs tests.test_probe_jobs tests.test_probe_bulk tests.test_probe tests.test_database tests.test_lb tests.test_lb_selection` — exit 0; 261 tests passed.
+- `python -m py_compile` on the saved-view store, probe router, and control database — exit 0.
+- `git diff --check` — exit 0.
+- Spec review found one malformed-filter type path that could return 500; explicit string checks and API regressions now verify 400 for non-string `conn` and `tagMode`.
+- Final quality review passed with no P0–P2 findings.
+
+Added a Console-wide shared saved-view collection with authenticated list/create/patch/delete routes, case-folded unique names, validated filters, stable group/tag ID support, explicit sort and visible-column whitelists, and a 16 KiB payload bound. Pagination cursors and selections are excluded by the filter schema. The database change is additive and initialization-safe. Frontend integration and indexed measurement sorts remain pending.

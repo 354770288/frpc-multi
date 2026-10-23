@@ -148,6 +148,19 @@ INSERT OR IGNORE INTO probe_server_bulk_lease(id) VALUES(1);
 CREATE INDEX IF NOT EXISTS idx_probe_server_tags_tag_server
     ON probe_server_tags (tag_id, server_id);
 
+CREATE TABLE IF NOT EXISTS probe_server_views (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL UNIQUE,
+    filters TEXT NOT NULL,
+    sort TEXT NOT NULL,
+    sort_order TEXT NOT NULL,
+    visible_columns TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_probe_server_views_updated ON probe_server_views(updated_at DESC,id);
+
 CREATE TABLE IF NOT EXISTS probe_discover_results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ip TEXT NOT NULL,

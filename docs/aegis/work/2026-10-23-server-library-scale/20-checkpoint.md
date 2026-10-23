@@ -24,13 +24,13 @@
 - [x] Desktop multi-group union and include-any/include-all/exclude tag controls with URL state and contextual counts.
 - [x] Backend opt-in tag candidate search/pagination with full legacy no-argument facet compatibility.
 - [x] Desktop searchable/server-paged tag candidates for advanced filters and quick-tag shortcuts.
-- [ ] Saved views and indexed measurement sort modes.
+- [ ] Saved views and indexed measurement sort modes (backend saved-view CRUD done; frontend integration and indexed measurement sorting remain).
 - [ ] 100k acceptance dataset and isolated 1M capacity tests; regression and release readiness.
 
 ## ResumeStateHint
 
-- Current status: fixed-port semantics, node policy, atomic primary assignment, durable lease failover, unified results/LB/server views, stable groups, categorized-tag backend/UI, IP keyset browsing, desktop fixed-selection/update/delete workflows, desktop selection-backed test creation, multi-group/contextual filters, and paged tag candidates are verified; saved views, indexed measurement sorts, and capacity work remain active.
-- Active slice: implement shared saved views and indexed measurement sort modes; then run 10万/100万 scale acceptance.
+- Current status: fixed-port semantics, node policy, atomic primary assignment, durable lease failover, unified results/LB/server views, stable groups, categorized-tag backend/UI, IP keyset browsing, desktop fixed-selection/update/delete workflows, desktop selection-backed test creation, multi-group/contextual filters, paged tag candidates, and shared saved-view backend are verified; saved-view frontend integration, indexed measurement sorts, and capacity work remain active.
+- Active slice: integrate shared saved views into the server-library UI, implement indexed measurement sort modes, then run 10万/100万 scale acceptance.
 - Completed: fixed target port 7000 across task creation paths; server result projection matches fixed port regardless of frps_port setting; HTTP validation maps to 400 including compatibility and route-start paths; historical alternate-port record remains retrievable; persisted policy validates stable worker IDs, preserves backup order, permits offline nodes, fails closed on corrupt state, protects referenced-node deletion; desktop test-node page explicitly saves primary and ordered backups; public task creation resolves the saved primary and checks policy plus inserts tasks atomically; task creation/discovery UI shows the saved role policy, distinguishes policy/node-list errors, submits no nodeIds and fixes port 7000.
 - Completed failover: jobs snapshot the ordered node chain; expired/unclaimed tasks transfer only to the next online generation-capable backup; pipeline child tasks preserve generation; old attempts are fenced; no-backup tasks remain pending and recover on owner heartbeat; transfer history is paged; batch waiting count is independent of task filters/pages.
 - Current-result foundation: canonical history stays immutable; a durable route/connectivity/speed projection seeds only from the first valid configured primary, updates only on accepted primary-managed results (including failover owners), stores provenance, clears with its source history, and is read by LB through candidate-group-scoped queries at fixed port 7000. Legacy history/source APIs remain during consumer migration.

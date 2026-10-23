@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth import require_auth
 from ..settings import settings
@@ -30,6 +30,9 @@ from .store import (
     ProbeStore, ServerImportLimitError, ServerPageQuery, unpack_labels, validate_probe_addr,
 )
 from .bulk import MAX_FILTER_IDS, MAX_SELECTION_IDS, ServerBulkStore
+from .saved_views import (
+    DEFAULT_SERVER_VIEW_COLUMNS, ServerViewNameConflictError, ServerViewStore,
+)
 
 router = APIRouter(prefix="/api/probe", dependencies=[Depends(require_auth)])
 
@@ -86,6 +89,10 @@ def job_store():
 
 def server_bulk_store():
     return ServerBulkStore(settings.database_path)
+
+
+def server_view_store():
+    return ServerViewStore(settings.database_path)
 
 
 def source_store(node_id):
@@ -531,6 +538,60 @@ def server_facets(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class ServerViewCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    filters: dict = Field(default_factory=dict)
+    sort: str = "group"
+    order: str = "asc"
+    visibleColumns: list[str] = Field(default_factory=lambda: list(DEFAULT_SERVER_VIEW_COLUMNS))
+
+class ServerViewPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    filters: dict | None = None
+    sort: str | None = None
+    order: str | None = None
+    visibleColumns: list[str] | None = None
+
+@router.get("/server-views")
+def server_views_list():
+    return {"items": server_view_store().list()}
+
+
+@router.post("/server-views")
+def server_views_create(payload: ServerViewCreate):
+    try:
+        return server_view_store().create(
+            name=payload.name, filters=payload.filters, sort=payload.sort,
+            order=payload.order, visible_columns=payload.visibleColumns,
+        )
+    except ServerViewNameConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/server-views/{view_id}")
+def server_views_update(view_id: str, payload: ServerViewPatch):
+    try:
+        return server_view_store().update(view_id, payload.model_dump(exclude_unset=True))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="保存视图不存在") from exc
+    except ServerViewNameConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/server-views/{view_id}")
+def server_views_delete(view_id: str):
+    try:
+        return server_view_store().delete(view_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="保存视图不存在") from exc
 
 
 @router.get("/servers/groups")
