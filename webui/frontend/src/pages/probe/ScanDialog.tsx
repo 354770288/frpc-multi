@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { probeApi } from '../../lib/api';
 import { Overlay } from '../../components/Overlay';
@@ -7,21 +8,24 @@ import { Field, FieldGroup, FieldLabel, FieldSet, FieldLegend } from '../../comp
 import { Textarea } from '../../components/ui/textarea';
 import { Button } from '../../components/ui/button';
 import { Radar } from 'lucide-react';
-import type { TestNode, ProbeJobDetail } from '../../lib/types';
-import { NodePicker, supports } from './NodeControls';
+import type { TestNode, TestNodeExecutionPolicy, ProbeJobDetail } from '../../lib/types';
 
 export function ScanDialog({
-  defaultPort,
   nodes,
-  nodeIds,
-  onNodes,
+  policy,
+  policyError,
+  nodesError,
+  loading,
+  onRetry,
   onClose,
   onStarted,
 }: {
-  defaultPort: number;
   nodes: TestNode[];
-  nodeIds: string[];
-  onNodes: (ids: string[]) => void;
+  policy: TestNodeExecutionPolicy | null;
+  policyError: string;
+  nodesError: string;
+  loading: boolean;
+  onRetry: () => void;
   onClose: () => void;
   onStarted: (status: ProbeJobDetail) => void;
 }) {
@@ -30,27 +34,20 @@ export function ScanDialog({
   const [sourceUrl, setSourceUrl] = useState(
     () => localStorage.getItem('discover_source_url') || '',
   );
-  const [port, setPort] = useState(String(defaultPort));
   const [concurrency, setConcurrency] = useState('500');
   const [probeTimeout, setProbeTimeout] = useState('1.5');
   const [autoRoute, setAutoRoute] = useState(
     () => localStorage.getItem('discover_auto_route') === '1',
   );
   const [autoFull, setAutoFull] = useState(false);
-  const validNodes =
-    nodeIds.length > 0 &&
-    nodeIds.every((id) =>
-      nodes.some((node) => node.id === id && supports(node, 'discover', autoRoute, autoFull)),
-    );
+  const primaryNode = policy?.primaryNodeId ? nodes.find((node) => node.id === policy.primaryNodeId) : undefined;
+  const backupNodes = (policy?.backupNodeIds || []).map((id) => nodes.find((node) => node.id === id)).filter((node): node is TestNode => !!node);
+  const policyReady = Boolean(!loading && !nodesError && !policyError && policy?.configured && primaryNode);
   const [starting, setStarting] = useState(false);
 
   const start = async () => {
-    if (starting || !validNodes) return;
+    if (starting || !policyReady) return;
     const url = sourceUrl.trim();
-    if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
-      toast.error('frps 端口需为 1–65535 的整数');
-      return;
-    }
     if (!/^\d+$/.test(concurrency) || Number(concurrency) < 1 || Number(concurrency) > 5000) {
       toast.error('扫描并发需为 1–5000 的整数');
       return;
@@ -73,12 +70,11 @@ export function ScanDialog({
     try {
       const status = await probeApi.createJob({
         mode: 'discover',
-        nodeIds,
         autoFull,
         targets,
         exclude: exclude.trim() || undefined,
         sourceUrl: url || undefined,
-        port: port.trim() ? Number(port) : undefined,
+        port: 7000,
         concurrency: concurrency.trim() ? Number(concurrency) : undefined,
         timeout: probeTimeout.trim() ? Number(probeTimeout) : undefined,
         autoRoute,
@@ -137,16 +133,6 @@ export function ScanDialog({
             />
           </Field>
           <Field>
-            <FieldLabel htmlFor="scan-port">frps 端口</FieldLabel>
-            <Input
-              id="scan-port"
-              value={port}
-              onChange={(e) => setPort(e.target.value)}
-              inputMode="numeric"
-              disabled={starting}
-            />
-          </Field>
-          <Field>
             <FieldLabel htmlFor="scan-concurrency">并发</FieldLabel>
             <Input
               id="scan-concurrency"
@@ -167,15 +153,14 @@ export function ScanDialog({
             />
           </Field>
         </FieldGroup>
-        <NodePicker
-          nodes={nodes}
-          selected={nodeIds}
-          onChange={onNodes}
-          mode="discover"
-          autoRoute={autoRoute}
-          autoFull={autoFull}
-          disabled={starting}
-        />
+        <div className="rounded-md border p-3 text-sm">
+          {loading ? <p role="status">正在加载节点与执行策略…</p> : nodesError ? <div className="space-y-2"><p role="alert">节点列表加载失败：{nodesError}</p><Button variant="outline" size="sm" onClick={onRetry}>重试加载</Button></div> : policyError ? <div className="space-y-2"><p role="alert">执行节点策略加载失败：{policyError}</p><Button variant="outline" size="sm" onClick={onRetry}>重试加载策略</Button></div> : policyReady && primaryNode ? <div className="space-y-1">
+            <p>主节点：{primaryNode.name}（{primaryNode.online ? '在线' : '离线'}）</p>
+            <p>备用节点顺序：{backupNodes.length ? backupNodes.map((node,index)=><span key={node.id}>{index>0?' → ':''}{node.name}（{node.online?'在线':'离线'}）</span>) : '未配置'}</p>
+          </div> : <p>尚未配置有效的主节点。</p>}
+          {(!loading && !nodesError && (!policyReady || policyError)) && <Link className="mt-2 inline-block underline" to="/test-nodes">前往测试节点设置</Link>}
+        </div>
+        <p className="text-xs text-muted-foreground">扫描目标服务端口固定为 7000。</p>
         <FieldSet className="gap-2">
           <FieldLegend variant="label">扫描后自动任务</FieldLegend>
           <label className="flex items-center gap-2 rounded-md bg-muted px-3 py-2">
@@ -201,15 +186,12 @@ export function ScanDialog({
             </span>
           </label>
         </FieldSet>
-        {!validNodes && (
-          <p className="text-xs text-muted-foreground">请选择具备扫描及后续测试能力的节点。</p>
-        )}
       </div>
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>
           取消
         </Button>
-        <Button onClick={start} disabled={starting || !validNodes}>
+        <Button onClick={start} disabled={starting || !policyReady}>
           <Radar data-icon="inline-start" />
           {starting ? '启动中…' : '开始扫描'}
         </Button>

@@ -44,6 +44,17 @@ At the policy-backend/UI slice boundary, task creation had not yet been connecte
 
 The UI policy editor itself did not assign tasks; assignment was implemented and verified in the next slice. Lease failover and unified current results remain subsequent slices.
 
+## Slice: primary-only task creation UI
+
+- `npm run build` — exit 0; TypeScript and Vite production bundle passed.
+- `npm test` — exit 0; 2 files and 3 Vitest tests passed.
+- `npm run test:e2e -- e2e/test-creation.spec.ts` — exit 0; 15 Playwright tests passed.
+- `git diff --check` — exit 0.
+- Spec review: no remaining findings after E2E fixtures were aligned to external primary/backup workers.
+- Code-quality review: stale refresh, API error distinction, source guidance, and unmount request lifecycle findings fixed and rechecked.
+
+Evidence covers primary/backup summary display, omitted nodeIds, fixed scan port, rejection of explicit alternate target ports, policy and node-list failures/retries, and unchanged instance-port handoff. Lease failover and result-source unification remain unimplemented.
+
 ## Slice: atomic primary-only task assignment
 
 - `./.venv/bin/python -m unittest tests.test_probe` — exit 0; 74 tests passed.

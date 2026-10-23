@@ -7,14 +7,18 @@ test.beforeEach(async ({ page }) => {
     const json=(value:unknown)=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(value)});
     if(url.pathname==='/api/probe/nodes')return json({items:[
       {id:'console',name:'Console',kind:'console',version:'qa',capabilities:['discover','route','connectivity','speed'],online:true},
-      {id:'remote',name:'国内测试节点',kind:'worker',version:'qa',capabilities:['discover','route','connectivity','speed'],online:false},
+      {id:'remote',name:'国内测试节点',kind:'worker',version:'qa',capabilities:['discover','route','connectivity','speed'],online:true},
+      {id:'backup',name:'备用测试节点',kind:'worker',version:'qa',capabilities:['discover','route','connectivity','speed'],online:true},
     ]});
+    if(url.pathname==='/api/probe/nodes/execution-policy')return json({configured:true,primaryNodeId:'remote',backupNodeIds:['backup'],suggestedPrimaryNodeId:'remote'});
     if(url.pathname==='/api/probe/servers/groups')return json([{name:'QA',color:''}]);
     if(url.pathname==='/api/probe/servers/facets')return json({labels:[],groups:[]});
+    if(url.pathname==='/api/probe/discover/results')return json({items:[],page:1,pageSize:50,total:0,sort:'discoveredAt',order:'desc'});
+    if(url.pathname==='/api/probe/discover/facets')return json({labels:[],groups:[],imported:0,new:0});
     if(url.pathname==='/api/probe/dashboard')return json({servers:2,connectivity:{tested:1,reachable:1,tunnels:1,firewallOpen:1},speed:{tested:1,avgDownloadMbps:0,avgUploadMbps:0,maxDownloadMbps:0}});
     if(url.pathname==='/api/probe/config')return json({frpsPort:7000});
     if(url.pathname==='/api/probe/servers'){
-      const entries=[{id:1,ip:'192.0.2.1:7001',port:7001},{id:2,ip:'192.0.2.2',port:7000}];
+      const entries=[{id:1,ip:'192.0.2.1:7000',port:7000},{id:2,ip:'192.0.2.2',port:7000}];
       const items=(url.searchParams.get('group')==='QA' ? entries.slice(0,1) : entries).map((item)=>({...item,nodeId:url.searchParams.get('nodeId') || 'console',nodeName:'QA',group:'QA',labels:[],createdAt:new Date().toISOString(),latestConnectivity:null,latestSpeed:null,latestRoute:null}));
       return json({items,page:Number(url.searchParams.get('page') || 1),pageSize:Number(url.searchParams.get('pageSize') || 200),total:url.searchParams.get('page')==='2' ? 120 : items.length,sort:'ip',order:'asc'});
     }
@@ -34,9 +38,9 @@ test.beforeEach(async ({ page }) => {
     if(url.pathname==='/api/lb/selection-config')return json({nodeId:'remote',maxAgeHours:24,healthSource:'console'});
     if(url.pathname==='/api/lb/domains')return json([{id:1,name:'qa.example.com',zoneId:'z',zoneName:'example.com',group:'QA',ttl:60,syncMode:'manual',intervalSeconds:300,enabled:true,lastSyncAt:null,lastSyncOk:null,lastSyncMessage:'',currentIp:'192.0.2.1',createdAt:new Date().toISOString(),poolSize:1}]);
     if(url.pathname==='/api/lb/health')return json({states:[],domains:[{domainId:1,name:'qa.example.com',group:'QA',currentIp:'192.0.2.1',bestIp:'192.0.2.1',poolIps:['192.0.2.1'],selection:{nodeId:'remote',healthSource:'console',maxAgeHours:24,observedAt:null,validCandidates:0,bestIp:'192.0.2.1',reason:'keep_healthy_current'}}]});
-    if(url.pathname==='/api/probe/jobs' && route.request().method()==='POST')return json({id:'created-qa-job',mode:'full',state:'running',counts:{pending:3},taskTotal:3,nodeIds:['console'],stageCounts:[],progress:{scanned:0,foundCount:0},createdAt:new Date().toISOString(),tasks:[],page:1,pageSize:200});
+    if(url.pathname==='/api/probe/jobs' && route.request().method()==='POST')return json({id:'created-qa-job',mode:'full',state:'running',counts:{pending:3},taskTotal:3,nodeIds:['remote'],stageCounts:[],progress:{scanned:0,foundCount:0},createdAt:new Date().toISOString(),tasks:[],page:1,pageSize:200});
     if(url.pathname==='/api/probe/jobs')return json({items:[],page:1,pageSize:20,total:0});
-    if(url.pathname==='/api/probe/jobs/created-qa-job')return json({id:'created-qa-job',mode:'full',state:'running',counts:{pending:3},taskTotal:3,filteredTaskTotal:3,nodeIds:['console'],stageCounts:[],progress:{scanned:0,foundCount:0},createdAt:new Date().toISOString(),tasks:[],page:1,pageSize:200});
+    if(url.pathname==='/api/probe/jobs/created-qa-job')return json({id:'created-qa-job',mode:'full',state:'running',counts:{pending:3},taskTotal:3,filteredTaskTotal:3,nodeIds:['remote'],stageCounts:[],progress:{scanned:0,foundCount:0},createdAt:new Date().toISOString(),tasks:[],page:1,pageSize:200});
     return json({});
   });
 });
@@ -52,14 +56,78 @@ test('new test requires an explicit target and review before submitting', async 
   await page.getByLabel('分组').selectOption('QA');
   await expect(page.getByText('将测试 1 个不同端点')).toBeVisible();
   await page.getByRole('button',{name:'下一步'}).click();
-  await page.getByRole('checkbox',{name:/Console/}).check();
+  await expect(page.getByText(/主节点：国内测试节点/)).toBeVisible();
+  await expect(page.getByText(/备用节点顺序：备用测试节点/)).toBeVisible();
   await page.getByRole('button',{name:'下一步'}).click();
   await expect(page.getByText('目标：1 个端点 · 分组 QA')).toBeVisible();
   expect(submissions).toBe(0);
   await page.getByRole('button',{name:'提交测试'}).click();
   await expect(page).toHaveURL(/\/tests\/created-qa-job/);
   expect(submissions).toBe(1);
-  expect(submitted).toMatchObject({mode:'full',nodeIds:['console'],ips:['192.0.2.1:7001'],targetScope:'explicit'});
+  expect(submitted).toMatchObject({mode:'full',ips:['192.0.2.1:7000'],targetScope:'explicit'});
+  expect(submitted).not.toHaveProperty('nodeIds');
+});
+
+test('manual targets reject explicit ports other than 7000', async ({page})=>{
+  let submissions=0;
+  page.on('request',(request)=>{if(request.url().endsWith('/api/probe/jobs') && request.method()==='POST')submissions++;});
+  await page.goto('/tests/new');
+  await page.getByLabel('目标范围').selectOption('manual');
+  await page.locator('textarea').fill('192.0.2.8:7001');
+  await expect(page.getByRole('alert').filter({hasText:'端口固定为 7000'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'下一步'})).toBeDisabled();
+  expect(submissions).toBe(0);
+});
+
+test('invalid saved policy links to node settings and blocks job submission', async ({page})=>{
+  let submissions=0;
+  await page.route('**/api/probe/nodes/execution-policy',route=>route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({error:'primary policy is invalid'})}));
+  page.on('request',(request)=>{if(request.url().endsWith('/api/probe/jobs') && request.method()==='POST')submissions++;});
+  await page.goto('/tests/new');
+  await page.getByLabel('目标范围').selectOption('manual');
+  await page.locator('textarea').fill('192.0.2.8');
+  await page.getByRole('button',{name:'下一步'}).click();
+  await expect(page.getByRole('alert').filter({hasText:'执行节点策略加载失败'})).toBeVisible();
+  await expect(page.getByRole('link',{name:'打开测试节点设置修复'})).toHaveAttribute('href','/test-nodes');
+  await expect(page.getByRole('button',{name:'下一步'})).toBeDisabled();
+  expect(submissions).toBe(0);
+});
+
+test('node list failure is distinct, retryable, and blocks submission until resolved',async ({page})=>{
+  let nodeRequests=0;
+  await page.route('**/api/probe/nodes',async route=>{
+    nodeRequests++;
+    if(nodeRequests===1)return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'temporary node service error'})});
+    return route.fallback();
+  });
+  let submissions=0;
+  page.on('request',(request)=>{if(request.url().endsWith('/api/probe/jobs') && request.method()==='POST')submissions++;});
+  await page.goto('/tests/new');
+  await page.getByLabel('目标范围').selectOption('manual');
+  await page.locator('textarea').fill('192.0.2.8');
+  await page.getByRole('button',{name:'下一步'}).click();
+  await expect(page.getByRole('alert').filter({hasText:'节点列表加载失败'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'下一步'})).toBeDisabled();
+  expect(submissions).toBe(0);
+  await page.getByRole('button',{name:'重试加载'}).click();
+  await expect(page.getByText(/主节点：国内测试节点/)).toBeVisible();
+  await page.getByRole('button',{name:'下一步'}).click();
+  await page.getByRole('button',{name:'提交测试'}).click();
+  await expect(page).toHaveURL(/\/tests\/created-qa-job/);
+  expect(submissions).toBe(1);
+});
+
+test('network discovery uses the configured primary and fixed port 7000',async ({page})=>{
+  let submitted:Record<string,unknown>|null=null;
+  page.on('request',(request)=>{if(request.url().endsWith('/api/probe/jobs') && request.method()==='POST')submitted=request.postDataJSON();});
+  await page.goto('/discovery');
+  await page.getByRole('button',{name:'开始扫描'}).click();
+  await page.getByLabel(/目标网段/).fill('192.0.2.0/24');
+  await page.getByRole('button',{name:'开始扫描'}).last().click();
+  await expect.poll(()=>submitted).not.toBeNull();
+  expect(submitted).toMatchObject({mode:'discover',port:7000});
+  expect(submitted).not.toHaveProperty('nodeIds');
+  await expect(page.getByLabel('frps 端口')).toHaveCount(0);
 });
 
 test('old group link only prefills the new test form',async ({page})=>{

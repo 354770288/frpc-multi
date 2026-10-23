@@ -31,7 +31,7 @@ import { ConfirmOverlay, Overlay } from '../components/Overlay';
 import { cn } from '../lib/utils';
 import { probeEndpointHost } from '../lib/probeEndpoint';
 import type {
-  TestNode, ProbeJobDetail, GroupColor, GroupInfo, LabelCount, ServerConn,
+  TestNode, TestNodeExecutionPolicy, ProbeJobDetail, GroupColor, GroupInfo, LabelCount, ServerConn,
   ProbeConnectivityHistory, ProbeDashboard, ProbeServer,
   ProbeSpeedHistory, ProbeTestConfig,
 } from '../lib/types';
@@ -96,17 +96,31 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
   const changeNodeId = (id: string) => { setNodeId(id); setSearchParams((current) => { const next=new URLSearchParams(current); next.set('nodeId',id); return next; }); };
   const sourceRef = useRef(nodeId); sourceRef.current = nodeId;
   const historyRequestRef = useRef(0);
+  const nodeRequestRef = useRef(0);
   const [nodes, setNodes] = useState<TestNode[]>([]);
   const [nodeError, setNodeError] = useState('');
-  const [selectedNodes, setSelectedNodes] = useState<string[]>([searchParams.get('nodeId') || 'console']);
+  const [executionPolicyLoading, setExecutionPolicyLoading] = useState(true);
+  const [executionPolicy, setExecutionPolicy] = useState<TestNodeExecutionPolicy | null>(null);
+  const [executionPolicyError, setExecutionPolicyError] = useState('');
   const [focusJobId, setFocusJobId] = useState('');
   const [jobRevision, setJobRevision] = useState(0);
   const [comparing, setComparing] = useState<{ ip: string; port: number } | null>(null);
   const loadNodes = useCallback(async () => {
-    try { setNodes((await probeApi.testNodes()).items); setNodeError(''); }
-    catch (err) { setNodeError(err instanceof Error ? err.message : '节点加载失败'); }
+    const request = ++nodeRequestRef.current;
+    setExecutionPolicyLoading(true);
+    const [nodeResult, policyResult] = await Promise.allSettled([probeApi.testNodes(), probeApi.executionPolicy()]);
+    if (request !== nodeRequestRef.current) return;
+    if (nodeResult.status === 'fulfilled') { setNodes(nodeResult.value.items); setNodeError(''); }
+    else setNodeError(nodeResult.reason instanceof Error ? nodeResult.reason.message : '节点加载失败');
+    if (policyResult.status === 'fulfilled') { setExecutionPolicy(policyResult.value); setExecutionPolicyError(''); }
+    else { setExecutionPolicy(null); setExecutionPolicyError(policyResult.reason instanceof Error ? policyResult.reason.message : '执行节点策略加载失败'); }
+    setExecutionPolicyLoading(false);
   }, []);
-  useEffect(() => { void loadNodes(); const timer = setInterval(() => { if (document.visibilityState === 'visible') void loadNodes(); }, 10000); return () => clearInterval(timer); }, [loadNodes]);
+  useEffect(() => {
+    void loadNodes();
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') void loadNodes(); }, 10000);
+    return () => { clearInterval(timer); nodeRequestRef.current++; };
+  }, [loadNodes]);
   const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [stats, setStats] = useState<ProbeDashboard | null>(null);
   const [dashboardError,setDashboardError] = useState('');
@@ -362,7 +376,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
 
       {nodeError && <p role="alert" className="mb-3 text-xs text-destructive">{nodeError}</p>}
       {dashboardError && <p role="alert" className="mb-3 text-sm text-destructive">{dashboardError}；统计不可用，请重试。</p>}
-      {section !== 'test' && <p className="mb-3 text-sm text-muted-foreground">结果来源：{nodes.find((node) => node.id === nodeId)?.name || nodeId}。切换来源只改变显示，测试执行节点在提交界面选择。</p>}
+      {section !== 'test' && <p className="mb-3 text-sm text-muted-foreground">结果来源：{nodes.find((node) => node.id === nodeId)?.name || nodeId}。切换来源只改变显示；新任务使用测试节点设置中的主节点策略。</p>}
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="sr-only">
           <TabsTrigger value="discover">网段发现</TabsTrigger>
@@ -857,7 +871,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
         />
       )}
       {scanOpen && (
-        <ScanDialog defaultPort={config?.frpsPort ?? 7000} nodes={nodes} nodeIds={selectedNodes} onNodes={setSelectedNodes} onClose={() => setScanOpen(false)} onStarted={(job) => { setScanOpen(false); jobStarted(job); }} />
+        <ScanDialog nodes={nodes} policy={executionPolicy} policyError={executionPolicyError} nodesError={nodeError} loading={executionPolicyLoading} onRetry={() => void loadNodes()} onClose={() => setScanOpen(false)} onStarted={(job) => { setScanOpen(false); jobStarted(job); }} />
       )}
       {importSelOpen && (
         <ImportSelectedDialog

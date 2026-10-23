@@ -510,7 +510,7 @@ export type TestNodeExecutionPolicy = {
   backupNodeIds: string[];
   suggestedPrimaryNodeId: string | null;
 };
-export type ProbeJobInput = { mode: ProbeMode; nodeIds: string[]; ips?: string[]; targetScope?: 'explicit' | 'all'; targets?: string | string[]; sourceUrl?: string; exclude?: string | string[]; port?: number; autoRoute?: boolean; autoFull?: boolean; concurrency?: number; timeout?: number };
+export type ProbeJobInput = { mode: ProbeMode; nodeIds?: string[]; ips?: string[]; targetScope?: 'explicit' | 'all'; targets?: string | string[]; sourceUrl?: string; exclude?: string | string[]; port?: number; autoRoute?: boolean; autoFull?: boolean; concurrency?: number; timeout?: number };
 export type ProbeTaskState = 'pending' | 'running' | 'cancelling' | 'done' | 'failed' | 'skipped' | 'stopped';
 export type ProbeTask = { taskId: string; attemptId: string | null; jobId: string; nodeId: string; stage: string; ip: string; port: number; state: ProbeTaskState; attempts: number; seq: number; progress: Record<string, unknown>; error: string; payload: Record<string, unknown>; createdAt: string; result: Record<string, unknown> | null };
 export type ProbeJob = { id: string; mode: ProbeMode; state: string; options: Record<string, unknown>; counts: Partial<Record<ProbeTaskState, number>>; nodeIds: string[]; taskTotal: number; stageCounts: { nodeId: string; stage: string; state: ProbeTaskState; count: number }[]; progress: { scanned: number; foundCount: number }; createdAt: string };
