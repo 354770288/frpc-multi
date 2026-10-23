@@ -240,11 +240,20 @@ class ServerBulkStore:
                 "AND NOT EXISTS(SELECT 1 FROM probe_server_bulk_jobs r WHERE r.retry_of=j.id AND r.state IN ('queued','running')) "
                 "ORDER BY j.updated_at LIMIT 100)", (cutoff,)
             )
+            c.execute(
+                "UPDATE probe_job_producers SET state='failed',failover_waiting=0,"
+                "error='producer retry retention expired',updated_at=? "
+                "WHERE state='stopped' AND updated_at<? AND EXISTS("
+                "SELECT 1 FROM probe_server_selections s WHERE s.id=probe_job_producers.selection_id "
+                "AND s.expires_at<=?)", (now_stamp, cutoff, now_stamp)
+            )
             candidate = c.execute(
                 "SELECT s.id FROM probe_server_selections s WHERE "
                 "(s.state='expired' OR (s.state='failed' AND (s.updated_at<? OR s.expires_at<=?))) "
                 "AND NOT EXISTS(SELECT 1 FROM probe_server_bulk_jobs j WHERE j.selection_id=s.id AND j.state IN ('queued','running')) "
-                "ORDER BY s.expires_at LIMIT 1", (cutoff, now_stamp)
+                "AND NOT EXISTS(SELECT 1 FROM probe_job_producers p WHERE p.selection_id=s.id "
+                "AND (p.state IN ('queued','running','waiting') OR (p.state='stopped' AND p.updated_at>=?))) "
+                "ORDER BY s.expires_at LIMIT 1", (cutoff, now_stamp, cutoff)
             ).fetchone()
             if candidate:
                 selection_id = candidate["id"]

@@ -23,7 +23,21 @@ At this backend-only slice boundary, the desktop had not yet consumed these APIs
 
 The desktop sends the current filter snapshot (including legacy labels) without paging/sort values or expanded IP lists. Explicit selections remain separate and are capped at 5,000 IDs. Existing group, legacy-label, category-tag, and delete actions submit durable jobs; the page shows snapshot/job progress, paged failures, and failed-only retries. Freeze is disabled until the visible search, applied query, list, and count are current. Snapshot tag actions are add-only because the current UI lacks a snapshot-scoped attached-tag preview. Quick-test actions continue to use only manually selected IPs.
 
-Uncovered: no E2E browser run for the new batch UI; no selection-backed probe-job creation or saved views; no full 100k mutation/concurrent-write benchmark or 1M capacity test; no production deployment.
+At the end of the desktop batch-integration slice, no E2E browser run had been performed; selection-backed probe-job creation and saved views were still pending; no full 100k mutation/concurrent-write benchmark, 1M capacity test, or production deployment had been performed.
+
+## Slice: selection-backed probe-job target producer
+
+- `./.venv/bin/python -m unittest tests.test_probe_selection_jobs tests.test_probe_jobs tests.test_probe_bulk tests.test_probe tests.test_database tests.test_lb tests.test_lb_selection` — coordinator fresh run: 253 tests passed.
+- `./.venv/bin/python -m py_compile app/probe/jobs.py app/probe/router.py app/probe/bulk.py app/control/database.py tests/test_probe_selection_jobs.py` — exit 0.
+- `git diff --check` — exit 0.
+- Spec compliance review: P2 node deletion while materialized tasks remained was fixed by protecting saved-policy nodes until the job is terminal; stop-after-materialization retry retention was fixed and re-reviewed with no remaining findings.
+- Code-quality review: no blocking findings.
+
+The `/api/probe/jobs` selection scope accepts a selection ID, mode, options, and idempotency key, not IP arrays. Creation atomically checks owner/readiness/expiry, primary policy, capabilities, and port 7000. A producer record stores its cursor, saved owner, generation, and progress. Claims create up to 250 tasks per transaction while limiting active backlog to 500. The job stays running until both target production and all generated tasks finish. Failover transfers the producer cursor and pending tasks using the job's policy snapshot; zero-task failover, partial sweeps, wait/resume, monotone cursor, stop/retry, owner deletion, and 100k bounded generation have regression coverage.
+
+Uncovered: the frontend has not yet created tests from saved selection snapshots; no end-to-end 100k task execution/concurrent write benchmark, 1M capacity test, browser E2E for the new selection flow, or production migration/deployment was performed.
+
+Complexity control: `jobs.py` is now 1,254 lines, crossing the strong 1,200-line pressure signal. Producer logic remains in the scheduler transaction owner to keep policy, task insertion, cursor movement, and lease/failover changes atomic. Treat this as `exceeded-and-governed`: the next maintainability slice should extract cohesive producer operations without adding a second transaction owner, after the desktop selection-test flow is integrated. This is a follow-up, not a claim that the complexity issue is fully closed.
 
 ## Slice: fixed target port
 

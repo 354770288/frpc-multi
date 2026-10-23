@@ -174,6 +174,34 @@ CREATE TABLE IF NOT EXISTS probe_jobs (
     execution_policy TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_probe_jobs_time ON probe_jobs(created_at DESC,id DESC);
+CREATE TABLE IF NOT EXISTS probe_job_producers (
+    job_id TEXT PRIMARY KEY NOT NULL REFERENCES probe_jobs(id) ON DELETE CASCADE,
+    selection_id TEXT NOT NULL, created_by TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL, request_fingerprint TEXT NOT NULL,
+    stage TEXT NOT NULL, target_total INTEGER NOT NULL,
+    materialized_count INTEGER NOT NULL DEFAULT 0,
+    cursor_server_id INTEGER NOT NULL DEFAULT 0,
+    max_server_id INTEGER NOT NULL DEFAULT 0,
+    current_node_id TEXT NOT NULL, owner_index INTEGER NOT NULL DEFAULT 0,
+    generation INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'queued', failover_waiting INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    UNIQUE(created_by,idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_probe_job_producers_owner_state
+    ON probe_job_producers(state,current_node_id,created_at,job_id);
+CREATE INDEX IF NOT EXISTS idx_probe_job_producers_selection
+    ON probe_job_producers(selection_id,state,updated_at);
+CREATE TABLE IF NOT EXISTS probe_job_producer_transfers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL,
+    from_node_id TEXT NOT NULL, to_node_id TEXT NOT NULL,
+    generation INTEGER NOT NULL, cursor_server_id INTEGER NOT NULL,
+    reason TEXT NOT NULL, transferred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_probe_job_producer_transfers_time
+    ON probe_job_producer_transfers(transferred_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_probe_job_producer_transfers_job
+    ON probe_job_producer_transfers(job_id,transferred_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS probe_tasks (
     id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES probe_jobs(id),
     node_id TEXT NOT NULL, stage TEXT NOT NULL, ip TEXT NOT NULL DEFAULT '',

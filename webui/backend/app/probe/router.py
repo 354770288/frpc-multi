@@ -1215,7 +1215,9 @@ class JobCreate(BaseModel):
     mode: Literal['discover','route','connectivity','speed','full']
     nodeIds: list[str] | None = None
     ips: list[str] | None = None
-    targetScope: Literal['explicit','all'] | None = None
+    targetScope: Literal['explicit','all','selection'] | None = None
+    selectionId: str | None = None
+    idempotencyKey: str | None = None
     targets: str | list[str] | None = None
     sourceUrl: str = ""
     exclude: str | list[str] | None = None
@@ -1290,9 +1292,31 @@ def nodes_delete(node_id: str):
 
 
 @router.post('/jobs')
-def jobs_create(payload: JobCreate):
+def jobs_create(payload: JobCreate, user: str = Depends(require_auth)):
     if payload.port is not None and payload.port != PROBE_TEST_PORT:
         raise HTTPException(400, detail=f'探测任务端口固定为 {PROBE_TEST_PORT}')
+    if payload.targetScope == 'selection':
+        if not isinstance(user, str) or not user:
+            raise HTTPException(401, '未登录')
+        if not payload.selectionId or not payload.idempotencyKey:
+            raise HTTPException(400, 'selectionId 与 idempotencyKey 必填')
+        if payload.ips or payload.targets or payload.sourceUrl.strip() or payload.exclude:
+            raise HTTPException(400, '选择快照任务不能同时指定端点')
+        try:
+            return job_store().create_primary_selection_job(
+                user, payload.selectionId, payload.mode, payload.idempotencyKey,
+                requested_node_ids=payload.nodeIds, options=serial_options(_effective_options()),
+                auto_route=payload.autoRoute, auto_full=payload.autoFull,
+                concurrency=payload.concurrency, timeout=payload.timeout,
+                port=PROBE_TEST_PORT,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, '选择快照不存在') from exc
+        except ValueError as exc:
+            status_code = 409 if 'idempotencyKey' in str(exc) else 400
+            raise HTTPException(status_code, str(exc)) from exc
+    if payload.selectionId is not None or payload.idempotencyKey is not None:
+        raise HTTPException(400, 'selectionId 与 idempotencyKey 仅适用于 selection 目标')
     if payload.mode != 'discover' and payload.targetScope == 'explicit' and not payload.ips:
         raise HTTPException(400, '明确目标不能为空')
     if payload.mode != 'discover' and payload.targetScope == 'all' and (payload.ips or payload.targets):

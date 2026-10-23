@@ -6,6 +6,7 @@ its fencing token; target failures are results, only infrastructure failures ret
 from __future__ import annotations
 
 import hmac
+import hashlib
 import ipaddress
 import itertools
 import json
@@ -13,7 +14,7 @@ import secrets
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..control.database import connect_database, initialize_database
@@ -23,6 +24,9 @@ from .discover import DiscoverParams, DiscoverRunner, parse_targets
 from .store import validate_probe_addr, split_probe_endpoint as split_endpoint
 
 LEASE_SECONDS = 120
+SELECTION_PRODUCER_CHUNK_SIZE = 250
+SELECTION_PRODUCER_BACKLOG_LIMIT = 500
+SELECTION_PRODUCER_RETRY_DAYS = 7
 CAPABILITIES = ['discover', 'route', 'connectivity', 'speed']
 GENERATION_PROTOCOL_FEATURE = 'task-generation-v1'
 TERMINAL = {'done', 'failed', 'skipped', 'stopped'}
@@ -295,6 +299,79 @@ class ProbeJobStore:
         requested_node_ids = self._normalize_requested_node_ids(requested_node_ids)
         return self.create_job(mode, None, _primary_requested_node_ids=requested_node_ids, **kwargs)
 
+    def create_primary_selection_job(self, owner, selection_id, mode, idempotency_key, *,
+                                    requested_node_ids=None, options=None, auto_route=False,
+                                    auto_full=False, concurrency=6, timeout=1.5,
+                                    port=PROBE_TEST_PORT):
+        """Create a normal probe job whose targets are streamed from a frozen selection."""
+        if mode not in {'route', 'connectivity', 'speed', 'full'}:
+            raise ValueError('选择快照任务模式必须是 route/connectivity/speed/full')
+        if type(port) is not int or port != PROBE_TEST_PORT:
+            raise ValueError(f'探测任务端口固定为 {PROBE_TEST_PORT}')
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 200:
+            raise ValueError('idempotencyKey 无效')
+        requested_node_ids = self._normalize_requested_node_ids(requested_node_ids)
+        if not 1 <= int(concurrency) <= 16:
+            raise ValueError('并发须为1-16')
+        opts = dict(options or {})
+        opts.update(autoRoute=auto_route, autoFull=auto_full, concurrency=int(concurrency), timeout=float(timeout))
+        request = {
+            'selectionId': str(selection_id), 'mode': mode,
+            'nodeIds': requested_node_ids, 'port': PROBE_TEST_PORT,
+            'autoRoute': bool(auto_route), 'autoFull': bool(auto_full),
+            'concurrency': int(concurrency), 'timeout': float(timeout),
+        }
+        fingerprint = hashlib.sha256(json.dumps(
+            request, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+        ).encode('utf-8')).hexdigest()
+        job_id = None
+        with self._db() as c:
+            existing = c.execute(
+                'SELECT p.job_id,p.request_fingerprint FROM probe_job_producers p '
+                'WHERE p.created_by=? AND p.idempotency_key=?', (owner, idempotency_key),
+            ).fetchone()
+            if existing:
+                if existing['request_fingerprint'] != fingerprint:
+                    raise ValueError('idempotencyKey 已用于不同的请求')
+                job_id = existing['job_id']
+            else:
+                selection = c.execute(
+                    'SELECT state,expires_at,count,max_server_id FROM probe_server_selections '
+                    'WHERE id=? AND owner=?', (selection_id, owner),
+                ).fetchone()
+                if selection is None:
+                    raise KeyError(selection_id)
+                if selection['state'] != 'ready' or selection['expires_at'] <= now_iso():
+                    raise ValueError('选择快照尚未就绪或已过期')
+                if int(selection['count']) <= 0:
+                    raise ValueError('选择快照没有可测试的服务器')
+                primary_node_id = self._primary_assignment(c, requested_node_ids)
+                execution_policy = self._stored_execution_policy(c)
+                node = c.execute('SELECT * FROM probe_nodes WHERE id=?', (primary_node_id,)).fetchone()
+                if node is None:
+                    raise ValueError('主用测试节点不存在')
+                capabilities = json.loads(node['capabilities'])
+                required = {'route', 'connectivity', 'speed'} if mode == 'full' else {mode}
+                if not required.issubset(set(capabilities)):
+                    raise ValueError('主用测试节点能力不匹配: ' + node['name'])
+                job_id = _id()
+                stage = 'route' if mode == 'full' else mode
+                stamp = now_iso()
+                c.execute(
+                    'INSERT INTO probe_jobs(id,mode,options,created_at,primary_managed,execution_policy) '
+                    'VALUES(?,?,?,?,1,?)', (job_id, mode, _json(opts), stamp, _json(execution_policy)),
+                )
+                c.execute(
+                    'INSERT INTO probe_job_producers(job_id,selection_id,created_by,idempotency_key,request_fingerprint,'
+                    'stage,target_total,materialized_count,cursor_server_id,max_server_id,current_node_id,owner_index,'
+                    'generation,state,failover_waiting,error,created_at,updated_at) '
+                    "VALUES(?,?,?,?,?,?,?,0,0,?,?,0,0,'queued',0,'',?,?)",
+                    (job_id, selection_id, owner, idempotency_key, fingerprint, stage,
+                     int(selection['count']), int(selection['max_server_id']), primary_node_id, stamp, stamp),
+                )
+                self._refresh(c, [job_id])
+        return self.get_job(job_id)
+
     def get_node(self, node_id):
         with self._db() as c:
             row = c.execute('SELECT * FROM probe_nodes WHERE id=?', (node_id,)).fetchone()
@@ -318,6 +395,21 @@ class ProbeJobStore:
             policy = self._stored_execution_policy(c)
             if policy and node_id in [policy['primaryNodeId'], *policy['backupNodeIds']]:
                 raise ValueError('节点仍被主备测试策略引用，请先从策略中移除')
+            retry_cutoff = (datetime.now(timezone.utc) - timedelta(days=SELECTION_PRODUCER_RETRY_DAYS)).isoformat()
+            producers = c.execute(
+                "SELECT p.current_node_id,p.state,p.updated_at,j.execution_policy,j.state AS job_state "
+                "FROM probe_job_producers p JOIN probe_jobs j ON j.id=p.job_id "
+                "WHERE j.state='running' OR p.state IN ('queued','running','waiting') "
+                "OR (p.state='stopped' AND p.updated_at>=?)", (retry_cutoff,),
+            )
+            for producer in producers:
+                try:
+                    saved = json.loads(producer['execution_policy'])
+                    owners = [saved['primaryNodeId'], *saved['backupNodeIds']]
+                except (KeyError, TypeError, ValueError):
+                    owners = [producer['current_node_id']]
+                if node_id == producer['current_node_id'] or node_id in owners:
+                    raise ValueError('节点仍被未完成的选择快照任务引用，任务结束或重试窗口过期后再删除')
             if not c.execute('DELETE FROM probe_nodes WHERE id=?',(node_id,)).rowcount:
                 raise KeyError(node_id)
             c.execute("UPDATE probe_tasks SET state=CASE WHEN state='running' THEN 'cancelling' ELSE 'stopped' END,error='stopped' WHERE node_id=? AND state IN ('pending','running')",(node_id,))
@@ -390,6 +482,45 @@ class ProbeJobStore:
         c.execute('INSERT INTO probe_task_transfers(task_id,job_id,from_node_id,to_node_id,generation,reason,transferred_at) VALUES(?,?,?,?,?,?,?)',
                   (task['id'], task['job_id'], task['node_id'], to_node_id, generation, reason, stamp))
         return generation
+
+    def _sweep_selection_producer(self, c, job_id, owner_id, owner_index, *, owner_online,
+                                  owner_has_generation, owner_is_backup, now, policy_json):
+        producer = c.execute(
+            "SELECT * FROM probe_job_producers WHERE job_id=? AND current_node_id=? "
+            "AND state IN ('queued','running','waiting')", (job_id, owner_id),
+        ).fetchone()
+        if producer is None:
+            return
+        requires_generation = producer['generation'] > 0 or owner_is_backup
+        usable = owner_online and (owner_has_generation or not requires_generation)
+        if usable:
+            if producer['failover_waiting']:
+                next_state = 'queued' if producer['materialized_count'] == 0 else 'running'
+                c.execute("UPDATE probe_job_producers SET state=?,failover_waiting=0,error='',updated_at=? WHERE job_id=?",
+                          (next_state, now_iso(), job_id))
+            return
+        backup = self._next_backup(c, owner_id, now, policy_json)
+        if backup is None:
+            if not producer['failover_waiting']:
+                c.execute("UPDATE probe_job_producers SET state='waiting',failover_waiting=1,"
+                          "error='waiting for an online backup',updated_at=? WHERE job_id=?",
+                          (now_iso(), job_id))
+            return
+        policy = json.loads(policy_json)
+        owner_chain = [policy['primaryNodeId'], *policy['backupNodeIds']]
+        generation = int(producer['generation']) + 1
+        reason = 'pending_owner_offline' if not owner_online else 'owner_protocol_feature_lost'
+        stamp = now_iso()
+        c.execute(
+            "UPDATE probe_job_producers SET current_node_id=?,owner_index=?,generation=?,state='running',"
+            "failover_waiting=0,error='',updated_at=? WHERE job_id=?",
+            (backup, owner_chain.index(backup), generation, stamp, job_id),
+        )
+        c.execute(
+            "INSERT INTO probe_job_producer_transfers(job_id,from_node_id,to_node_id,generation,cursor_server_id,reason,transferred_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (job_id, owner_id, backup, generation, producer['cursor_server_id'], reason, stamp),
+        )
 
     @staticmethod
     def _pending_failover_batch(c, job_id, owner_id, limit, *, generation_only=False, generation_zero=False):
@@ -482,6 +613,55 @@ class ProbeJobStore:
         if parts:
             self._task(c,job,node,'discover','',port,{'intervals':intervals,'cursor':cursor,'chunk':parts,'size':4096-remaining},generation=generation)
 
+    def _materialize_selection_chunk(self, c, node_id, capabilities):
+        """Append one bounded target chunk for the node that currently owns it."""
+        producers = c.execute(
+            "SELECT * FROM probe_job_producers p JOIN probe_jobs j ON j.id=p.job_id "
+            "WHERE p.current_node_id=? AND p.state IN ('queued','running') AND j.state='running' "
+            "ORDER BY p.created_at,p.job_id LIMIT 20", (node_id,),
+        ).fetchall()
+        for producer in producers:
+            if producer['stage'] not in capabilities:
+                continue
+            backlog = int(c.execute(
+                "SELECT COUNT(*) FROM probe_tasks WHERE job_id=? AND state IN ('pending','running','cancelling')",
+                (producer['job_id'],),
+            ).fetchone()[0])
+            room = min(SELECTION_PRODUCER_CHUNK_SIZE, SELECTION_PRODUCER_BACKLOG_LIMIT - backlog)
+            if room <= 0:
+                continue
+            targets = c.execute(
+                "SELECT server_id,ip FROM probe_server_selection_members "
+                "WHERE selection_id=? AND server_id>? AND server_id<=? "
+                "ORDER BY server_id LIMIT ?",
+                (producer['selection_id'], producer['cursor_server_id'], producer['max_server_id'], room),
+            ).fetchall()
+            if not targets:
+                c.execute("UPDATE probe_job_producers SET state='done',failover_waiting=0,error='',updated_at=? WHERE job_id=?",
+                          (now_iso(), producer['job_id']))
+                self._refresh(c, [producer['job_id']])
+                continue
+            full = producer['mode'] == 'full'
+            for target in targets:
+                host, port = split_endpoint(validate_probe_addr(target['ip']), PROBE_TEST_PORT)
+                if port != PROBE_TEST_PORT:
+                    raise ValueError(f'选择快照目标端口必须固定为 {PROBE_TEST_PORT}')
+                self._task(c, producer['job_id'], node_id, producer['stage'], host, PROBE_TEST_PORT,
+                           {'full': True} if full else {}, generation=producer['generation'])
+            cursor = int(targets[-1]['server_id'])
+            more = c.execute(
+                "SELECT 1 FROM probe_server_selection_members WHERE selection_id=? AND server_id>? AND server_id<=? LIMIT 1",
+                (producer['selection_id'], cursor, producer['max_server_id']),
+            ).fetchone() is not None
+            c.execute(
+                "UPDATE probe_job_producers SET cursor_server_id=?,materialized_count=materialized_count+?,"
+                "state=?,failover_waiting=0,error='',updated_at=? WHERE job_id=?",
+                (cursor, len(targets), 'running' if more else 'done', now_iso(), producer['job_id']),
+            )
+            self._refresh(c, [producer['job_id']])
+            return len(targets)
+        return 0
+
     def _expire(self,c):
         now = time.time()
         refresh_job_ids = set()
@@ -557,6 +737,14 @@ class ProbeJobStore:
                 generation_only = missing_generation_protocol and not owner_is_backup
                 backup_protocol_lost = missing_generation_protocol and owner_is_backup
 
+                self._sweep_selection_producer(
+                    c, job['id'], owner_id, owner_index,
+                    owner_online=owner_online,
+                    owner_has_generation=GENERATION_PROTOCOL_FEATURE in owner_features,
+                    owner_is_backup=owner_is_backup, now=now,
+                    policy_json=job['execution_policy'],
+                )
+
                 if owner_online and not generation_only and not backup_protocol_lost:
                     # Clear stale wait messages in a bounded statement when a
                     # heartbeat restores the current owner.
@@ -616,7 +804,12 @@ class ProbeJobStore:
             self._refresh(c, refresh_job_ids)
 
     def _refresh(self,c,job_ids=None):
-        sql = "UPDATE probe_jobs SET state=CASE WHEN EXISTS(SELECT 1 FROM probe_tasks t WHERE t.job_id=probe_jobs.id AND t.state IN ('pending','running','cancelling')) THEN 'running' WHEN EXISTS(SELECT 1 FROM probe_tasks t WHERE t.job_id=probe_jobs.id AND t.state='failed') THEN 'failed' ELSE 'done' END WHERE state!='stopped'"
+        sql = "UPDATE probe_jobs SET state=CASE " \
+              "WHEN EXISTS(SELECT 1 FROM probe_tasks t WHERE t.job_id=probe_jobs.id AND t.state IN ('pending','running','cancelling')) " \
+              "OR EXISTS(SELECT 1 FROM probe_job_producers p WHERE p.job_id=probe_jobs.id AND p.state IN ('queued','running','waiting')) THEN 'running' " \
+              "WHEN EXISTS(SELECT 1 FROM probe_tasks t WHERE t.job_id=probe_jobs.id AND t.state='failed') " \
+              "OR EXISTS(SELECT 1 FROM probe_job_producers p WHERE p.job_id=probe_jobs.id AND p.state='failed') THEN 'failed' " \
+              "ELSE 'done' END WHERE state!='stopped'"
         if job_ids is None:
             c.execute(sql)
         elif job_ids:
@@ -634,6 +827,7 @@ class ProbeJobStore:
             except (TypeError, ValueError):
                 protocol_features = set()
             caps=set(capabilities or json.loads(node['capabilities'])) & set(json.loads(node['capabilities']))
+            self._materialize_selection_chunk(c, node_id, caps)
             active=c.execute("SELECT * FROM probe_tasks WHERE state IN ('running','cancelling')").fetchall()
             local=[t for t in active if t['node_id']==node_id]
             for t in c.execute("SELECT t.*,j.options,j.mode,j.primary_managed,j.execution_policy FROM probe_tasks t JOIN probe_jobs j ON j.id=t.job_id WHERE t.node_id=? AND t.state='pending' AND j.state='running' ORDER BY t.created_at,t.rowid",(node_id,)):
@@ -805,6 +999,7 @@ class ProbeJobStore:
         if action not in {'stop','skip','retry'}:raise ValueError('unknown action')
         with self._db() as c:
             if not c.execute('SELECT 1 FROM probe_jobs WHERE id=?',(job_id,)).fetchone():raise KeyError(job_id)
+            producer = c.execute('SELECT * FROM probe_job_producers WHERE job_id=?', (job_id,)).fetchone()
             rows=c.execute('SELECT * FROM probe_tasks WHERE job_id=?',(job_id,)); changed=0
             for t in rows:
                 if task_ids is not None and t['id'] not in task_ids:continue
@@ -816,8 +1011,33 @@ class ProbeJobStore:
                         gate=c.execute("SELECT state FROM probe_tasks WHERE job_id=? AND node_id=? AND ip=? AND port=? AND stage='connectivity'",(job_id,t['node_id'],t['ip'],t['port'])).fetchone()
                         if not gate or gate['state']!='done':continue
                     c.execute("UPDATE probe_tasks SET state='pending',attempt_id=NULL,attempts=0,lease_until=0,error='',failover_waiting=0,seq=0 WHERE id=?",(t['id'],));changed+=1
+            producer_can_stop = producer and producer['state'] in {'queued','running','waiting'}
+            completed_producer_stop = producer and action == 'stop' and producer['state'] == 'done'
+            if task_ids is None and action in {'stop', 'skip'} and (producer_can_stop or completed_producer_stop):
+                c.execute("UPDATE probe_job_producers SET state='stopped',failover_waiting=0,error=?,updated_at=? WHERE job_id=?",
+                          ('stopped' if action == 'stop' else 'skipped', now_iso(), job_id))
+                changed += 1
             if action=='stop' and task_ids is None:c.execute("UPDATE probe_jobs SET state='stopped' WHERE id=?",(job_id,))
-            if action=='retry':c.execute("UPDATE probe_jobs SET state='running' WHERE id=?",(job_id,))
+            if action=='retry':
+                if (task_ids is None and producer and producer['state'] == 'failed'
+                        and producer['error'] == 'producer retry retention expired'):
+                    raise ValueError('选择快照任务的重试保留期已过')
+                if task_ids is None and producer and producer['state'] == 'stopped':
+                    cutoff = (datetime.now(timezone.utc) - timedelta(days=SELECTION_PRODUCER_RETRY_DAYS)).isoformat()
+                    if producer['updated_at'] < cutoff or producer['error'] == 'producer retry retention expired':
+                        raise ValueError('选择快照任务的重试保留期已过')
+                    if producer['current_node_id'] not in {
+                        row['id'] for row in c.execute('SELECT id FROM probe_nodes')
+                    }:
+                        raise ValueError('当前任务节点已删除，无法恢复未物化目标')
+                    remaining = c.execute(
+                        "SELECT 1 FROM probe_server_selection_members WHERE selection_id=? AND server_id>? AND server_id<=? LIMIT 1",
+                        (producer['selection_id'], producer['cursor_server_id'], producer['max_server_id']),
+                    ).fetchone()
+                    next_state = 'running' if remaining else 'done'
+                    c.execute("UPDATE probe_job_producers SET state=?,failover_waiting=0,error='',updated_at=? WHERE job_id=?",
+                              (next_state, now_iso(), job_id))
+                c.execute("UPDATE probe_jobs SET state='running' WHERE id=?",(job_id,))
             self._refresh(c)
             return {'ok':True,'changed':changed}
 
@@ -825,6 +1045,18 @@ class ProbeJobStore:
         d=dict(row);d.pop('execution_policy',None);d['options']=json.loads(d['options']);d['createdAt']=d.pop('created_at')
         d['counts']={r['state']:r['n'] for r in c.execute('SELECT state,COUNT(*) n FROM probe_tasks WHERE job_id=? GROUP BY state',(d['id'],))}
         d['nodeIds']=[r[0] for r in c.execute('SELECT DISTINCT node_id FROM probe_tasks WHERE job_id=?',(d['id'],))]
+        producer = c.execute("SELECT * FROM probe_job_producers WHERE job_id=?", (d['id'],)).fetchone()
+        if producer:
+            if producer['current_node_id'] not in d['nodeIds']:
+                d['nodeIds'].append(producer['current_node_id'])
+            d['targetTotal'] = producer['target_total']
+            d['targetMaterialized'] = producer['materialized_count']
+            d['targetRemaining'] = max(0, producer['target_total'] - producer['materialized_count'])
+            d['targetProducer'] = {
+                'state': producer['state'], 'nodeId': producer['current_node_id'],
+                'generation': producer['generation'], 'failoverWaiting': bool(producer['failover_waiting']),
+                'error': producer['error'],
+            }
         d['stageCounts']=[{'nodeId':r['node_id'],'stage':r['stage'],'state':r['state'],'count':r['n']}
                           for r in c.execute('SELECT node_id,stage,state,COUNT(*) n FROM probe_tasks WHERE job_id=? GROUP BY node_id,stage,state ORDER BY node_id,stage,state',(d['id'],))]
         d['taskTotal']=sum(d['counts'].values())
@@ -835,6 +1067,17 @@ class ProbeJobStore:
                 "SELECT COUNT(*) FROM probe_tasks WHERE job_id=? AND state='pending' AND (failover_waiting=1 OR error='waiting for an online backup')",
                 (d['id'],),
             ).fetchone()[0]
+            if producer and producer['failover_waiting']:
+                d['failoverWaitingCount'] += 1
+            d['producerTransfers'] = [
+                {'fromNodeId': transfer['from_node_id'], 'toNodeId': transfer['to_node_id'],
+                 'generation': transfer['generation'], 'cursorServerId': transfer['cursor_server_id'],
+                 'reason': transfer['reason'], 'transferredAt': transfer['transferred_at']}
+                for transfer in c.execute(
+                    "SELECT * FROM probe_job_producer_transfers WHERE job_id=? ORDER BY id DESC LIMIT 100",
+                    (d['id'],),
+                )
+            ]
             d['page']=page;d['pageSize']=page_size
             filters=['job_id=?']; args=[d['id']]
             for column,value in (('node_id',node_id),('stage',stage),('state',state)):
@@ -1005,5 +1248,7 @@ class ProbeJobStore:
         with self._db() as c:
             pending=c.execute("UPDATE probe_tasks SET state='skipped',error='skipped' WHERE stage=? AND state='pending'",(stage,)).rowcount
             running=c.execute("UPDATE probe_tasks SET state='cancelling',error='skipped' WHERE stage=? AND state='running'",(stage,)).rowcount
+            producers=c.execute("UPDATE probe_job_producers SET state='stopped',failover_waiting=0,error='skipped',updated_at=? "
+                               "WHERE stage=? AND state IN ('queued','running','waiting')",(now_iso(),stage)).rowcount
             self._refresh(c)
-            return pending+running
+            return pending+running+producers
