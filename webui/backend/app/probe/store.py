@@ -15,7 +15,7 @@ import hashlib
 import hmac
 import json
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable, Literal, NamedTuple, Sequence, TypeVar
 
@@ -1812,30 +1812,64 @@ class ProbeStore:
             return {"items": items, "nextCursor": next_cursor, "hasMore": has_more}
         return self._with_connection(read)
 
-    def server_facets(self) -> dict:
-        """服务器库标签云 / 分组筛选数据源（仅 probe_servers 自身）。"""
+    def server_facets(self, query: ServerPageQuery | None = None) -> dict:
+        """Return group counts contextualized without group filters and tag counts
+        contextualized without tag filters. The no-argument shape remains global.
+        """
+        query = query or ServerPageQuery()
+        group_query = replace(query, group=None, group_ids=())
+        tag_query = replace(query, label=None, tag_id=None, include_tag_ids=(),
+                            exclude_tag_ids=(), tag_mode="any")
 
         def read(connection):
-            labels = connection.execute(
-                "SELECT t.name AS label, COUNT(DISTINCT st.server_id) AS count "
-                "FROM probe_server_tags st JOIN probe_tags t ON t.id = st.tag_id "
-                "GROUP BY t.name ORDER BY count DESC, t.name"
-            ).fetchall()
-            tag_items = connection.execute(
-                "SELECT t.id AS tagId, c.id AS categoryId, c.name AS category, "
-                "t.name AS name, COUNT(DISTINCT st.server_id) AS count "
-                "FROM probe_tags t JOIN probe_tag_categories c ON c.id = t.category_id "
-                "LEFT JOIN probe_server_tags st ON st.tag_id = t.id "
-                "GROUP BY t.id, c.id, c.name, t.name HAVING COUNT(st.server_id) > 0 "
-                "ORDER BY c.name, t.name"
-            ).fetchall()
+            connection.create_function(
+                "probe_endpoint_host", 1,
+                lambda value: split_probe_endpoint(value, PROBE_TEST_PORT)[0],
+            )
+            connection.create_function(
+                "probe_endpoint_port", 1,
+                lambda value: split_probe_endpoint(value, PROBE_TEST_PORT)[1],
+            )
+
+            group_where, group_params = self._server_where(group_query)
+            group_source = self._server_count_from_sql(group_query)
+            group_suffix = (" AND " if group_where else " WHERE ") + "s.server_group != ''"
             groups = connection.execute(
-                "SELECT server_group, COUNT(*) AS count FROM probe_servers "
-                "WHERE server_group != '' GROUP BY server_group ORDER BY server_group"
+                "SELECT s.server_group, COUNT(*) AS count " + group_source + group_where + group_suffix +
+                " GROUP BY s.server_group ORDER BY s.server_group",
+                group_params,
             ).fetchall()
+
+            tag_where, tag_params = self._server_where(tag_query)
+            tag_source = self._server_count_from_sql(tag_query)
+            # One aggregate statement yields both stable tag/category counts and
+            # the legacy name projection, with the filtered server set kept in SQL.
+            tag_rows = connection.execute(
+                "WITH facet_servers AS (SELECT s.id " + tag_source + tag_where + ") "
+                "SELECT 'tag' AS facet,t.id AS tag_id,c.id AS category_id,c.name AS category,"
+                "t.name AS name,COUNT(DISTINCT fs.id) AS count "
+                "FROM facet_servers fs JOIN probe_server_tags st ON st.server_id=fs.id "
+                "JOIN probe_tags t ON t.id=st.tag_id "
+                "JOIN probe_tag_categories c ON c.id=t.category_id "
+                "GROUP BY t.id,c.id,c.name,t.name "
+                "UNION ALL "
+                "SELECT 'label' AS facet,NULL AS tag_id,NULL AS category_id,NULL AS category,"
+                "t.name AS name,COUNT(DISTINCT fs.id) AS count "
+                "FROM facet_servers fs JOIN probe_server_tags st ON st.server_id=fs.id "
+                "JOIN probe_tags t ON t.id=st.tag_id GROUP BY t.name "
+                "ORDER BY facet,category,name",
+                tag_params,
+            ).fetchall()
+            labels = [{"label": row["name"], "count": row["count"]}
+                      for row in tag_rows if row["facet"] == "label"]
+            labels.sort(key=lambda row: (-row["count"], row["label"]))
+            tag_items = [{"tagId": row["tag_id"], "categoryId": row["category_id"],
+                          "category": row["category"], "name": row["name"],
+                          "count": row["count"]}
+                         for row in tag_rows if row["facet"] == "tag"]
             return {
-                "labels": [{"label": row["label"], "count": row["count"]} for row in labels],
-                "tagItems": [dict(row) for row in tag_items],
+                "labels": labels,
+                "tagItems": tag_items,
                 "groups": [{"group": row["server_group"], "count": row["count"]} for row in groups],
             }
 

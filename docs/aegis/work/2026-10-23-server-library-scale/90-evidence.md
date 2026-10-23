@@ -52,6 +52,18 @@ The Server Library snapshot now links directly to TestCreatePage. Group/all scop
 
 Uncovered: E2E for asynchronous batch update/delete UI progress and failure retry; exactly-5,000 boundary is accepted by implementation but only 5,001 rejection has browser coverage; no full 100k task execution benchmark, 1M capacity test, or production deployment.
 
+## Slice: contextual server facet counts
+
+- `./.venv/bin/python -m unittest tests.test_probe_contextual_facets tests.test_probe_selection_jobs tests.test_probe_jobs tests.test_probe_bulk tests.test_probe tests.test_database tests.test_lb tests.test_lb_selection` — coordinator fresh run: 257 tests passed.
+- `./.venv/bin/python -m py_compile app/probe/store.py app/probe/router.py tests/test_probe_contextual_facets.py` — exit 0.
+- `git diff --check` — exit 0.
+- Spec compliance review: counts exclude only their own dimension, use full service-side matching sets, preserve stable IDs and no-argument response compatibility.
+- Code-quality review: no actionable findings.
+
+The facets endpoint now accepts q, legacy label, group, group IDs, tag ID, include/exclude IDs, any/all tag mode, and connectivity state. Group counts omit group constraints but retain all other filters; tag/category and legacy label counts omit tag constraints but retain search, grouping, and connectivity constraints. The 100k SQL aggregate test confirms one statement per facet dimension, indexed lookup of `probe_current_results` on `(server_ip, kind, port)`, and no read of history tables.
+
+Uncovered: the frontend has not yet exposed multi-group/include-any/include-all/exclude controls; indexed measurement sort modes and saved views remain planned; the query-plan assertion was checked on a synthetic 100k fixture but no latency SLA or concurrent-write result is claimed; no production deployment.
+
 ## Slice: fixed target port
 
 - `./.venv/bin/python -m unittest tests.test_probe_jobs` — exit 0; 35 tests passed.

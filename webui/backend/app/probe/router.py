@@ -506,8 +506,24 @@ def count_servers(
 
 
 @router.get("/servers/facets")
-def server_facets(nodeId: str = "console"):
-    return source_store(nodeId).server_facets()
+def server_facets(
+    q: str = "", group: str | None = None, groupIds: str = "", label: str | None = None,
+    tagId: str | None = None, includeTagIds: str = "", excludeTagIds: str = "",
+    tagMode: Literal["any", "all"] = "any",
+    conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
+    nodeId: str = "console",
+):
+    try:
+        query = ServerPageQuery(
+            q=q, group=group, label=label, tag_id=tagId,
+            group_ids=tuple(value for value in groupIds.split(",") if value.strip()),
+            include_tag_ids=tuple(value for value in includeTagIds.split(",") if value.strip()),
+            exclude_tag_ids=tuple(value for value in excludeTagIds.split(",") if value.strip()),
+            tag_mode=tagMode, conn=conn,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return source_store(nodeId).server_facets(query)
 
 
 @router.get("/servers/groups")
