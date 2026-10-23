@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import sqlite3
 import threading
+import uuid
 from pathlib import Path
 
 
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS probe_servers (
     ip_sort INTEGER,
     label TEXT NOT NULL DEFAULT '',
     server_group TEXT NOT NULL DEFAULT '',
+    group_id TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -82,6 +84,7 @@ CREATE TABLE IF NOT EXISTS probe_settings (
 );
 
 CREATE TABLE IF NOT EXISTS probe_groups (
+    id TEXT NOT NULL UNIQUE,
     name TEXT PRIMARY KEY,
     color TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
@@ -94,6 +97,7 @@ CREATE TABLE IF NOT EXISTS probe_discover_results (
     port INTEGER NOT NULL,
     latency_ms REAL NOT NULL DEFAULT 0,
     server_group TEXT NOT NULL DEFAULT '',
+    group_id TEXT,
     label TEXT NOT NULL DEFAULT '',
     discovered_at TEXT NOT NULL,
     UNIQUE (ip, port)
@@ -168,6 +172,7 @@ CREATE TABLE IF NOT EXISTS lb_domains (
     zone_id TEXT NOT NULL,
     zone_name TEXT NOT NULL,
     group_name TEXT NOT NULL,
+    group_id TEXT,
     ttl INTEGER NOT NULL DEFAULT 60,
     sync_mode TEXT NOT NULL DEFAULT 'manual',
     interval_seconds INTEGER NOT NULL DEFAULT 300,
@@ -263,6 +268,67 @@ def _migrate_probe_groups(connection: sqlite3.Connection) -> None:
     columns = _column_names(connection, "probe_groups")
     if columns and "color" not in columns:
         connection.execute("ALTER TABLE probe_groups ADD COLUMN color TEXT NOT NULL DEFAULT ''")
+    if columns and "id" not in columns:
+        connection.execute("ALTER TABLE probe_groups ADD COLUMN id TEXT")
+
+
+def _migrate_stable_group_ids(connection: sqlite3.Connection) -> None:
+    """Backfill canonical groups and their nullable references from legacy names."""
+    marker = connection.execute(
+        "SELECT value FROM probe_settings WHERE key = 'probe_stable_group_ids_migrated'"
+    ).fetchone()
+    if marker is not None:
+        return
+
+    for table in ("probe_servers", "probe_discover_results", "lb_domains"):
+        columns = _column_names(connection, table)
+        if columns and "group_id" not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN group_id TEXT")
+
+    # Existing group table had name as its primary key. Add IDs once and enforce
+    # uniqueness after filling historical rows.
+    rows = connection.execute("SELECT name, id FROM probe_groups ORDER BY name")
+    for row in rows:
+        if not row["id"]:
+            connection.execute("UPDATE probe_groups SET id = ? WHERE name = ?",
+                               (str(uuid.uuid4()), row["name"]))
+
+    # Include every legacy name in each consumer; iterate the small distinct-name
+    # set instead of materializing potentially large asset/discovery tables.
+    names = connection.execute(
+        "SELECT server_group AS name FROM probe_servers WHERE trim(server_group) != '' "
+        "UNION SELECT server_group AS name FROM probe_discover_results WHERE trim(server_group) != '' "
+        "UNION SELECT group_name AS name FROM lb_domains WHERE trim(group_name) != '' "
+        "ORDER BY name"
+    )
+    for row in names:
+        connection.execute(
+            "INSERT OR IGNORE INTO probe_groups (id, name, color, created_at) VALUES (?, ?, '', ?)",
+            (str(uuid.uuid4()), row["name"], "1970-01-01T00:00:00+00:00"),
+        )
+
+    connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_probe_groups_id ON probe_groups(id)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_probe_servers_group_id ON probe_servers(group_id)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_probe_discover_group_id ON probe_discover_results(group_id)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_lb_domains_group_id ON lb_domains(group_id)")
+    connection.execute(
+        "UPDATE probe_servers SET group_id = (SELECT id FROM probe_groups g WHERE g.name = probe_servers.server_group) "
+        "WHERE trim(server_group) != '' AND group_id IS NULL"
+    )
+    connection.execute(
+        "UPDATE probe_discover_results SET group_id = (SELECT id FROM probe_groups g WHERE g.name = probe_discover_results.server_group) "
+        "WHERE trim(server_group) != '' AND group_id IS NULL"
+    )
+    connection.execute(
+        "UPDATE lb_domains SET group_id = (SELECT id FROM probe_groups g WHERE g.name = lb_domains.group_name) "
+        "WHERE trim(group_name) != '' AND group_id IS NULL"
+    )
+    # initialize_database commits this marker together with the complete backfill.
+    # If any preceding statement fails, the enclosing initialization transaction
+    # rolls back both the changes and this marker, allowing the migration to retry.
+    connection.execute(
+        "INSERT INTO probe_settings (key, value) VALUES ('probe_stable_group_ids_migrated', '1')"
+    )
 
 
 def _migrate_probe_discover_results(connection: sqlite3.Connection) -> None:
@@ -466,6 +532,7 @@ def initialize_database(path: Path) -> None:
             _migrate_nodes(connection)
             _migrate_lb_domains(connection)
             _migrate_probe_groups(connection)
+            _migrate_stable_group_ids(connection)
             connection.commit()
             # 各迁移自带 BEGIN IMMEDIATE/COMMIT，必须都在外层 commit 之后调用，
             # 避免撞上前面 DML 留下的隐式事务

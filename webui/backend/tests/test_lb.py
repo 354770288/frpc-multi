@@ -144,6 +144,19 @@ class SyncerTests(unittest.TestCase):
         self.assertEqual(cf.ips("frps.example.com"), ["1.1.1.1"])
         self.assertEqual(self.lb.get_domain(self.domain.id).current_ip, "1.1.1.1")
 
+    def test_sync_keeps_selection_after_group_rename(self):
+        group_id = self.domain.group_id
+        self.probe.rename_group("pool", "renamed-pool")
+        domain = self.lb.get_domain(self.domain.id)
+        self.assertEqual(domain.group_id, group_id)
+        self.assertEqual(domain.group_name, "renamed-pool")
+        cf = FakeCloudflare()
+        result = sync_domain(domain, self.probe, self.lb, cf,
+                             make_monitor({"1.1.1.1": True, "2.2.2.2": True}))
+        self.assertTrue(result.ok)
+        self.assertEqual(result.pool_size, 2)
+        self.assertEqual(cf.ips("frps.example.com"), ["1.1.1.1"])
+
     def test_resync_idempotent(self):
         monitor = make_monitor()
         cf = FakeCloudflare()

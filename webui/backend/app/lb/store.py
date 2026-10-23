@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -20,6 +21,23 @@ T = TypeVar("T")
 # 域名白名单：逐标签校验（字母数字开头结尾，中间可连字符），杜绝注入与畸形域名
 _SAFE_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _MANAGED_COMMENT = "frpc-multi-lb"
+
+
+def _resolve_group(connection, value: str) -> tuple[str, str]:
+    clean = (value or "").strip()
+    if not clean:
+        raise ValueError("绑定的分组不能为空")
+    row = connection.execute(
+        "SELECT id, name FROM probe_groups WHERE id = ? OR name = ? LIMIT 1", (clean, clean)
+    ).fetchone()
+    if row is None:
+        group_id = str(uuid.uuid4())
+        connection.execute(
+            "INSERT INTO probe_groups(id,name,color,created_at) VALUES(?,?,'',?)",
+            (group_id, clean, now_iso()),
+        )
+        return clean, group_id
+    return str(row["name"]), str(row["id"])
 
 
 def validate_domain_name(name: str) -> str:
@@ -44,6 +62,7 @@ class LbDomain:
     zone_id: str
     zone_name: str
     group_name: str
+    group_id: str | None
     ttl: int
     sync_mode: str  # manual | scheduled
     interval_seconds: int
@@ -62,6 +81,7 @@ def _domain_from_row(row) -> LbDomain:
         zone_id=row["zone_id"],
         zone_name=row["zone_name"],
         group_name=row["group_name"],
+        group_id=row["group_id"],
         ttl=int(row["ttl"]),
         sync_mode=row["sync_mode"],
         interval_seconds=int(row["interval_seconds"]),
@@ -154,11 +174,12 @@ class LbStore:
 
         def write(connection):
             try:
+                resolved_name, group_id = _resolve_group(connection, group_name)
                 cursor = connection.execute(
-                    "INSERT INTO lb_domains (name, zone_id, zone_name, group_name, ttl, sync_mode, "
-                    "interval_seconds, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO lb_domains (name, zone_id, zone_name, group_name, group_id, ttl, sync_mode, "
+                    "interval_seconds, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (clean_name, zone_id.strip(), validate_domain_name(zone_name),
-                     group_name.strip(), ttl, sync_mode, interval_seconds,
+                     resolved_name, group_id, ttl, sync_mode, interval_seconds,
                      1 if enabled else 0, now_iso()),
                 )
             except Exception as exc:
@@ -190,10 +211,11 @@ class LbStore:
         new_enabled = enabled if enabled is not None else domain.enabled
 
         def write(connection):
+            resolved_name, group_id = _resolve_group(connection, new_group)
             connection.execute(
-                "UPDATE lb_domains SET group_name = ?, ttl = ?, sync_mode = ?, "
+                "UPDATE lb_domains SET group_name = ?, group_id = ?, ttl = ?, sync_mode = ?, "
                 "interval_seconds = ?, enabled = ? WHERE id = ?",
-                (new_group, new_ttl, new_mode, new_interval, 1 if new_enabled else 0, domain_id),
+                (resolved_name, group_id, new_ttl, new_mode, new_interval, 1 if new_enabled else 0, domain_id),
             )
             connection.commit()
 

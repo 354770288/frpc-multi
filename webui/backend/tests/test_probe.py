@@ -551,6 +551,94 @@ class ProbeStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.rename_group("新组", "  ")  # 空名拒绝
 
+    def test_stable_group_ids_cover_assignments_rename_migration_and_delete_guard(self):
+        import sqlite3
+        from app.control.database import connect_database, _migrate_stable_group_ids
+        from app.lb.store import LbStore
+        from app.probe.store import DiscoverPageQuery, ServerPageQuery
+
+        self.store.create_group("稳定组")
+        group = next(row for row in self.store.list_groups_with_colors() if row["name"] == "稳定组")
+        group_id = group["id"]
+        # New callers may assign by ID; the legacy/API name remains the projection.
+        server = self.store.create_server(ip="10.22.0.1", server_group=group_id)
+        self.assertEqual(server.server_group, "稳定组")
+        self.store.update_servers_batch([server.id], group=group_id)
+        self.assertEqual(self.store.get_server(server.id).server_group, "稳定组")
+        self.assertEqual(self.store.query_servers(ServerPageQuery(group=group_id))["total"], 1)
+        self.store.upsert_discover_results_batch([("10.22.0.2", 7000, 12.0)])
+        discover = self.store.query_discover_results(DiscoverPageQuery())
+        self.store.update_discover_batch([discover["items"][0]["id"]], group=group_id)
+        self.assertEqual(
+            self.store.query_discover_results(DiscoverPageQuery(group=group_id))["total"], 1
+        )
+        lb = LbStore(self.store.database_path)
+        domain = lb.create_domain(name="stable.example.com", zone_id="z", zone_name="example.com",
+                                  group_name=group_id)
+        self.assertEqual(domain.group_name, "稳定组")
+        self.assertEqual(domain.group_id, group_id)
+
+        self.store.rename_group("稳定组", "改名组")
+        renamed = next(row for row in self.store.list_groups_with_colors() if row["name"] == "改名组")
+        self.assertEqual(renamed["id"], group_id)
+        self.assertEqual(self.store.get_server(server.id).server_group, "改名组")
+        self.assertEqual(lb.list_domains()[0].group_name, "改名组")
+        with self.assertRaises(ValueError):
+            self.store.delete_group("改名组")
+
+        # A completed migration short-circuits before scanning consumer names again.
+        connection = connect_database(self.store.database_path)
+        try:
+            connection.set_authorizer(
+                lambda action, arg1, arg2, db_name, trigger: (
+                    sqlite3.SQLITE_DENY
+                    if action == sqlite3.SQLITE_READ and arg2 in {"server_group", "group_name"}
+                    else sqlite3.SQLITE_OK
+                )
+            )
+            _migrate_stable_group_ids(connection)
+            values = [connection.execute(f"SELECT group_id FROM {table} LIMIT 1").fetchone()[0]
+                      for table in ("probe_servers", "probe_discover_results", "lb_domains")]
+        finally:
+            connection.close()
+        self.assertEqual(values, [group_id, group_id, group_id])
+
+    def test_stable_group_migration_failure_leaves_marker_clear_for_retry(self):
+        import sqlite3
+        from app.control.database import connect_database, _migrate_stable_group_ids
+
+        connection = connect_database(self.store.database_path)
+        try:
+            connection.execute("DELETE FROM probe_settings WHERE key = 'probe_stable_group_ids_migrated'")
+            connection.execute(
+                "INSERT INTO probe_servers(ip,ip_sort,label,server_group,group_id,created_at) "
+                "VALUES('10.23.0.1',NULL,'','legacy-retry',NULL,'2026-01-01T00:00:00')"
+            )
+            connection.execute(
+                "CREATE TRIGGER fail_group_backfill BEFORE INSERT ON probe_groups "
+                "WHEN NEW.name = 'legacy-retry' BEGIN SELECT RAISE(ABORT, 'forced backfill failure'); END"
+            )
+            connection.commit()
+            connection.execute("BEGIN IMMEDIATE")
+            with self.assertRaises(sqlite3.IntegrityError):
+                _migrate_stable_group_ids(connection)
+            connection.rollback()
+            self.assertIsNone(connection.execute(
+                "SELECT value FROM probe_settings WHERE key = 'probe_stable_group_ids_migrated'"
+            ).fetchone())
+            connection.execute("DROP TRIGGER fail_group_backfill")
+            connection.execute("BEGIN IMMEDIATE")
+            _migrate_stable_group_ids(connection)
+            connection.commit()
+            self.assertEqual(connection.execute(
+                "SELECT value FROM probe_settings WHERE key = 'probe_stable_group_ids_migrated'"
+            ).fetchone()[0], "1")
+            self.assertIsNotNone(connection.execute(
+                "SELECT group_id FROM probe_servers WHERE ip = '10.23.0.1'"
+            ).fetchone()[0])
+        finally:
+            connection.close()
+
     def test_discover_results_upsert_and_library_flag(self):
         self.store.upsert_discover_results_batch([("10.0.0.9", 7000, 8.0)])
         self.store.update_discover_batch(
@@ -1038,7 +1126,9 @@ class ProbeApiTests(unittest.TestCase):
         servers = client.get("/api/probe/servers", headers=headers).json()
         self.assertEqual(servers["total"], 3)
         groups = client.get("/api/probe/servers/groups", headers=headers).json()
-        self.assertEqual(groups, [{"name": "g", "color": ""}])
+        self.assertEqual(groups[0]["name"], "g")
+        self.assertEqual(groups[0]["color"], "")
+        self.assertTrue(groups[0]["id"])
         # 启动测试（frps 不可达 → 每个 IP 快速失败）
         response = client.post(
             "/api/probe/test", json={"mode": "connectivity", "ips": ["127.0.0.1"]}, headers=headers,
@@ -1743,6 +1833,17 @@ class DiscoverApiTests(unittest.TestCase):
             "old": "新组", "new": "占位组",
         }, headers=headers)
         self.assertEqual(conflict.status_code, 400)
+
+    def test_delete_referenced_group_returns_conflict_and_preserves_name_path(self):
+        client, headers = self.make_client()
+        created = client.post("/api/probe/servers/groups", json={"name": "绑定组"}, headers=headers)
+        self.assertEqual(created.status_code, 200)
+        self.assertTrue(created.json()["id"])
+        client.post("/api/probe/servers/batch", json={
+            "text": "10.0.0.8", "group": "绑定组",
+        }, headers=headers)
+        response = client.delete("/api/probe/servers/groups/绑定组", headers=headers)
+        self.assertEqual(response.status_code, 409)
 
 
 if __name__ == "__main__":

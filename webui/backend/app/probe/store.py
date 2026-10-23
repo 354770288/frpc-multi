@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ipaddress
+import uuid
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -172,6 +173,39 @@ def _clean_group_color(color: str) -> str:
         raise ValueError("分组颜色必须是 red/yellow/blue/green 或留空")
     return value
 
+
+def _ensure_group_id(connection, name: str) -> str | None:
+    """Resolve a legacy display name to its canonical ID in the caller's transaction."""
+    value = (name or "").strip()
+    if not value:
+        return None
+    by_id = connection.execute("SELECT id, name FROM probe_groups WHERE id = ?", (value,)).fetchone()
+    if by_id is not None:
+        return str(by_id["id"])
+    connection.execute(
+        "INSERT OR IGNORE INTO probe_groups (id, name, color, created_at) VALUES (?, ?, '', ?)",
+        (str(uuid.uuid4()), value, now_iso()),
+    )
+    row = connection.execute("SELECT id FROM probe_groups WHERE name = ?", (value,)).fetchone()
+    return str(row["id"])
+
+
+def _canonical_group_name(connection, value: str) -> str:
+    clean = (value or "").strip()
+    if not clean:
+        return ""
+    row = connection.execute(
+        "SELECT name FROM probe_groups WHERE id = ? OR name = ? LIMIT 1", (clean, clean)
+    ).fetchone()
+    return str(row["name"]) if row else clean
+
+
+def _group_row(connection, value: str):
+    clean = (value or "").strip()
+    return connection.execute(
+        "SELECT id, name FROM probe_groups WHERE id = ? OR name = ? LIMIT 1", (clean, clean)
+    ).fetchone()
+
 # 服务器地址会嵌入生成的 frpc TOML（serverAddr = "<addr>"），
 # 只放行 IPv4/IPv6/域名的安全字符，杜绝引号等注入 TOML 的可能。
 _SAFE_ADDR = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._:-]{0,253}[A-Za-z0-9])?$")
@@ -319,7 +353,7 @@ class ProbeStore:
         if self.node_id is not None:
             node = "'" + self.node_id.replace("'", "''") + "'"
             connection.execute(f"""CREATE TEMP VIEW probe_discover_results AS
-                SELECT d.id,d.ip,d.ip_sort,d.port,o.latency_ms,d.server_group,
+                SELECT d.id,d.ip,d.ip_sort,d.port,o.latency_ms,d.server_group,d.group_id,
                 probe_source_labels(d.label,(SELECT data FROM main.probe_current_results r WHERE r.kind='route' AND r.server_ip=probe_endpoint_host(d.ip) AND r.port=d.port LIMIT 1)) AS label,o.discovered_at
                 FROM main.probe_discover_results d JOIN main.probe_discover_observations o
                 ON o.ip=d.ip AND o.port=d.port WHERE o.node_id={node}""")
@@ -341,11 +375,13 @@ class ProbeStore:
         ip_sort = _ip_sort_for(addr)
 
         def write(connection):
+            group_name = _canonical_group_name(connection, server_group)
             try:
                 cursor = connection.execute(
-                    "INSERT INTO probe_servers (ip, ip_sort, label, server_group, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (addr, ip_sort, _pack_labels(labels), (server_group or "").strip(), created_at),
+                    "INSERT INTO probe_servers (ip, ip_sort, label, server_group, group_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (addr, ip_sort, _pack_labels(labels), group_name,
+                     _ensure_group_id(connection, group_name), created_at),
                 )
             except Exception as exc:
                 if "UNIQUE" in str(exc):
@@ -384,9 +420,11 @@ class ProbeStore:
         new_ip_sort = _ip_sort_for(new_ip)
 
         def write(connection):
+            resolved_group = _canonical_group_name(connection, new_group)
             connection.execute(
-                "UPDATE probe_servers SET ip = ?, ip_sort = ?, label = ?, server_group = ? WHERE id = ?",
-                (new_ip, new_ip_sort, new_label, new_group, server_id),
+                "UPDATE probe_servers SET ip = ?, ip_sort = ?, label = ?, server_group = ?, group_id = ? WHERE id = ?",
+                (new_ip, new_ip_sort, new_label, resolved_group,
+                 _ensure_group_id(connection, resolved_group), server_id),
             )
             connection.commit()
 
@@ -418,10 +456,13 @@ class ProbeStore:
         created_at = now_iso()
 
         def write(connection):
+            cleaned_rows = [(ip, ip_sort, label, _canonical_group_name(connection, group))
+                            for ip, ip_sort, label, group in cleaned]
             cursor = connection.executemany(
-                "INSERT OR IGNORE INTO probe_servers (ip, ip_sort, label, server_group, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                [(ip, ip_sort, label, group, created_at) for ip, ip_sort, label, group in cleaned],
+                "INSERT OR IGNORE INTO probe_servers (ip, ip_sort, label, server_group, group_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(ip, ip_sort, label, group, _ensure_group_id(connection, group), created_at)
+                 for ip, ip_sort, label, group in cleaned_rows],
             )
             connection.commit()
             inserted = cursor.rowcount if cursor.rowcount >= 0 else 0
@@ -439,8 +480,8 @@ class ProbeStore:
 
         def read(connection):
             predefined = {
-                row["name"]: (row["color"] or "")
-                for row in connection.execute("SELECT name, color FROM probe_groups").fetchall()
+                row["name"]: (row["id"], row["color"] or "")
+                for row in connection.execute("SELECT id, name, color FROM probe_groups").fetchall()
             }
             in_use = {
                 row[0] for row in connection.execute(
@@ -448,7 +489,8 @@ class ProbeStore:
                 ).fetchall()
             }
             names = sorted(set(predefined) | in_use)
-            return [{"name": name, "color": predefined.get(name, "")} for name in names]
+            return [{"id": predefined[name][0] if name in predefined else None,
+                     "name": name, "color": predefined.get(name, (None, ""))[1]} for name in names]
 
         return self._with_connection(read)
 
@@ -462,8 +504,8 @@ class ProbeStore:
 
         def write(connection):
             connection.execute(
-                "INSERT OR IGNORE INTO probe_groups (name, color, created_at) VALUES (?, ?, ?)",
-                (value, clean_color, now_iso()),
+                "INSERT OR IGNORE INTO probe_groups (id, name, color, created_at) VALUES (?, ?, ?, ?)",
+                (str(uuid.uuid4()), value, clean_color, now_iso()),
             )
             connection.commit()
 
@@ -478,22 +520,35 @@ class ProbeStore:
         clean_color = _clean_group_color(color)
 
         def write(connection):
+            existing = _group_row(connection, value)
+            actual_name = existing["name"] if existing else value
             connection.execute(
-                "INSERT OR IGNORE INTO probe_groups (name, color, created_at) VALUES (?, ?, ?)",
-                (value, clean_color, now_iso()),
+                "INSERT OR IGNORE INTO probe_groups (id, name, color, created_at) VALUES (?, ?, ?, ?)",
+                (str(uuid.uuid4()), actual_name, clean_color, now_iso()),
             )
             connection.execute(
-                "UPDATE probe_groups SET color = ? WHERE name = ?", (clean_color, value))
+                "UPDATE probe_groups SET color = ? WHERE name = ?", (clean_color, actual_name))
             connection.commit()
 
         self._with_connection(write)
         return clean_color
 
     def delete_group(self, name: str) -> bool:
-        """删除预创建分组记录；服务器行上的分组值不受影响。"""
+        """Delete an unused group; all consumer references are protected."""
 
         def write(connection):
-            cursor = connection.execute("DELETE FROM probe_groups WHERE name = ?", (name,))
+            group = _group_row(connection, name)
+            if group is None:
+                return False
+            references = connection.execute(
+                "SELECT EXISTS(SELECT 1 FROM probe_servers WHERE group_id = ?) OR "
+                "EXISTS(SELECT 1 FROM probe_discover_results WHERE group_id = ?) OR "
+                "EXISTS(SELECT 1 FROM lb_domains WHERE group_id = ?)",
+                (group["id"], group["id"], group["id"]),
+            ).fetchone()[0]
+            if references:
+                raise ValueError("分组仍被服务器、发现结果或负载均衡域名引用")
+            cursor = connection.execute("DELETE FROM probe_groups WHERE id = ?", (group["id"],))
             connection.commit()
             return cursor.rowcount > 0
 
@@ -513,19 +568,19 @@ class ProbeStore:
             return new_value
 
         def write(connection):
-            exists = connection.execute(
-                "SELECT 1 FROM probe_groups WHERE name = ?", (new_value,)
-            ).fetchone()
+            exists = _group_row(connection, new_value)
             if exists:
                 raise ValueError(f"分组「{new_value}」已存在")
-            connection.execute("UPDATE probe_groups SET name = ? WHERE name = ?",
-                               (new_value, old_value))
-            connection.execute("UPDATE probe_servers SET server_group = ? WHERE server_group = ?",
-                               (new_value, old_value))
-            connection.execute("UPDATE probe_discover_results SET server_group = ? WHERE server_group = ?",
-                               (new_value, old_value))
-            connection.execute("UPDATE lb_domains SET group_name = ? WHERE group_name = ?",
-                               (new_value, old_value))
+            group = _group_row(connection, old_value)
+            if group is None:
+                raise ValueError(f"分组「{old_value}」不存在")
+            connection.execute("UPDATE probe_groups SET name = ? WHERE id = ?", (new_value, group["id"]))
+            connection.execute("UPDATE probe_servers SET server_group = ? WHERE group_id = ?",
+                               (new_value, group["id"]))
+            connection.execute("UPDATE probe_discover_results SET server_group = ? WHERE group_id = ?",
+                               (new_value, group["id"]))
+            connection.execute("UPDATE lb_domains SET group_name = ? WHERE group_id = ?",
+                               (new_value, group["id"]))
             connection.commit()
 
         self._with_connection(write)
@@ -634,8 +689,11 @@ class ProbeStore:
             )
             params.extend([f"%{escaped}%"] * 3)
         if query.group is not None:
-            where.append("d.server_group = ?")
-            params.append(query.group)
+            where.append(
+                "(d.group_id = (SELECT id FROM probe_groups WHERE id = ? OR name = ? LIMIT 1) "
+                "OR d.server_group = ?)"
+            )
+            params.extend([query.group, query.group, query.group])
         if query.label is not None:
             # 空串 = 无标签；非空 = 标签集合包含该标签（哨兵 LIKE，转义 %/_）
             if query.label == "":
@@ -741,6 +799,7 @@ class ProbeStore:
                 # Reserve the write transaction before selecting so selected_count
                 # and the inserts are decided against one atomic database state.
                 connection.execute("BEGIN IMMEDIATE")
+                resolved_override = _canonical_group_name(connection, override)
                 selected = {}
                 for chunk in _chunks(connection, normalized):
                     placeholders = ",".join("?" for _ in chunk)
@@ -760,14 +819,16 @@ class ProbeStore:
                     if row["ip"] not in candidates:
                         candidates[row["ip"]] = (
                             row["ip"], _ip_sort_for(row["ip"]), row["label"],
-                            override or row["server_group"], timestamp
+                            resolved_override or row["server_group"], timestamp
                         )
                 if not candidates:
                     return DiscoverImportResult(existing_selected, 0, 0)
                 cursor = connection.executemany(
                     "INSERT OR IGNORE INTO probe_servers "
-                    "(ip, ip_sort, label, server_group, created_at) VALUES (?, ?, ?, ?, ?)",
-                    candidates.values(),
+                    "(ip, ip_sort, label, server_group, group_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    [(ip, ip_sort, label, _canonical_group_name(connection, server_group),
+                      _ensure_group_id(connection, server_group), created_at)
+                     for ip, ip_sort, label, server_group, created_at in candidates.values()],
                 )
                 inserted = max(cursor.rowcount, 0)
                 return DiscoverImportResult(
@@ -834,6 +895,8 @@ class ProbeStore:
         def write(connection):
             affected = 0
             with connection:
+                group_for_update = (_canonical_group_name(connection, clean_group)
+                                    if clean_group is not None else None)
                 for chunk in _chunks(connection, normalized, headroom=4):
                     placeholders = ",".join("?" for _ in chunk)
                     # 纯标签操作没有可靠的 rowcount 语义，按 chunk 基数计数
@@ -841,11 +904,12 @@ class ProbeStore:
                         f"SELECT COUNT(*) FROM probe_discover_results WHERE id IN ({placeholders})",
                         chunk,
                     ).fetchone()[0]
-                    if clean_group is not None:
+                    if group_for_update is not None:
+                        group_id = _ensure_group_id(connection, group_for_update)
                         connection.execute(
-                            "UPDATE probe_discover_results SET server_group = ? "
+                            "UPDATE probe_discover_results SET server_group = ?, group_id = ? "
                             f"WHERE id IN ({placeholders})",
-                            (clean_group, *chunk),
+                            (group_for_update, group_id, *chunk),
                         )
                     for label in removes:
                         cursor = connection.execute(
@@ -909,17 +973,20 @@ class ProbeStore:
         def write(connection):
             affected = 0
             with connection:
+                group_for_update = (_canonical_group_name(connection, clean_group)
+                                    if clean_group is not None else None)
                 for chunk in _chunks(connection, normalized, headroom=4):
                     placeholders = ",".join("?" for _ in chunk)
                     affected += connection.execute(
                         f"SELECT COUNT(*) FROM probe_servers WHERE id IN ({placeholders})",
                         chunk,
                     ).fetchone()[0]
-                    if clean_group is not None:
+                    if group_for_update is not None:
+                        group_id = _ensure_group_id(connection, group_for_update)
                         connection.execute(
-                            "UPDATE probe_servers SET server_group = ? "
+                            "UPDATE probe_servers SET server_group = ?, group_id = ? "
                             f"WHERE id IN ({placeholders})",
-                            (clean_group, *chunk),
+                            (group_for_update, group_id, *chunk),
                         )
                     for label in removes:
                         cursor = connection.execute(
@@ -1007,8 +1074,11 @@ class ProbeStore:
                 )
                 params.extend([f"%{escaped}%"] * 3)
             if query.group is not None:
-                where.append("s.server_group = ?")
-                params.append(query.group)
+                where.append(
+                    "(s.group_id = (SELECT id FROM probe_groups WHERE id = ? OR name = ? LIMIT 1) "
+                    "OR s.server_group = ?)"
+                )
+                params.extend([query.group, query.group, query.group])
             if query.label is not None:
                 if query.label == "":
                     where.append("s.label = ''")

@@ -354,7 +354,8 @@ def create_server_group(payload: GroupCreate, user: Annotated[str, Depends(requi
         audit(user, "probe_create_group", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(user, "probe_create_group", message=name)
-    return {"ok": True, "name": name}
+    group = next(item for item in probe_store().list_groups_with_colors() if item["name"] == name)
+    return {"ok": True, "id": group["id"], "name": name}
 
 
 class GroupColor(BaseModel):
@@ -375,7 +376,11 @@ def set_server_group_color(payload: GroupColor, user: Annotated[str, Depends(req
 
 @router.delete("/servers/groups/{name}")
 def delete_server_group(name: str, user: Annotated[str, Depends(require_auth)]):
-    deleted = probe_store().delete_group(name)
+    try:
+        deleted = probe_store().delete_group(name)
+    except ValueError as exc:
+        audit(user, "probe_delete_group", success=False, message=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     audit(user, "probe_delete_group", success=deleted, message=name if deleted else f"预创建分组不存在: {name}")
     return {"ok": deleted}
 

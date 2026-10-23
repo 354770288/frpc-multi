@@ -89,6 +89,16 @@ The full scale target, classification/filter/query redesign, 100k acceptance dat
 
 `ProbeStore` server list, filtered status, and dashboard views now read the unified route/connectivity/speed projection regardless of legacy node query parameters. Route status enrichment is limited to the exact fixed-7000 endpoint. Legacy Console rows stay available in history, while current views show untested until the configured primary has a projection. Discovery observations remain keyed by actual executing node. Daily server and LB pages no longer offer result-source selection, and cross-node comparison controls are removed; historical results still retain per-node filtering and provenance.
 
+## Slice: stable business-group identity
+
+- `./.venv/bin/python -m unittest tests.test_probe_jobs tests.test_probe tests.test_lb` — exit 0; 178 tests passed.
+- `git diff --check` — coordinator will rerun before commit.
+- Independent spec/quality reviews found and drove fixes for ID-based batch assignment display values, ID-based group filters, and repeated full-table startup scans; final review found no remaining P-level findings.
+
+Added UUID group IDs and nullable references on assets, discovery candidates, and LB domains. A one-time transactionally marked migration maps every legacy group name to a stable ID; failed migration leaves the marker unset for retry, and completed startups avoid re-scanning group-name columns. Existing name-based APIs remain compatible, while list/assignment/rename/color/delete/domain APIs accept and expose IDs. Rename preserves the group ID and updates legacy display-name projections. Deletion returns HTTP 409 while assets, discovery results, or LB domains reference the group. LB domain selection and sync continue to use the same group after rename.
+
+Categorized tag relations, separation of manual tags from route measurements, scalable cursor/filter APIs, and large-data performance remain unimplemented.
+
 ## Slice: unified current-result projection foundation
 
 - `./.venv/bin/python -m unittest tests.test_probe_jobs tests.test_lb tests.test_probe` — exit 0; 171 tests passed after final migration and LB query fixes.
