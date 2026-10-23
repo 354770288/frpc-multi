@@ -1881,34 +1881,66 @@ class ProbeStore:
             tag_source = self._server_count_from_sql(tag_query)
             tag_page_limit = " LIMIT ? OFFSET ?" if paged else ""
             tag_page_params = (tag_page_size, (tag_page - 1) * tag_page_size) if paged else ()
-            # One aggregate statement yields the bounded, stable candidate page,
-            # total candidate count, and legacy name projection.
+            tag_first_scan = (
+                not tag_query.q.strip() and tag_query.group is None and not tag_query.group_ids
+                and tag_query.label is None and tag_query.conn == "all"
+            )
+            if tag_first_scan:
+                # Broad contexts are cheaper when the tag index drives aggregation.
+                # The server-first path remains for selective query/group/conn filters.
+                tag_counts_sql = (
+                    "tag_counts AS ("
+                    "SELECT t.id AS tag_id,c.id AS category_id,c.name AS category,t.name AS name,"
+                    "COUNT(*) AS count "
+                    "FROM probe_server_tags st INDEXED BY idx_probe_server_tags_tag_server "
+                    "JOIN probe_tags t ON t.id=st.tag_id "
+                    "JOIN probe_tag_categories c ON c.id=t.category_id "
+                    "WHERE (?='' OR c.name LIKE ? ESCAPE '\\' COLLATE NOCASE "
+                    "OR t.name LIKE ? ESCAPE '\\' COLLATE NOCASE) "
+                    "GROUP BY st.tag_id), "
+                    "tag_page AS (SELECT * FROM tag_counts "
+                    "ORDER BY category COLLATE BINARY,name COLLATE BINARY,tag_id COLLATE BINARY" + tag_page_limit + "), "
+                    "tag_total AS (SELECT COUNT(*) AS total FROM tag_counts), "
+                    "legacy_labels AS ("
+                    "SELECT t.name AS name,COUNT(DISTINCT st.server_id) AS count "
+                    "FROM probe_server_tags st INDEXED BY idx_probe_server_tags_tag_server "
+                    "JOIN probe_tags t ON t.id=st.tag_id GROUP BY t.name)"
+                )
+                query_params = (tag_search, search_pattern, search_pattern, *tag_page_params)
+            else:
+                tag_counts_sql = (
+                    "facet_servers AS MATERIALIZED (SELECT s.id " + tag_source + tag_where + "), "
+                    "tag_counts AS ("
+                    "SELECT t.id AS tag_id,c.id AS category_id,c.name AS category,t.name AS name,"
+                    "COUNT(*) AS count "
+                    "FROM facet_servers fs CROSS JOIN probe_server_tags st ON st.server_id=fs.id "
+                    "JOIN probe_tags t ON t.id=st.tag_id "
+                    "JOIN probe_tag_categories c ON c.id=t.category_id "
+                    "WHERE (?='' OR c.name LIKE ? ESCAPE '\\' COLLATE NOCASE "
+                    "OR t.name LIKE ? ESCAPE '\\' COLLATE NOCASE) "
+                    "GROUP BY t.id,c.id,c.name,t.name), "
+                    "tag_page AS (SELECT * FROM tag_counts "
+                    "ORDER BY category COLLATE BINARY,name COLLATE BINARY,tag_id COLLATE BINARY" + tag_page_limit + "), "
+                    "tag_total AS (SELECT COUNT(*) AS total FROM tag_counts), "
+                    "legacy_server_names AS ("
+                    "SELECT fs.id AS server_id,t.name AS name "
+                    "FROM facet_servers fs CROSS JOIN probe_server_tags st ON st.server_id=fs.id "
+                    "JOIN probe_tags t ON t.id=st.tag_id GROUP BY fs.id,t.name), "
+                    "legacy_labels AS (SELECT name,COUNT(*) AS count FROM legacy_server_names GROUP BY name)"
+                )
+                query_params = (*tag_params, tag_search, search_pattern, search_pattern, *tag_page_params)
+
+            # One aggregate statement yields the bounded candidate page, exact
+            # candidate total, and the legacy per-name projection.
             tag_rows = connection.execute(
-                "WITH facet_servers AS MATERIALIZED (SELECT s.id " + tag_source + tag_where + "), "
-                "tag_counts AS ("
-                "SELECT t.id AS tag_id,c.id AS category_id,c.name AS category,t.name AS name,"
-                "COUNT(*) AS count "
-                "FROM facet_servers fs CROSS JOIN probe_server_tags st ON st.server_id=fs.id "
-                "JOIN probe_tags t ON t.id=st.tag_id "
-                "JOIN probe_tag_categories c ON c.id=t.category_id "
-                "WHERE (?='' OR c.name LIKE ? ESCAPE '\\' COLLATE NOCASE "
-                "OR t.name LIKE ? ESCAPE '\\' COLLATE NOCASE) "
-                "GROUP BY t.id,c.id,c.name,t.name), "
-                "tag_page AS (SELECT * FROM tag_counts "
-                "ORDER BY category COLLATE BINARY,name COLLATE BINARY,tag_id COLLATE BINARY" + tag_page_limit + "), "
-                "tag_total AS (SELECT COUNT(*) AS total FROM tag_counts), "
-                "legacy_server_names AS ("
-                "SELECT fs.id AS server_id,t.name AS name "
-                "FROM facet_servers fs CROSS JOIN probe_server_tags st ON st.server_id=fs.id "
-                "JOIN probe_tags t ON t.id=st.tag_id GROUP BY fs.id,t.name), "
-                "legacy_labels AS (SELECT name,COUNT(*) AS count FROM legacy_server_names GROUP BY name) "
+                "WITH " + tag_counts_sql + " "
                 "SELECT 'tag' AS facet,p.tag_id,p.category_id,p.category,p.name,p.count,total.total AS tag_total "
                 "FROM tag_total total LEFT JOIN tag_page p ON 1=1 "
                 "UNION ALL "
                 "SELECT 'label' AS facet,NULL AS tag_id,NULL AS category_id,NULL AS category,"
                 "labels.name,labels.count,NULL AS tag_total FROM legacy_labels labels "
                 "ORDER BY facet,category,name",
-                (*tag_params, tag_search, search_pattern, search_pattern, *tag_page_params),
+                query_params,
             ).fetchall()
             labels = [{"label": row["name"], "count": row["count"]}
                       for row in tag_rows if row["facet"] == "label"]

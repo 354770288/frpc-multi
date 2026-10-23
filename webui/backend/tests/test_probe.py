@@ -667,7 +667,8 @@ class ProbeStoreTests(unittest.TestCase):
                     connection.close()
 
         TraceStore(self.store.database_path).server_facets()
-        self.assertTrue(any("GROUP BY fs.id,t.name" in statement for statement in statements))
+        self.assertTrue(any("INDEXED BY idx_probe_server_tags_tag_server" in statement for statement in statements))
+        self.assertTrue(any("GROUP BY t.name" in statement for statement in statements))
         self.assertFalse(any("SELECT label FROM probe_servers" in statement for statement in statements))
 
     def test_query_servers_filters(self):

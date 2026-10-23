@@ -325,7 +325,7 @@ The async import backend and UI now share the existing bulk lease/worker; no sec
 - Root cause / change: the previous path recalculated the connectivity score from current-result JSON per asset and joined the result projection for count/facets. A rebuildable `probe_servers.conn_score` projection now derives from the authoritative `probe_current_results`; migration/backfill and same-transaction triggers maintain it, and filters/count/order plus facets use indexed scores. The current-result projection remains the display/read source.
 - Before this projection was added, the same workload measured tag+conn facets P95 4.52 s, group+tag+conn 1.79 s, and filtered page 507 ms. Afterward these measured 106 ms, 39 ms, and 19 ms respectively.
 
-This closes the 100k concurrent read/write P50/P95 gate for the measured fixture. The 1M equivalent concurrent workload, actual destination-network timing distributions, production migration/rollback, and deployment checks remain unverified.
+This closes the 100k concurrent read/write P50/P95 gate for the measured fixture. The 1M facets/list concurrency smoke is recorded below; full 1M 3×3 history/current density, actual destination-network timing distributions, production migration/rollback, and deployment checks remain open.
 
 ## Slice: indexed connectivity score and final 100k dense reprobe
 
@@ -339,4 +339,12 @@ This closes the 100k concurrent read/write P50/P95 gate for the measured fixture
 - A prior pre-score run measured tag+conn facets P95 4.52 s and group+tag+conn 1.79 s. After materialization, the first dense run measured 106/39 ms; after adding the conn-sort tie-break index, this final run measured 92/41 ms. The additional index kept write/query latency close to the prior dense run.
 - Final related backend suite after conn-score/index changes: 280 tests passed. Independent spec and quality reviews found no P1/P2 issue in the projection, triggers, or indexes.
 
-The concurrent 100k release target is met for this synthetic full-history/dense-current fixture. The 1M concurrent target, actual destination-network distributions, and production migration/rollback remain open.
+The concurrent 100k release target is met for this synthetic full-history/dense-current fixture. The 1M smoke below covers high asset/tag/current-connectivity density, while full 1M multi-kind history/current density, actual destination-network distributions, and production migration/rollback remain open.
+
+## Slice: 1M facets/list concurrency smoke
+
+- Fixture: 1,000,000 assets, 1,100,000 tag links, and 500,000 connectivity current/history rows; five reader threads and one writer over 30 s. This is a sparse projection workload, not the full 3,000,000 current / 9,000,000 history profile.
+- Host: macOS 26.5 ARM, 10 CPU cores, 16 GiB RAM; Python 3.14.2 / SQLite 3.51.2. Fixture seed took 79.170 s; temporary data was removed after testing.
+- P50/P95: global facets 1.03/1.78 s; tag+conn facets 730/840 ms; group+tag+conn 141/224 ms; filtered page 8.2/12.6 ms; exact filtered count 7.3/11.7 ms.
+- Writer submitted 3,066 transactions and 9,198 history rows; write transaction P50/P95 was 8.5/12.5 ms. Busy/errors=0. RSS peak 93.5 MiB; DB+WAL peak about 1.36 GB; final main DB 1,044,963,328 bytes.
+- Global facets used the tag-first covering index; tag+conn used `conn_score`; group+tag+conn used the group/conn index. All measured candidate facet/count paths are below the 1M 3 s count target; list pages are below the 1M 800 ms list target. The full-density 1M history/current profile remains unmeasured.

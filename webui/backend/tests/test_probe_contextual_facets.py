@@ -198,6 +198,39 @@ class ContextualServerFacetTests(unittest.TestCase):
         self.assertEqual(len(same_name_tags), 2)
         self.assertEqual([row["count"] for row in same_name_tags], [1, 1])
 
+        groups, _ = self.ids()
+        fallback = self.store.server_facets(ServerPageQuery(group_ids=(groups["east"],)))
+        self.assertEqual(facets, fallback)
+        for page in (1, 2):
+            specialized_page = self.store.server_facets(tag_search="shared-name", tag_page=page, tag_page_size=1)
+            fallback_page = self.store.server_facets(
+                ServerPageQuery(group_ids=(groups["east"],)),
+                tag_search="shared-name", tag_page=page, tag_page_size=1,
+            )
+            self.assertEqual(specialized_page, fallback_page)
+
+        statements = []
+        class TraceStore(ProbeStore):
+            def _with_connection(inner, callback, *args):
+                connection = connect_database(inner.database_path)
+                connection.set_trace_callback(statements.append)
+                try:
+                    return callback(connection, *args)
+                finally:
+                    connection.close()
+        TraceStore(self.path).server_facets()
+        aggregate_sql = next(sql for sql in statements if sql.lstrip().upper().startswith("WITH TAG_COUNTS"))
+        self.assertIn("INDEXED BY IDX_PROBE_SERVER_TAGS_TAG_SERVER", aggregate_sql.upper())
+        self.assertNotIn("FACET_SERVERS", aggregate_sql.upper())
+        connection = connect_database(self.path)
+        try:
+            plan = connection.execute("EXPLAIN QUERY PLAN " + aggregate_sql).fetchall()
+            plan_text = " ".join(str(row["detail"]) for row in plan)
+        finally:
+            connection.close()
+        self.assertIn("SCAN st USING COVERING INDEX idx_probe_server_tags_tag_server", plan_text)
+        self.assertNotIn("SCAN probe_servers", plan_text)
+
     def test_conn_score_projection_tracks_current_results_and_fixed_port_hosts(self):
         connection = connect_database(self.path)
         try:
