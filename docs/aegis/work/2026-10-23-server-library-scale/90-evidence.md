@@ -64,6 +64,19 @@ The facets endpoint now accepts q, legacy label, group, group IDs, tag ID, inclu
 
 Uncovered: the frontend has not yet exposed multi-group/include-any/include-all/exclude controls; indexed measurement sort modes and saved views remain planned; the query-plan assertion was checked on a synthetic 100k fixture but no latency SLA or concurrent-write result is claimed; no production deployment.
 
+## Slice: desktop multi-group and contextual tag filters
+
+- `npm run build` — exit 0; TypeScript and Vite bundle passed.
+- `npm test` — exit 0; 4 files and 9 tests passed.
+- `npm run test:e2e -- e2e/test-creation.spec.ts` — coordinator fresh run: 33 Playwright tests passed.
+- `git diff --check` — exit 0.
+- Spec review: stable-ID group union, mutually exclusive single/multi group state, include-any/all, exclusions, URL history, and contextual counts passed.
+- Code-quality review: quick-tag selection removes only a conflicting exclusion and preserves other excluded tags; no remaining findings.
+
+Advanced controls use server facets and stable IDs; no browser-side asset expansion was added. Facet requests follow active filters and cancel stale requests; the interface marks counts unavailable while loading and exposes retry on errors. Quick-tag chips, the single-group shortcut, and manual filtering remain usable.
+
+Uncovered: tag candidate lists are still returned as the full filtered facet response; search-and-pagination for large tag dictionaries remains a follow-up. Indexed measurement sort modes, saved views, large-data timing/load tests, browser E2E for async bulk update/delete progress, and production deployment remain unverified.
+
 ## Slice: fixed target port
 
 - `./.venv/bin/python -m unittest tests.test_probe_jobs` — exit 0; 35 tests passed.

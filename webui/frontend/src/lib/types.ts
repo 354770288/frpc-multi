@@ -288,6 +288,7 @@ export type ProbeDashboard = {
 export type GroupColor = '' | 'red' | 'yellow' | 'blue' | 'green';
 
 export type GroupInfo = {
+  id?: string | null;
   name: string;
   color: GroupColor;
 };

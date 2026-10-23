@@ -46,6 +46,10 @@ function countKeyFor(query: ServerQuery) {
   return JSON.stringify({ q: query.q, group: query.group, groupIds: query.groupIds, label: query.label, tagId: query.tagId, includeTagIds: query.includeTagIds, excludeTagIds: query.excludeTagIds, tagMode: query.tagMode, conn: query.conn, sort: query.sort });
 }
 
+function facetKeyFor(query: ServerQuery) {
+  return JSON.stringify({ q: query.q, group: query.group, groupIds: query.groupIds, label: query.label, tagId: query.tagId, includeTagIds: query.includeTagIds, excludeTagIds: query.excludeTagIds, tagMode: query.tagMode, conn: query.conn });
+}
+
 function loadCursorTrail(key: string) {
   try {
     const saved = JSON.parse(sessionStorage.getItem(key) ?? '[]');
@@ -69,6 +73,7 @@ export function useServers(active: boolean) {
   const urlKey = searchParams.toString();
   const cursorMode = query.sort === 'ip';
   const countFilterKey = countKeyFor(query);
+  const facetFilterKey = facetKeyFor(query);
   const cursorKey = useMemo(() => cursorStorageKey(query), [query.q, query.group, query.groupIds, query.label, query.tagId, query.includeTagIds, query.excludeTagIds, query.tagMode, query.conn, query.sort, query.order, query.pageSize]);
   const [cursorTrail, setCursorTrail] = useState<string[]>(() => loadCursorTrail(cursorStorageKey(parseQuery(window.location.search))));
   const cursorTrailRef = useRef(cursorTrail); cursorTrailRef.current = cursorTrail;
@@ -120,6 +125,10 @@ export function useServers(active: boolean) {
 
   const [page, setPage] = useState<ServerPage>(EMPTY_PAGE);
   const [facets, setFacets] = useState<ServerFacets>(EMPTY_FACETS);
+  const [facetDataKey, setFacetDataKey] = useState<string | null>(null);
+  const [facetLoading, setFacetLoading] = useState(false);
+  const [facetError, setFacetError] = useState<string | null>(null);
+  const [facetErrorKey, setFacetErrorKey] = useState<string | null>(null);
   // 跨页勾选：id → ip（一键测试需要 IP 列表，跨页后不能只靠当前页推导）
   const [selected, setSelected] = useState<Map<number, string>>(() => {
     try { return new Map(JSON.parse(sessionStorage.getItem('probe_selected_servers') || '[]') as [number,string][]); }
@@ -199,15 +208,24 @@ export function useServers(active: boolean) {
 
   const refreshFacets = useCallback(async () => {
     if (!isVisible()) return;
+    const requested = queryRef.current;
+    const requestedKey = facetKeyFor(requested);
     facetController.current?.abort();
     const controller = new AbortController();
     facetController.current = controller;
     const generation = ++facetGeneration.current;
+    setFacetLoading(true); setFacetError(null); setFacetErrorKey(null);
     try {
-      const next = await probeApi.serverFacets(controller.signal);
-      if (!controller.signal.aborted && generation === facetGeneration.current) setFacets(next);
+      const next = await probeApi.serverFacets(requested, controller.signal);
+      if (!controller.signal.aborted && generation === facetGeneration.current) {
+        setFacets(next); setFacetDataKey(requestedKey);
+      }
     } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) throw error;
+      if (!(error instanceof DOMException && error.name === 'AbortError') && generation === facetGeneration.current) {
+        setFacetError(requestErrorMessage(error)); setFacetErrorKey(requestedKey);
+      }
+    } finally {
+      if (generation === facetGeneration.current) setFacetLoading(false);
     }
   }, [isVisible]);
 
@@ -223,7 +241,7 @@ export function useServers(active: boolean) {
   useEffect(() => {
     if (!isVisible()) return;
     void refreshFacets().catch(() => {});
-  }, [active, isVisible, refreshFacets]);
+  }, [active, facetFilterKey, isVisible, refreshFacets]);
   useEffect(() => { if (isVisible() && query.sort === 'ip') void refreshCount().catch(() => {}); }, [active, countFilterKey, isVisible, query.sort, refreshCount]);
 
   // 服务器库轮询：仅 Tab 激活且页面可见时，10s 一拍；隐藏即中止请求，回前台立即刷新
@@ -251,6 +269,7 @@ export function useServers(active: boolean) {
   }, [active, isVisible, refreshAll]);
 
   const updateQuery = useCallback((changes: Partial<ServerQuery>, resetPage = true) => {
+    if (resetPage) pushUrlRef.current = true;
     setQuery((current) => ({ ...current, ...changes, ...(resetPage && !Object.prototype.hasOwnProperty.call(changes, 'cursor') ? { cursor: undefined } : {}), page: resetPage ? 1 : (changes.page ?? current.page) }));
   }, []);
 
@@ -258,10 +277,21 @@ export function useServers(active: boolean) {
     if ((queryRef.current.q ?? '') === q) return;
     updateQuery({ q });
   }, [updateQuery]);
-  const setGroup = useCallback((group: string) => updateQuery({ group: group === 'all' ? undefined : group }), [updateQuery]);
+  const setGroup = useCallback((group: string) => updateQuery({ group: group === 'all' ? undefined : group, groupIds: undefined }), [updateQuery]);
+  const setGroupIds = useCallback((ids: string[]) => updateQuery({ group: undefined, groupIds: [...new Set(ids)] }), [updateQuery]);
   // null = 取消筛选；'' = 筛「无标签」行，二者不可混淆
   const setLabel = useCallback((label: string | null) => updateQuery({ label: label === null ? undefined : label }), [updateQuery]);
-  const setTagId = useCallback((tagId: string | null) => updateQuery({ tagId: tagId === null ? undefined : tagId, label: undefined }), [updateQuery]);
+  const setTagId = useCallback((tagId: string | null) => updateQuery({
+    tagId: tagId === null ? undefined : tagId,
+    label: undefined,
+    ...(tagId ? {
+      includeTagIds: undefined,
+      excludeTagIds: (queryRef.current.excludeTagIds ?? []).filter((id) => id !== tagId),
+    } : {}),
+  }), [updateQuery]);
+  const setIncludeTagIds = useCallback((ids: string[]) => updateQuery({ tagId: undefined, label: undefined, includeTagIds: [...new Set(ids)] }), [updateQuery]);
+  const setExcludeTagIds = useCallback((ids: string[]) => updateQuery({ excludeTagIds: [...new Set(ids)] }), [updateQuery]);
+  const setTagMode = useCallback((tagMode: 'any' | 'all') => updateQuery({ tagMode }), [updateQuery]);
   const setConn = useCallback((conn: ServerConn) => updateQuery({ conn }), [updateQuery]);
   const setSort = useCallback((sort: ServerSort, order: DiscoverOrder) => updateQuery({ sort, order }), [updateQuery]);
   const setPageNumber = useCallback((nextPage: number) => updateQuery({ page: nextPage }, false), [updateQuery]);
@@ -314,6 +344,9 @@ export function useServers(active: boolean) {
     query,
     page,
     facets,
+    facetsCurrent: facetDataKey === facetFilterKey,
+    facetsLoading: facetLoading,
+    facetsError: facetErrorKey === facetFilterKey ? facetError : null,
     totalCount: cursorMode ? (totalCountKey === countFilterKey ? totalCount : null) : page.total,
     pageLoading,
     pageError,
@@ -328,8 +361,12 @@ export function useServers(active: boolean) {
     setSelected,
     setSearch,
     setGroup,
+    setGroupIds,
     setLabel,
     setTagId,
+    setIncludeTagIds,
+    setExcludeTagIds,
+    setTagMode,
     setConn,
     setSort,
     setPageNumber,
