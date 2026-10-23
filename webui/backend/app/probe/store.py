@@ -1601,17 +1601,6 @@ class ProbeStore:
 
         return self._with_connection(read)
 
-    # 连通性分级表达式：与前端 ConnBadge 展示语义对齐（未测=0；fail=测过未全过 1..3）。
-    _CONN_SCORE_SQL = """(CASE
-        WHEN c.test_time IS NULL THEN 0
-        WHEN COALESCE(json_extract(c.data,'$.frps_reachable'),0)=1
-             AND COALESCE(json_extract(c.data,'$.tunnel_established'),0)=1
-             AND COALESCE(json_extract(c.data,'$.firewall_open'),0)=1 THEN 4
-        WHEN COALESCE(json_extract(c.data,'$.frps_reachable'),0)=1
-             AND COALESCE(json_extract(c.data,'$.tunnel_established'),0)=1 THEN 3
-        WHEN COALESCE(json_extract(c.data,'$.frps_reachable'),0)=1 THEN 2
-        ELSE 1 END)"""
-
     def _server_where(self, query: ServerPageQuery) -> tuple[str, list[object]]:
         where: list[str] = []
         params: list[object] = []
@@ -1650,7 +1639,7 @@ class ProbeStore:
             where.append(f"NOT EXISTS (SELECT 1 FROM probe_server_tags st WHERE st.server_id=s.id AND st.tag_id IN ({','.join('?' for _ in exclude_ids)}))")
             params.extend(exclude_ids)
         if query.conn != "all":
-            score = self._CONN_SCORE_SQL
+            score = "s.conn_score"
             where.append({"pass": f"{score} = 4", "partial": f"{score} IN (2, 3)",
                           "fail": f"{score} BETWEEN 1 AND 3", "untested": f"{score} = 0"}[query.conn])
         return (" WHERE " + " AND ".join(where) if where else ""), params
@@ -1663,7 +1652,7 @@ class ProbeStore:
             return [("s.server_group", direction), ("(s.ip_sort IS NULL)", "ASC"),
                     ("s.ip_sort", direction), ("s.id", direction)]
         if query.sort == "conn":
-            return [(self._CONN_SCORE_SQL, direction), ("s.id", direction)]
+            return [("s.conn_score", direction), ("s.id", direction)]
         if query.sort == "speed":
             return [("s.speed_sort", direction), ("s.id", direction)]
         return [("(s.time_sort IS NULL)", "ASC"), ("s.time_sort", direction), ("s.id", direction)]
@@ -1681,11 +1670,7 @@ class ProbeStore:
 
     @staticmethod
     def _server_count_from_sql(query: ServerPageQuery) -> str:
-        if query.conn == "all":
-            return "FROM probe_servers s"
-        return f"""FROM probe_servers s LEFT JOIN main.probe_current_results c
-            ON c.server_ip=probe_endpoint_host(s.ip) AND c.kind='connectivity'
-            AND c.port={PROBE_TEST_PORT} AND probe_endpoint_port(s.ip)={PROBE_TEST_PORT}"""
+        return "FROM probe_servers s"
 
     @staticmethod
     def _server_select_sql() -> str:
@@ -1899,11 +1884,11 @@ class ProbeStore:
             # One aggregate statement yields the bounded, stable candidate page,
             # total candidate count, and legacy name projection.
             tag_rows = connection.execute(
-                "WITH facet_servers AS (SELECT s.id " + tag_source + tag_where + "), "
+                "WITH facet_servers AS MATERIALIZED (SELECT s.id " + tag_source + tag_where + "), "
                 "tag_counts AS ("
                 "SELECT t.id AS tag_id,c.id AS category_id,c.name AS category,t.name AS name,"
-                "COUNT(DISTINCT fs.id) AS count "
-                "FROM facet_servers fs JOIN probe_server_tags st ON st.server_id=fs.id "
+                "COUNT(*) AS count "
+                "FROM facet_servers fs CROSS JOIN probe_server_tags st ON st.server_id=fs.id "
                 "JOIN probe_tags t ON t.id=st.tag_id "
                 "JOIN probe_tag_categories c ON c.id=t.category_id "
                 "WHERE (?='' OR c.name LIKE ? ESCAPE '\\' COLLATE NOCASE "
@@ -1912,10 +1897,11 @@ class ProbeStore:
                 "tag_page AS (SELECT * FROM tag_counts "
                 "ORDER BY category COLLATE BINARY,name COLLATE BINARY,tag_id COLLATE BINARY" + tag_page_limit + "), "
                 "tag_total AS (SELECT COUNT(*) AS total FROM tag_counts), "
-                "legacy_labels AS ("
-                "SELECT t.name AS name,COUNT(DISTINCT fs.id) AS count "
-                "FROM facet_servers fs JOIN probe_server_tags st ON st.server_id=fs.id "
-                "JOIN probe_tags t ON t.id=st.tag_id GROUP BY t.name) "
+                "legacy_server_names AS ("
+                "SELECT fs.id AS server_id,t.name AS name "
+                "FROM facet_servers fs CROSS JOIN probe_server_tags st ON st.server_id=fs.id "
+                "JOIN probe_tags t ON t.id=st.tag_id GROUP BY fs.id,t.name), "
+                "legacy_labels AS (SELECT name,COUNT(*) AS count FROM legacy_server_names GROUP BY name) "
                 "SELECT 'tag' AS facet,p.tag_id,p.category_id,p.category,p.name,p.count,total.total AS tag_total "
                 "FROM tag_total total LEFT JOIN tag_page p ON 1=1 "
                 "UNION ALL "

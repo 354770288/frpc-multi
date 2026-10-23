@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS probe_servers (
     ip_sort INTEGER,
     speed_sort REAL NOT NULL DEFAULT 0,
     time_sort TEXT,
+    conn_score INTEGER NOT NULL DEFAULT 0 CHECK(conn_score BETWEEN 0 AND 4),
     label TEXT NOT NULL DEFAULT '',
     server_group TEXT NOT NULL DEFAULT '',
     group_id TEXT,
@@ -527,6 +528,16 @@ def _probe_asset_host_sql(value: str) -> str:
     return f"(CASE WHEN {is_port_7000} THEN substr({value},1,instr({value},':')-1) ELSE {value} END)"
 
 
+def _probe_conn_score_sql(data: str) -> str:
+    """Classify one connectivity projection row using the server-list semantics."""
+    reachable = f"COALESCE(json_extract({data},'$.frps_reachable'),0)"
+    tunnel = f"COALESCE(json_extract({data},'$.tunnel_established'),0)"
+    firewall = f"COALESCE(json_extract({data},'$.firewall_open'),0)"
+    return (f"CASE WHEN {reachable}=1 AND {tunnel}=1 AND {firewall}=1 THEN 4 "
+            f"WHEN {reachable}=1 AND {tunnel}=1 THEN 3 "
+            f"WHEN {reachable}=1 THEN 2 ELSE 1 END")
+
+
 def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
     """Maintain materialized IP/speed/time sort keys and their query indexes."""
     columns = _column_names(connection, "probe_servers")
@@ -541,6 +552,8 @@ def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
             connection.execute("ALTER TABLE probe_servers ADD COLUMN speed_sort REAL NOT NULL DEFAULT 0")
         if "time_sort" not in columns:
             connection.execute("ALTER TABLE probe_servers ADD COLUMN time_sort TEXT")
+        if "conn_score" not in columns:
+            connection.execute("ALTER TABLE probe_servers ADD COLUMN conn_score INTEGER NOT NULL DEFAULT 0")
 
         # 物化批次 + id 单调游标：既避免「遍历游标同时改 WHERE 列」的未定义行为，
         # 也保证整批无法解析的行不会死循环（这些行永驻 NULL，null-last 排序兜底）。
@@ -589,6 +602,23 @@ def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
                 "VALUES('probe_server_measurement_sort_seeded','1')"
             )
 
+        conn_score_seeded = connection.execute(
+            "SELECT 1 FROM probe_settings WHERE key='probe_server_conn_score_seeded'"
+        ).fetchone()
+        if conn_score_seeded is None:
+            asset_host = _probe_asset_host_sql("probe_servers.ip")
+            connection.execute(
+                "UPDATE probe_servers SET conn_score=COALESCE(("
+                f"SELECT {_probe_conn_score_sql('r.data')} FROM probe_current_results r "
+                "WHERE r.kind='connectivity' AND r.port=7000 "
+                f"AND r.server_ip={asset_host}"
+                "),0)"
+            )
+            connection.execute(
+                "INSERT INTO probe_settings(key,value) "
+                "VALUES('probe_server_conn_score_seeded','1')"
+            )
+
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_probe_servers_group_ip "
             "ON probe_servers (server_group, ip)"
@@ -611,6 +641,18 @@ def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_probe_servers_speed_sort_id "
             "ON probe_servers (speed_sort, id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_servers_conn_score "
+            "ON probe_servers (conn_score, server_group, (ip_sort IS NULL), ip_sort, id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_servers_conn_score_id "
+            "ON probe_servers (conn_score, id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_servers_group_conn_score "
+            "ON probe_servers (group_id, conn_score, server_group, (ip_sort IS NULL), ip_sort, id)"
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_probe_servers_current_host "
@@ -680,6 +722,60 @@ def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
                         WHERE r.kind='speed' AND r.port=7000
                         AND r.server_ip={new_asset_host})
                 WHERE id=NEW.id;
+            END""")
+
+        conn_score = _probe_conn_score_sql("NEW.data")
+        old_current_host = _probe_asset_host_sql("OLD.server_ip")
+        new_current_host = _probe_asset_host_sql("NEW.server_ip")
+        connection.execute(f"""CREATE TRIGGER IF NOT EXISTS probe_servers_conn_insert
+            AFTER INSERT ON probe_current_results
+            WHEN NEW.kind='connectivity' AND NEW.port=7000
+            BEGIN
+                UPDATE probe_servers SET conn_score={conn_score}
+                WHERE {current_asset_host}=NEW.server_ip AND conn_score<>{conn_score};
+            END""")
+        connection.execute(f"""CREATE TRIGGER IF NOT EXISTS probe_servers_conn_update
+            AFTER UPDATE ON probe_current_results
+            BEGIN
+                UPDATE probe_servers SET conn_score=0
+                WHERE OLD.kind='connectivity' AND OLD.port=7000
+                  AND NOT (NEW.kind='connectivity' AND NEW.port=7000
+                           AND {old_current_host}={new_current_host})
+                  AND {current_asset_host}=OLD.server_ip AND conn_score<>0;
+                UPDATE probe_servers SET conn_score={conn_score}
+                WHERE NEW.kind='connectivity' AND NEW.port=7000
+                  AND {current_asset_host}=NEW.server_ip AND conn_score<>{conn_score};
+            END""")
+        connection.execute(f"""CREATE TRIGGER IF NOT EXISTS probe_servers_conn_delete
+            AFTER DELETE ON probe_current_results
+            WHEN OLD.kind='connectivity' AND OLD.port=7000
+            BEGIN
+                UPDATE probe_servers SET conn_score=0
+                WHERE {current_asset_host}=OLD.server_ip AND conn_score<>0;
+            END""")
+        connection.execute(f"""CREATE TRIGGER IF NOT EXISTS probe_servers_conn_ip_refresh
+            AFTER UPDATE OF ip ON probe_servers
+            BEGIN
+                UPDATE probe_servers SET conn_score=COALESCE((
+                    SELECT {_probe_conn_score_sql('r.data')} FROM probe_current_results r
+                    WHERE r.kind='connectivity' AND r.port=7000
+                      AND r.server_ip={new_asset_host}),0)
+                WHERE id=NEW.id AND conn_score<>COALESCE((
+                    SELECT {_probe_conn_score_sql('r.data')} FROM probe_current_results r
+                    WHERE r.kind='connectivity' AND r.port=7000
+                      AND r.server_ip={new_asset_host}),0);
+            END""")
+        connection.execute(f"""CREATE TRIGGER IF NOT EXISTS probe_servers_conn_asset_insert
+            AFTER INSERT ON probe_servers
+            BEGIN
+                UPDATE probe_servers SET conn_score=COALESCE((
+                    SELECT {_probe_conn_score_sql('r.data')} FROM probe_current_results r
+                    WHERE r.kind='connectivity' AND r.port=7000
+                      AND r.server_ip={new_asset_host}),0)
+                WHERE id=NEW.id AND conn_score<>COALESCE((
+                    SELECT {_probe_conn_score_sql('r.data')} FROM probe_current_results r
+                    WHERE r.kind='connectivity' AND r.port=7000
+                      AND r.server_ip={new_asset_host}),0);
             END""")
     except Exception:
         connection.rollback()

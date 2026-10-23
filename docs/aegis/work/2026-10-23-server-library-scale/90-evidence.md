@@ -313,3 +313,30 @@ Plan coverage limit: this run includes 7,000 current rows, not 9 historical rows
 - The 100k mutation runs use a synthetic single-process SQLite fixture and do not include historical results, concurrent production I/O, production hardware, or HTTP/browser latency. They are end-to-end worker smokes, not the plan’s concurrent P50/P95 capacity certification.
 
 The async import backend and UI now share the existing bulk lease/worker; no second scheduler owner was introduced. Browser state persists pending request bodies and idempotency keys before POST, restores jobs after reload/navigation, isolates stale responses by job ID, and exposes only retryable failures to retry actions.
+
+## Slice: 100k concurrent read/write acceptance and indexed connectivity filters
+
+- Fixture: 100,000 assets, 16 groups, 32 tags / 100,000 tag links, 900,000 historical results (three test kinds × three rounds per asset), and 300,000 current projections (route/connectivity/speed for every asset). This run exercises dense current status together with full history.
+- Host: macOS 26.5 ARM, 10 cores, 16 GiB RAM; Python 3.14.2, SQLite 3.51.2. Isolated temporary database removed after the run.
+- Workload: five concurrent readers issuing actual `ProbeStore` list/count/facets calls plus one writer updating current results and adding immutable history for 30.446 s; 2,035 writer commits and 6,105 additional history rows; zero SQLite busy/errors.
+- P50/P95: filtered list page 14.1/18.8 ms; filtered count 12.6/16.5 ms; global facets 235.4/272.1 ms; tag+conn facets 84.4/106.4 ms; group+tag+conn facets 28.8/39.1 ms; write transaction 13.5/17.8 ms.
+- Database: initial fixture+WAL+SHM 575.1 MB; end main database 563,167,232 bytes. Process CPU 135.031 s; sampled RSS peak 97.2 MiB, end 96.3 MiB.
+- Query plans: connection filters search `idx_probe_servers_conn_score` or `idx_probe_servers_group_conn_score`; filtered pages use the group/connection composite index and tag filters use the server/tag primary-key index. Filtered page still uses a temporary B-tree for final sort and facets retain temporary grouping; observed latency remains below the 500 ms 100k target. Global facets also remain below 500 ms.
+- Root cause / change: the previous path recalculated the connectivity score from current-result JSON per asset and joined the result projection for count/facets. A rebuildable `probe_servers.conn_score` projection now derives from the authoritative `probe_current_results`; migration/backfill and same-transaction triggers maintain it, and filters/count/order plus facets use indexed scores. The current-result projection remains the display/read source.
+- Before this projection was added, the same workload measured tag+conn facets P95 4.52 s, group+tag+conn 1.79 s, and filtered page 507 ms. Afterward these measured 106 ms, 39 ms, and 19 ms respectively.
+
+This closes the 100k concurrent read/write P50/P95 gate for the measured fixture. The 1M equivalent concurrent workload, actual destination-network timing distributions, production migration/rollback, and deployment checks remain unverified.
+
+## Slice: indexed connectivity score and final 100k dense reprobe
+
+- `probe_servers.conn_score` is a rebuildable 0–4 projection derived only from `probe_current_results` for connectivity:7000. Migration backfills once; same-transaction current-result insert/update/delete and asset insert/IP changes maintain it. `ProbeStore` filters, exact counts, conn sorting and contextual facets use the materialized score; list display continues to read the current-results projection.
+- Anti-entropy review: the old per-row JSON score expression was retired from filter/count/order hot paths. The current-results projection remains the sole business result source; the new asset column is derived state. No live rows were deleted.
+- Indexes cover `(conn_score,id)` stable status sorting, `(conn_score,server_group,ip-order...)`, and `(group_id,conn_score,server_group,ip-order...)`. EXPLAIN confirms conn sorting uses its index without ORDER BY temp B-tree; contextual facets point-query tags through the `(server_id,tag_id)` primary key.
+- Final fixture: 100k assets, 900k immutable history rows (three kinds × three rounds per asset), 300k current projections (all three kinds for every asset), and 100k tag links. Host macOS 26.5 ARM, 10 CPU cores, 16 GiB; Python 3.14.2 / SQLite 3.51.2.
+- 30.476 s with five read threads and one writer. The writer alternated the same connectivity projection between scores 4 and 1 to exercise conn index updates; 1,959 commits / 5,877 history rows; busy/errors=0. Write-transaction P50/P95 14.0/18.1 ms.
+- Query P50/P95: filtered page 14.4/19.0 ms; filtered count 12.7/16.6 ms; global facets 236.2/266.5 ms; tag+conn facets 81.5/92.4 ms; group+tag+conn facets 29.7/40.5 ms; IP/speed/time first page P95 25.4/25.9/25.7 ms. All measured 100k query P95 values meet the 500 ms target.
+- DB+WAL+SHM at seed: 576,523,648 bytes; main DB after the run: 564,531,200 bytes. Sampled RSS peak 100.6 MiB, end 84.9 MiB.
+- A prior pre-score run measured tag+conn facets P95 4.52 s and group+tag+conn 1.79 s. After materialization, the first dense run measured 106/39 ms; after adding the conn-sort tie-break index, this final run measured 92/41 ms. The additional index kept write/query latency close to the prior dense run.
+- Final related backend suite after conn-score/index changes: 280 tests passed. Independent spec and quality reviews found no P1/P2 issue in the projection, triggers, or indexes.
+
+The concurrent 100k release target is met for this synthetic full-history/dense-current fixture. The 1M concurrent target, actual destination-network distributions, and production migration/rollback remain open.

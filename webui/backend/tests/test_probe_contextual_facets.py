@@ -4,10 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import json
 
 os.environ.setdefault("PROJECT_DIR", tempfile.mkdtemp(prefix="probe-context-facets-"))
 
-from app.control.database import connect_database
+from app.control.database import _migrate_probe_servers, connect_database
 from app.probe.store import ProbeStore, ServerPageQuery
 
 
@@ -181,6 +182,122 @@ class ContextualServerFacetTests(unittest.TestCase):
         self.assertEqual(searched["labels"], first["labels"])
         self.assertEqual(searched["groups"], first["groups"])
 
+    def test_legacy_label_facet_deduplicates_same_name_across_categories(self):
+        server = self.add("203.0.113.45", "east", ["shared-name"])
+        connection = connect_database(self.path)
+        try:
+            connection.execute("INSERT INTO probe_tag_categories(id,name,created_at) VALUES('duplicate-category','duplicate','2026-10-24')")
+            connection.execute("INSERT INTO probe_tags(id,category_id,name,created_at) VALUES('duplicate-name-tag','duplicate-category','shared-name','2026-10-24')")
+            connection.execute("INSERT INTO probe_server_tags(server_id,tag_id) VALUES(?,?)", (server.id, "duplicate-name-tag"))
+            connection.commit()
+        finally:
+            connection.close()
+        facets = self.store.server_facets()
+        self.assertEqual({row["label"]: row["count"] for row in facets["labels"]}["shared-name"], 1)
+        same_name_tags = [row for row in facets["tagItems"] if row["name"] == "shared-name"]
+        self.assertEqual(len(same_name_tags), 2)
+        self.assertEqual([row["count"] for row in same_name_tags], [1, 1])
+
+    def test_conn_score_projection_tracks_current_results_and_fixed_port_hosts(self):
+        connection = connect_database(self.path)
+        try:
+            connection.execute(
+                "INSERT INTO probe_current_results(server_ip,kind,port,source_result_id,node_id,job_id,task_id,generation,test_time,data) "
+                "VALUES('192.0.2.51','connectivity',7000,1,'node','job','task',0,'now',?)",
+                (json.dumps({"frps_reachable": 0, "tunnel_established": 0, "firewall_open": 0}),),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        base = self.add("192.0.2.51", "east", [])
+        port_alias = self.add("192.0.2.51:7000", "east", [])
+        alternate_port = self.add("192.0.2.51:7001", "east", [])
+        untested = self.add("192.0.2.99", "east", [])
+
+        def score(server_id):
+            connection = connect_database(self.path)
+            try:
+                return connection.execute("SELECT conn_score FROM probe_servers WHERE id=?", (server_id,)).fetchone()[0]
+            finally:
+                connection.close()
+
+        self.assertEqual((score(base.id), score(port_alias.id), score(alternate_port.id), score(untested.id)), (1, 1, 0, 0))
+        connection = connect_database(self.path)
+        try:
+            before = connection.total_changes
+            connection.execute("UPDATE probe_current_results SET test_time='same-score-time' WHERE server_ip='192.0.2.51' AND kind='connectivity' AND port=7000")
+            self.assertEqual(connection.total_changes - before, 1)
+            before = connection.total_changes
+            connection.execute("UPDATE probe_current_results SET data=? WHERE server_ip='192.0.2.51' AND kind='connectivity' AND port=7000",
+                               (json.dumps({"frps_reachable": 0, "tunnel_established": 0, "firewall_open": 0, "detail": "updated"}),))
+            self.assertEqual(connection.total_changes - before, 1)
+        finally:
+            connection.close()
+        updates = [
+            {"frps_reachable": 1, "tunnel_established": 0, "firewall_open": 0},
+            {"frps_reachable": 1, "tunnel_established": 1, "firewall_open": 0},
+            {"frps_reachable": 1, "tunnel_established": 1, "firewall_open": 1},
+        ]
+        connection = connect_database(self.path)
+        try:
+            for payload in updates:
+                connection.execute("UPDATE probe_current_results SET data=? WHERE server_ip='192.0.2.51' AND kind='connectivity' AND port=7000",
+                                   (json.dumps(payload),))
+                expected = 2 if not payload["tunnel_established"] else (3 if not payload["firewall_open"] else 4)
+                self.assertEqual(connection.execute("SELECT conn_score FROM probe_servers WHERE id IN (?,?) ORDER BY id",
+                                                    (base.id, port_alias.id)).fetchall()[0][0], expected)
+                self.assertEqual(connection.execute("SELECT conn_score FROM probe_servers WHERE id=?", (port_alias.id,)).fetchone()[0], expected)
+                self.assertEqual(connection.execute("SELECT conn_score FROM probe_servers WHERE id=?", (alternate_port.id,)).fetchone()[0], 0)
+            connection.commit()
+            ordered = self.store.query_servers(ServerPageQuery(sort="conn", order="desc", page_size=10))
+            ordered_scores = [item["conn_score"] for item in ordered["items"]]
+            self.assertEqual(ordered_scores, [4, 4, 0, 0])
+            connection.execute("DELETE FROM probe_current_results WHERE server_ip='192.0.2.51' AND kind='connectivity' AND port=7000")
+            self.assertEqual(connection.execute("SELECT conn_score FROM probe_servers WHERE id IN (?,?) ORDER BY id",
+                                                (base.id, port_alias.id)).fetchall()[0][0], 0)
+            self.assertEqual(connection.execute("SELECT conn_score FROM probe_servers WHERE id=?", (port_alias.id,)).fetchone()[0], 0)
+            connection.execute("UPDATE probe_servers SET ip='192.0.2.52' WHERE id=?", (base.id,))
+            self.assertEqual(connection.execute("SELECT conn_score FROM probe_servers WHERE id=?", (base.id,)).fetchone()[0], 0)
+            connection.execute(
+                "INSERT INTO probe_current_results(server_ip,kind,port,source_result_id,node_id,job_id,task_id,generation,test_time,data) "
+                "VALUES('192.0.2.52','connectivity',7000,2,'node','job','task-2',0,'now',?)",
+                (json.dumps({"frps_reachable": 1, "tunnel_established": 0, "firewall_open": 0}),),
+            )
+            self.assertEqual(connection.execute("SELECT conn_score FROM probe_servers WHERE id=?", (base.id,)).fetchone()[0], 2)
+            connection.execute("DELETE FROM probe_current_results WHERE server_ip='192.0.2.52' AND kind='connectivity' AND port=7000")
+            self.assertEqual(connection.execute("SELECT conn_score FROM probe_servers WHERE id=?", (base.id,)).fetchone()[0], 0)
+        finally:
+            connection.close()
+
+    def test_conn_score_migration_adds_and_backfills_legacy_column(self):
+        server = self.add("192.0.2.61", "east", [])
+        connection = connect_database(self.path)
+        try:
+            connection.execute(
+                "INSERT INTO probe_current_results(server_ip,kind,port,source_result_id,node_id,job_id,task_id,generation,test_time,data) "
+                "VALUES('192.0.2.61','connectivity',7000,61,'node','job','task-61',0,'now',?)",
+                (json.dumps({"frps_reachable": 1, "tunnel_established": 1, "firewall_open": 1}),),
+            )
+            for trigger in ("probe_servers_conn_insert", "probe_servers_conn_update", "probe_servers_conn_delete",
+                            "probe_servers_conn_ip_refresh", "probe_servers_conn_asset_insert"):
+                connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            connection.execute("DROP INDEX IF EXISTS idx_probe_servers_conn_score")
+            connection.execute("DROP INDEX IF EXISTS idx_probe_servers_conn_score_id")
+            connection.execute("DROP INDEX IF EXISTS idx_probe_servers_group_conn_score")
+            connection.execute("DELETE FROM probe_settings WHERE key='probe_server_conn_score_seeded'")
+            connection.execute("ALTER TABLE probe_servers DROP COLUMN conn_score")
+            connection.commit()
+            _migrate_probe_servers(connection)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(probe_servers)")}
+            self.assertIn("conn_score", columns)
+            self.assertEqual(connection.execute("SELECT conn_score FROM probe_servers WHERE id=?", (server.id,)).fetchone()[0], 4)
+            connection.execute("UPDATE probe_servers SET conn_score=0 WHERE id=?", (server.id,))
+            connection.commit()
+            _migrate_probe_servers(connection)
+            self.assertEqual(connection.execute("SELECT conn_score FROM probe_servers WHERE id=?", (server.id,)).fetchone()[0], 0)
+        finally:
+            connection.close()
+
     def test_facets_are_sql_aggregates_and_use_current_projection_for_100k(self):
         c = connect_database(self.path)
         try:
@@ -237,7 +354,8 @@ class ContextualServerFacetTests(unittest.TestCase):
         group_sql = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT S.SERVER_GROUP")]
         self.assertEqual(len(aggregate_sql), 1)
         self.assertEqual(len(group_sql), 1)
-        self.assertIn("probe_current_results", aggregate_sql[0])
+        self.assertIn("s.conn_score = 4", aggregate_sql[0])
+        self.assertNotIn("probe_current_results", aggregate_sql[0])
         self.assertNotIn("probe_results", aggregate_sql[0])
         explain_connection = connect_database(self.path)
         try:
@@ -247,9 +365,13 @@ class ContextualServerFacetTests(unittest.TestCase):
             plan_text = " ".join(str(row["detail"]) for row in plan)
         finally:
             explain_connection.close()
-        self.assertIn("probe_current_results", plan_text)
-        self.assertRegex(plan_text, r"SEARCH c USING (?:COVERING )?INDEX [^ ]*probe_current_results")
+        self.assertRegex(plan_text, r"SEARCH s USING (?:COVERING )?INDEX idx_probe_servers_group_conn_score \(group_id=\? AND conn_score=\?\)")
+        self.assertNotIn("probe_current_results", plan_text)
         self.assertNotIn("probe_results", plan_text)
+        self.assertIn("MATERIALIZE facet_servers", plan_text)
+        self.assertRegex(plan_text, r"SEARCH st USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 \(server_id=\?\)")
+        self.assertNotIn("SCAN st", plan_text)
+        self.assertNotIn("COUNT(DISTINCT", aggregate_sql[0].upper())
         statements.clear()
         paged = TraceStore(self.path).server_facets(
             ServerPageQuery(group_ids=("group-east",), include_tag_ids=("facet-red",), conn="pass"),
@@ -265,9 +387,50 @@ class ContextualServerFacetTests(unittest.TestCase):
             paged_plan_text = " ".join(str(row["detail"]) for row in paged_plan)
         finally:
             explain_connection.close()
-        self.assertRegex(paged_plan_text, r"SEARCH c USING (?:COVERING )?INDEX [^ ]*probe_current_results")
+        self.assertRegex(paged_plan_text, r"SEARCH s USING (?:COVERING )?INDEX idx_probe_servers_group_conn_score \(group_id=\? AND conn_score=\?\)")
+        self.assertIn("MATERIALIZE facet_servers", paged_plan_text)
+        self.assertRegex(paged_plan_text, r"SEARCH st USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 \(server_id=\?\)")
+        self.assertNotIn("SCAN st", paged_plan_text)
+        self.assertNotIn("COUNT(DISTINCT", paged_sql.upper())
         self.assertEqual(len(paged["tagItems"]), 1)
         self.assertEqual((paged["tagPage"], paged["tagPageSize"], paged["tagTotal"]), (1, 1, 2))
+
+        statements.clear()
+        page_query = ServerPageQuery(
+            group_ids=("group-east",), include_tag_ids=("facet-red",), conn="pass", sort="group", page_size=50,
+        )
+        server_page = TraceStore(self.path).query_servers(page_query)
+        page_sql = next(sql for sql in statements if sql.lstrip().upper().startswith("SELECT S.*"))
+        where_sql = page_sql.upper().split(" WHERE ", 1)[1]
+        self.assertIn("S.CONN_SCORE = 4", where_sql)
+        self.assertNotIn("JSON_EXTRACT", where_sql)
+        explain_connection = connect_database(self.path)
+        try:
+            explain_connection.create_function("probe_endpoint_host", 1, lambda value: value)
+            explain_connection.create_function("probe_endpoint_port", 1, lambda value: 7000)
+            page_plan = explain_connection.execute("EXPLAIN QUERY PLAN " + page_sql).fetchall()
+            page_plan_text = " ".join(str(row["detail"]) for row in page_plan)
+        finally:
+            explain_connection.close()
+        self.assertRegex(page_plan_text, r"SEARCH s USING INDEX idx_probe_servers_group_conn_score \(group_id=\? AND conn_score=\?\)")
+        self.assertNotIn("USE TEMP B-TREE", page_plan_text)
+        self.assertEqual((len(server_page["items"]), server_page["total"]), (50, 25_000))
+
+        statements.clear()
+        ordered_page = TraceStore(self.path).query_servers(ServerPageQuery(sort="conn", order="desc", page_size=50))
+        ordered_sql = next(sql for sql in statements if sql.lstrip().upper().startswith("SELECT S.*"))
+        explain_connection = connect_database(self.path)
+        try:
+            explain_connection.create_function("probe_endpoint_host", 1, lambda value: value)
+            explain_connection.create_function("probe_endpoint_port", 1, lambda value: 7000)
+            ordered_plan = explain_connection.execute("EXPLAIN QUERY PLAN " + ordered_sql).fetchall()
+            ordered_plan_text = " ".join(str(row["detail"]) for row in ordered_plan)
+        finally:
+            explain_connection.close()
+        self.assertIn("idx_probe_servers_conn_score_id", ordered_plan_text)
+        self.assertNotIn("USE TEMP B-TREE", ordered_plan_text)
+        ordered_scores = [item["conn_score"] for item in ordered_page["items"]]
+        self.assertEqual(ordered_scores, sorted(ordered_scores, reverse=True))
 
     def _seed_connectivity(self, values):
         connection = connect_database(self.path)

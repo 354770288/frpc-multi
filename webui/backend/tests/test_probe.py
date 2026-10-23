@@ -623,7 +623,7 @@ class ProbeStoreTests(unittest.TestCase):
             ServerPageQuery(sort="ip", page_size=1), page["nextCursor"])
         self.assertEqual(next_page["items"][0]["ip"], "198.21.0.2")
 
-    def test_server_count_avoids_result_joins_unless_connectivity_filtered(self):
+    def test_server_count_uses_materialized_connectivity_score_without_result_join(self):
         from app.control.database import connect_database
         from app.probe.store import ProbeStore, ServerPageQuery
         statements = []
@@ -644,8 +644,8 @@ class ProbeStoreTests(unittest.TestCase):
         statements.clear()
         traced.count_servers(ServerPageQuery(conn="pass"))
         count_sql = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT COUNT(*)")][-1]
-        self.assertIn("kind='connectivity'", count_sql)
-        self.assertNotIn("kind='speed'", count_sql)
+        self.assertIn("s.conn_score = 4", count_sql)
+        self.assertNotIn("probe_current_results", count_sql)
 
     def test_server_facets_are_sql_aggregates(self):
         self.store.create_server(ip="198.20.0.1", labels=["facet-a"])
@@ -667,7 +667,7 @@ class ProbeStoreTests(unittest.TestCase):
                     connection.close()
 
         TraceStore(self.store.database_path).server_facets()
-        self.assertTrue(any("GROUP BY t.name" in statement for statement in statements))
+        self.assertTrue(any("GROUP BY fs.id,t.name" in statement for statement in statements))
         self.assertFalse(any("SELECT label FROM probe_servers" in statement for statement in statements))
 
     def test_query_servers_filters(self):
