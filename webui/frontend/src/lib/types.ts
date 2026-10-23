@@ -358,6 +358,12 @@ export type ServerQuery = {
   q?: string;
   group?: string;
   label?: string;
+  tagId?: string;
+  groupIds?: string[];
+  includeTagIds?: string[];
+  excludeTagIds?: string[];
+  tagMode?: 'any' | 'all';
+  cursor?: string;
   conn: ServerConn;
   sort: ServerSort;
   order: DiscoverOrder;
@@ -372,10 +378,17 @@ export type ServerPage = {
   order: DiscoverOrder;
 };
 
+export type ServerCursorPage = { items: ProbeServer[]; nextCursor: string | null; hasMore: boolean };
+
 export type ServerFacets = {
   labels: LabelCount[];
+  tagItems: ServerTagFacet[];
   groups: DiscoverFacetGroup[];
 };
+
+export type ServerTagFacet = { tagId: string; categoryId: string; category: string; name: string; count: number };
+export type TagCategory = { id: string; name: string; createdAt?: string };
+export type ManagedTag = { id: string; categoryId: string; category: string; name: string; createdAt?: string; serverCount: number };
 
 // ---- CN2 路由追踪（节点轮询模型） ----
 

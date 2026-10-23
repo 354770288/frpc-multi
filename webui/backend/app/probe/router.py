@@ -319,20 +319,81 @@ def list_servers(
     group: str | None = None,
     label: str | None = None,
     tagId: str | None = None,
+    groupIds: str = "",
+    includeTagIds: str = "",
+    excludeTagIds: str = "",
+    tagMode: Literal["any", "all"] = "any",
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
     sort: Literal["ip", "group", "conn", "speed", "time"] = "group",
     order: Literal["asc", "desc"] = "asc",
     nodeId: str = "console",
 ):
-    result = source_store(nodeId).query_servers(ServerPageQuery(
-        page=page, page_size=page_size, q=q, group=group, label=label, tag_id=tagId,
-        conn=conn, sort=sort, order=order,
-    ))
+    try:
+        query = ServerPageQuery(
+            page=page, page_size=page_size, q=q, group=group, label=label, tag_id=tagId,
+            group_ids=tuple(value for value in groupIds.split(",") if value.strip()),
+            include_tag_ids=tuple(value for value in includeTagIds.split(",") if value.strip()),
+            exclude_tag_ids=tuple(value for value in excludeTagIds.split(",") if value.strip()), tag_mode=tagMode,
+            conn=conn, sort=sort, order=order,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result = source_store(nodeId).query_servers(query)
     return {
         "items": _enrich_source([_public_server(row) for row in result["items"]], nodeId),
         "page": result["page"], "pageSize": result["pageSize"],
         "total": result["total"], "sort": result["sort"], "order": result["order"],
     }
+
+
+@router.get("/servers/cursor")
+def list_servers_cursor(
+    page_size: int = Query(default=50, alias="pageSize", ge=1, le=200),
+    cursor: str | None = None,
+    q: str = "",
+    group: str | None = None,
+    groupIds: str = "",
+    label: str | None = None,
+    tagId: str | None = None,
+    includeTagIds: str = "",
+    excludeTagIds: str = "",
+    tagMode: Literal["any", "all"] = "any",
+    conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
+    sort: Literal["ip", "group", "conn", "speed", "time"] = "ip",
+    order: Literal["asc", "desc"] = "asc",
+    nodeId: str = "console",
+):
+    try:
+        query = ServerPageQuery(
+            page_size=page_size, q=q, group=group, group_ids=tuple(v for v in groupIds.split(",") if v.strip()),
+            label=label, tag_id=tagId, include_tag_ids=tuple(v for v in includeTagIds.split(",") if v.strip()),
+            exclude_tag_ids=tuple(v for v in excludeTagIds.split(",") if v.strip()), tag_mode=tagMode,
+            conn=conn, sort=sort, order=order,
+        )
+        result = source_store(nodeId).query_servers_cursor(query, cursor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result["items"] = _enrich_source([_public_server(row) for row in result["items"]], nodeId)
+    return result
+
+
+@router.get("/servers/count")
+def count_servers(
+    q: str = "", group: str | None = None, groupIds: str = "", label: str | None = None,
+    tagId: str | None = None, includeTagIds: str = "", excludeTagIds: str = "",
+    tagMode: Literal["any", "all"] = "any",
+    conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
+    nodeId: str = "console",
+):
+    try:
+        query = ServerPageQuery(q=q, group=group, group_ids=tuple(v for v in groupIds.split(",") if v.strip()),
+                                label=label, tag_id=tagId,
+                                include_tag_ids=tuple(v for v in includeTagIds.split(",") if v.strip()),
+                                exclude_tag_ids=tuple(v for v in excludeTagIds.split(",") if v.strip()),
+                                tag_mode=tagMode, conn=conn)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"total": source_store(nodeId).count_servers(query)}
 
 
 @router.get("/servers/facets")

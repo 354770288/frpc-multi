@@ -26,6 +26,7 @@ import { ProbeJobsPanel } from './probe/ProbeJobsPanel';
 import { ScanDialog } from './probe/ScanDialog';
 import { ProbeRouteHistory } from './probe/ProbeRouteHistory';
 import { SourceSelect } from './probe/NodeControls';
+import { BatchTagDialog, TagManagementDialog } from './probe/TagDialogs';
 import { ConfirmOverlay, Overlay } from '../components/Overlay';
 import { cn } from '../lib/utils';
 import { probeEndpointHost } from '../lib/probeEndpoint';
@@ -33,6 +34,7 @@ import type {
   TestNode, TestNodeExecutionPolicy, ProbeJobDetail, GroupColor, GroupInfo, LabelCount, ServerConn,
   ProbeConnectivityHistory, ProbeDashboard, ProbeServer,
   ProbeSpeedHistory, ProbeTestConfig,
+  ServerTagFacet,
 } from '../lib/types';
 
 /** 路由测试系统保留标签 → Badge variant（灰/红/绿三态）。 */
@@ -162,6 +164,8 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
   const [configOpen, setConfigOpen] = useState(false);
   const [config, setConfig] = useState<ProbeTestConfig | null>(null);
   const [groupsOpen, setGroupsOpen] = useState(false);
+  const [tagsOpen, setTagsOpen] = useState(false);
+  const [batchTagsOpen, setBatchTagsOpen] = useState(false);
   const [batchEdit, setBatchEdit] = useState<'group' | 'label' | null>(null);
 
   // 网段发现（分页数据、跨页勾选与轮询由 useDiscovery 统一持有）
@@ -546,7 +550,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
           <Card>
             <CardHeader className="flex-row flex-wrap items-center gap-2">
               <CardTitle className="text-sm">候选 frps 服务器</CardTitle>
-              <Badge tone="muted">{servers.page.total} 台</Badge>
+              <Badge tone="muted">{servers.totalCount === null ? (servers.countError ? '总数暂不可用' : '总数加载中…') : `${servers.totalCount} 台`}</Badge>
               <div className="ml-auto flex flex-wrap items-center gap-2">
                 <div className="w-40">
                   <Select value={servers.query.group ?? 'all'} onValueChange={servers.setGroup}>
@@ -584,13 +588,22 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                 <Button size="sm" variant="outline" onClick={() => setGroupsOpen(true)}>
                   <FolderCog size={13} />分组管理
                 </Button>
+                <Button size="sm" variant="outline" onClick={() => setTagsOpen(true)}>
+                  <Tag size={13} />标签管理
+                </Button>
                 <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
                   <ListPlus size={13} />批量导入
                 </Button>
                 <Button size="sm" onClick={() => setEditing('new')}><Plus size={13} />添加</Button>
               </div>
             </CardHeader>
-            <LabelCloud labels={servers.facets.labels} active={servers.query.label ?? null} onToggle={servers.setLabel} />
+            <ServerTagCloud tags={servers.facets.tagItems} active={servers.query.tagId ?? null} onToggle={servers.setTagId} onManage={() => setTagsOpen(true)} />
+            {(servers.pageError || servers.countError) && <div className="flex flex-wrap items-center gap-3 border-b bg-destructive/5 px-4 py-2 text-xs" role="alert">
+              {servers.pageError && <span>服务器列表读取失败：{servers.pageError}</span>}
+              {servers.pageError && <Button size="sm" variant="outline" onClick={() => servers.refreshPage().catch(() => {})}>重试列表</Button>}
+              {servers.countError && <span>服务器总数读取失败：{servers.countError}</span>}
+              {servers.countError && <Button size="sm" variant="outline" onClick={() => servers.refreshCount().catch(() => {})}>重试总数</Button>}
+            </div>}
             {selectedIps.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 border-b bg-primary/5 px-4 py-2">
                 <Badge tone="muted">已选 {selectedIps.length} 台（跨页保持）</Badge>
@@ -607,7 +620,10 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                   <FolderCog size={13} />改分组
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => setBatchEdit('label')}>
-                  <Tag size={13} />改标签
+                  <Tag size={13} />改旧标签
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setBatchTagsOpen(true)}>
+                  <Tag size={13} />分类标签
                 </Button>
                 <Button size="sm" variant="destructive" onClick={() => setDeletingSelected(true)}>
                   <Trash2 size={13} />删除
@@ -680,7 +696,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                     ))}
                     {!serverRows.length && (
                       <tr><td colSpan={7} className="px-4 py-10 text-center text-xs text-muted-foreground">
-                        {servers.page.total ? '当前筛选条件下没有匹配的记录' : '暂无服务器，点击「添加」或「批量导入」开始'}
+                        {servers.pageLoading ? '服务器列表加载中…' : servers.pageError ? '服务器列表读取失败' : servers.totalCount === null ? (servers.countLoading ? '服务器总数加载中…' : '服务器总数暂不可用') : servers.totalCount ? '当前筛选条件下没有匹配的记录' : '暂无服务器，点击「添加」或「批量导入」开始'}
                       </td></tr>
                     )}
                   </tbody>
@@ -688,7 +704,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3">
                 <span className="text-xs text-muted-foreground">
-                  第 {servers.page.page} / {Math.max(1, Math.ceil(servers.page.total / servers.page.pageSize))} 页 · 共 {servers.page.total} 台
+                  第 {servers.page.page} 页{servers.cursorMode ? '' : ` / ${Math.max(1, Math.ceil(servers.page.total / servers.page.pageSize))}`} · 共 {servers.totalCount === null ? (servers.countError ? '总数暂不可用' : '总数加载中…') : `${servers.totalCount} 台`}
                 </span>
                 <div className="flex items-center gap-2">
                   <Select value={String(servers.query.pageSize)} onValueChange={(value) => servers.setPageSize(Number(value))}>
@@ -700,11 +716,11 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                       <SelectItem value="200">200 / 页</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Button size="sm" variant="outline" disabled={servers.page.page <= 1}
-                    onClick={() => servers.setPageNumber(servers.page.page - 1)}>上一页</Button>
+                  <Button size="sm" variant="outline" disabled={servers.cursorMode ? !servers.cursorCanPrevious : servers.page.page <= 1}
+                    onClick={() => servers.cursorMode ? servers.previousCursorPage() : servers.setPageNumber(servers.page.page - 1)}>上一页</Button>
                   <Button size="sm" variant="outline"
-                    disabled={servers.page.page >= Math.max(1, Math.ceil(servers.page.total / servers.page.pageSize))}
-                    onClick={() => servers.setPageNumber(servers.page.page + 1)}>下一页</Button>
+                    disabled={servers.cursorMode ? !servers.cursorHasMore : servers.page.page >= Math.max(1, Math.ceil(servers.page.total / servers.page.pageSize))}
+                    onClick={() => servers.cursorMode ? servers.nextCursorPage() : servers.setPageNumber(servers.page.page + 1)}>下一页</Button>
                 </div>
               </div>
             </CardContent>
@@ -840,6 +856,8 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
           }}
         />
       )}
+      <TagManagementDialog open={tagsOpen} onOpenChange={setTagsOpen} onChanged={() => servers.refreshAll().catch(() => {})} />
+      <BatchTagDialog open={batchTagsOpen} onOpenChange={setBatchTagsOpen} ids={[...servers.selected.keys()]} onSaved={() => { setBatchTagsOpen(false); servers.refreshAll({ recoverOutOfRange: true }).catch(() => {}); }} />
       {batchEdit && (
         <BatchEditDialog
           kind={batchEdit}
@@ -1509,6 +1527,29 @@ function LabelCloud({ labels, active, onToggle }: {
       )}
     </div>
   );
+}
+
+function ServerTagCloud({ tags, active, onToggle, onManage }: {
+  tags: ServerTagFacet[];
+  active: string | null;
+  onToggle: (tagId: string | null) => void;
+  onManage: () => void;
+}) {
+  const groups = useMemo(() => {
+    const map = new Map<string, ServerTagFacet[]>();
+    for (const tag of tags) map.set(tag.category, [...(map.get(tag.category) ?? []), tag]);
+    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b, 'zh-CN'));
+  }, [tags]);
+  return <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2">
+    {groups.map(([category, items]) => <div key={category} className="flex flex-wrap items-center gap-1.5">
+      <span className="text-[11px] text-muted-foreground">{category}</span>
+      {items.map((item) => <Button key={item.tagId} size="sm" variant={active === item.tagId ? 'default' : 'outline'} className="h-6 rounded-full px-2 text-[11px]" aria-label={`${category} ${item.name} ${item.count}`} aria-pressed={active === item.tagId} onClick={() => onToggle(active === item.tagId ? null : item.tagId)}>
+        {item.name}<span className="ml-1 opacity-70">{item.count}</span>
+      </Button>)}
+    </div>)}
+    {active && <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => onToggle(null)}>清除标签筛选</Button>}
+    <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={onManage}>管理分类标签</Button>
+  </div>;
 }
 
 /** 扫描参数弹窗：目标/排除/端口/并发/超时 → 开始扫描（命中自动落入网段发现表格）。 */

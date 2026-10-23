@@ -468,6 +468,10 @@ def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_probe_servers_ip_desc "
             "ON probe_servers ((ip_sort IS NULL) ASC, ip_sort DESC, id DESC)"
         )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_servers_ip_sort_id "
+            "ON probe_servers (ip_sort, id)"
+        )
     except Exception:
         connection.rollback()
         raise

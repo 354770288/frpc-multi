@@ -30,8 +30,11 @@ import type {
   ProbeTestConfig,
   ProbeTestStatus,
   ServerFacets,
+  ServerCursorPage,
   ServerPage,
   ServerQuery,
+  ManagedTag,
+  TagCategory,
   SystemInfo,
   ValidationData
 } from './types';
@@ -153,8 +156,21 @@ export const auditLogsApi = {
 export type ProbeServerPayload = {
   ip?: string;
   labels?: string[];
+  tagIds?: string[];
   group?: string;
 };
+
+function serverFilterParams(query: ServerQuery) {
+  const params = new URLSearchParams({ q: query.q?.trim() ?? '', conn: query.conn });
+  if (query.group !== undefined) params.set('group', query.group);
+  if (query.label !== undefined) params.set('label', query.label);
+  if (query.tagId !== undefined) params.set('tagId', query.tagId);
+  if (query.groupIds?.length) params.set('groupIds', query.groupIds.join(','));
+  if (query.includeTagIds?.length) params.set('includeTagIds', query.includeTagIds.join(','));
+  if (query.excludeTagIds?.length) params.set('excludeTagIds', query.excludeTagIds.join(','));
+  if (query.tagMode) params.set('tagMode', query.tagMode);
+  return params;
+}
 
 export const probeApi = {
   testNodes: () => api<{ items: TestNode[] }>('/api/probe/nodes'),
@@ -187,10 +203,43 @@ export const probeApi = {
     // group/label 显式空串=筛空值；undefined=不筛选（与后端 None 语义对齐）
     if (query.group !== undefined) params.set('group', query.group);
     if (query.label !== undefined) params.set('label', query.label);
+    if (query.tagId !== undefined) params.set('tagId', query.tagId);
+    if (query.groupIds?.length) params.set('groupIds', query.groupIds.join(','));
+    if (query.includeTagIds?.length) params.set('includeTagIds', query.includeTagIds.join(','));
+    if (query.excludeTagIds?.length) params.set('excludeTagIds', query.excludeTagIds.join(','));
+    if (query.tagMode) params.set('tagMode', query.tagMode);
     return api<ServerPage>(`/api/probe/servers?${params.toString()}`, { signal });
   },
+  serversCursor: (query: ServerQuery, signal?: AbortSignal) => {
+    const params = serverFilterParams(query);
+    params.set('pageSize', String(query.pageSize));
+    params.set('sort', query.sort);
+    params.set('order', query.order);
+    if (query.cursor) params.set('cursor', query.cursor);
+    return api<ServerCursorPage>(`/api/probe/servers/cursor?${params.toString()}`, { signal });
+  },
+  serverCount: (query: ServerQuery, signal?: AbortSignal) =>
+    api<{ total: number }>(`/api/probe/servers/count?${serverFilterParams(query).toString()}`, { signal }),
   serverFacets: (signal?: AbortSignal) =>
     api<ServerFacets>('/api/probe/servers/facets', { signal }),
+  tagCategories: () => api<{ items: TagCategory[] }>('/api/probe/tags/categories'),
+  createTagCategory: (name: string) => api<TagCategory>('/api/probe/tags/categories', {
+    method: 'POST', body: JSON.stringify({ name }),
+  }),
+  renameTagCategory: (id: string, name: string) => api<TagCategory>(`/api/probe/tags/categories/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: JSON.stringify({ name }),
+  }),
+  tags: (categoryId?: string) => api<{ items: ManagedTag[] }>(`/api/probe/tags${categoryId ? `?categoryId=${encodeURIComponent(categoryId)}` : ''}`),
+  createTag: (categoryId: string, name: string) => api<ManagedTag>('/api/probe/tags', {
+    method: 'POST', body: JSON.stringify({ categoryId, name }),
+  }),
+  updateTag: (id: string, changes: { name?: string; categoryId?: string }) => api<ManagedTag>(`/api/probe/tags/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: JSON.stringify(changes),
+  }),
+  deleteTag: (id: string) => api<{ ok: boolean; affectedServers: number }>(`/api/probe/tags/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  mergeTag: (id: string, targetTagId: string) => api<{ tagId: string; mergedServers: number }>(`/api/probe/tags/${encodeURIComponent(id)}/merge`, {
+    method: 'POST', body: JSON.stringify({ targetTagId }),
+  }),
   groups: () => api<GroupInfo[]>('/api/probe/servers/groups'),
   createGroup: (name: string, color?: GroupColor) =>
     api<{ ok: boolean; name: string }>('/api/probe/servers/groups', {
@@ -204,7 +253,7 @@ export const probeApi = {
     }),
   deleteGroup: (name: string) =>
     api<{ ok: boolean }>(`/api/probe/servers/groups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
-  batchUpdateServers: (ids: number[], changes: { group?: string; addLabels?: string[]; removeLabels?: string[] }) =>
+  batchUpdateServers: (ids: number[], changes: { group?: string; addLabels?: string[]; removeLabels?: string[]; addTagIds?: string[]; removeTagIds?: string[] }) =>
     api<{ updated: number }>('/api/probe/servers/batch-update', {
       method: 'POST',
       body: JSON.stringify({ ids, ...changes })

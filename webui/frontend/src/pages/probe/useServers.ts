@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { probeApi } from '../../lib/api';
 import type {
@@ -11,32 +11,110 @@ import type {
 } from '../../lib/types';
 
 const EMPTY_PAGE: ServerPage = {
-  items: [], page: 1, pageSize: 50, total: 0, sort: 'group', order: 'asc',
+  items: [], page: 1, pageSize: 50, total: 0, sort: 'ip', order: 'asc',
 };
-const EMPTY_FACETS: ServerFacets = { labels: [], groups: [] };
+const EMPTY_FACETS: ServerFacets = { labels: [], tagItems: [], groups: [] };
+
+function parseQuery(search: string): ServerQuery {
+  const params = new URLSearchParams(search);
+  const pageSize = Number(params.get('pageSize'));
+  const sort = params.get('sort'); const order = params.get('order'); const conn = params.get('conn');
+  const list = (key: string) => (params.get(key) ?? '').split(',').map((value) => value.trim()).filter(Boolean);
+  return {
+    page: Math.max(1, Number(params.get('page')) || 1),
+    pageSize: [25, 50, 100, 200].includes(pageSize) ? pageSize : 50,
+    conn: conn === 'pass' || conn === 'partial' || conn === 'fail' || conn === 'untested' ? conn : 'all',
+    sort: sort === 'group' || sort === 'conn' || sort === 'speed' || sort === 'time' ? sort : 'ip',
+    order: order === 'desc' ? 'desc' : 'asc',
+    ...(params.has('q') ? { q: params.get('q') || '' } : {}),
+    ...(params.has('group') ? { group: params.get('group') || '' } : {}),
+    ...(params.has('label') ? { label: params.get('label') || '' } : {}),
+    ...(params.has('tagId') ? { tagId: params.get('tagId') || '' } : {}),
+    ...(params.has('cursor') ? { cursor: params.get('cursor') || undefined } : {}),
+    ...(list('groupIds').length ? { groupIds: list('groupIds') } : {}),
+    ...(list('includeTagIds').length ? { includeTagIds: list('includeTagIds') } : {}),
+    ...(list('excludeTagIds').length ? { excludeTagIds: list('excludeTagIds') } : {}),
+    ...(params.has('tagMode') ? { tagMode: params.get('tagMode') === 'all' ? 'all' as const : 'any' as const } : {}),
+  };
+}
+
+function cursorStorageKey(query: ServerQuery) {
+  return `probe_servers_cursor:${JSON.stringify({ q: query.q ?? '', group: query.group, groupIds: query.groupIds, label: query.label, tagId: query.tagId, includeTagIds: query.includeTagIds, excludeTagIds: query.excludeTagIds, tagMode: query.tagMode ?? 'any', conn: query.conn, sort: query.sort, order: query.order, pageSize: query.pageSize })}`;
+}
+
+function countKeyFor(query: ServerQuery) {
+  return JSON.stringify({ q: query.q, group: query.group, groupIds: query.groupIds, label: query.label, tagId: query.tagId, includeTagIds: query.includeTagIds, excludeTagIds: query.excludeTagIds, tagMode: query.tagMode, conn: query.conn, sort: query.sort });
+}
+
+function loadCursorTrail(key: string) {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(key) ?? '[]');
+    return Array.isArray(saved) && saved.every((value) => typeof value === 'string') && saved.length ? saved as string[] : [''];
+  } catch { return ['']; }
+}
+
+function requestErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : '请求失败';
+}
+
+function querySignature(query: ServerQuery) {
+  return JSON.stringify(Object.fromEntries(Object.entries(query).filter(([, value]) => value !== undefined).sort(([left], [right]) => left.localeCompare(right))));
+}
 
 type PageRefreshOptions = { recoverOutOfRange?: boolean };
 
 export function useServers(active: boolean) {
-  const [,setUrl] = useSearchParams();
-  const [query, setQuery] = useState<ServerQuery>(() => {
-    const p=new URLSearchParams(window.location.search);
-    const pageSize=Number(p.get('pageSize'));
-    const sort=p.get('sort');const order=p.get('order');const conn=p.get('conn');
-    return {page:Math.max(1,Number(p.get('page')) || 1),pageSize:[25,50,100,200].includes(pageSize) ? pageSize : 50,
-      conn:conn==='pass'||conn==='partial'||conn==='fail'||conn==='untested' ? conn : 'all',
-      sort:sort==='ip'||sort==='conn'||sort==='speed'||sort==='time' ? sort : 'group',order:order==='desc' ? 'desc':'asc',
-      ...(p.has('q') ? {q:p.get('q') || ''} : {}),...(p.has('group') ? {group:p.get('group') || ''} : {}),...(p.has('label') ? {label:p.get('label') || ''} : {})};
-  });
+  const [searchParams,setUrl] = useSearchParams();
+  const [query, setQuery] = useState<ServerQuery>(() => parseQuery(window.location.search));
+  const urlKey = searchParams.toString();
+  const cursorMode = query.sort === 'ip';
+  const countFilterKey = countKeyFor(query);
+  const cursorKey = useMemo(() => cursorStorageKey(query), [query.q, query.group, query.groupIds, query.label, query.tagId, query.includeTagIds, query.excludeTagIds, query.tagMode, query.conn, query.sort, query.order, query.pageSize]);
+  const [cursorTrail, setCursorTrail] = useState<string[]>(() => loadCursorTrail(cursorStorageKey(parseQuery(window.location.search))));
+  const cursorTrailRef = useRef(cursorTrail); cursorTrailRef.current = cursorTrail;
+  const [cursorPage, setCursorPage] = useState<{ nextCursor: string | null; hasMore: boolean }>({ nextCursor: null, hasMore: false });
+  const [totalCount, setTotalCount] = useState<number | null>(null);
+  const [totalCountKey, setTotalCountKey] = useState<string | null>(null);
+  const [pageLoading, setPageLoading] = useState(true);
+  const [pageError, setPageError] = useState<string | null>(null);
+  const [countLoading, setCountLoading] = useState(true);
+  const [countError, setCountError] = useState<string | null>(null);
+  const [countErrorKey, setCountErrorKey] = useState<string | null>(null);
+  const lastObservedUrlRef = useRef(urlKey);
+  const targetUrlRef = useRef<string | null>(null);
+  const externalUrlQueryRef = useRef<ServerQuery | null>(null);
+  const pushUrlRef = useRef(false);
+  useLayoutEffect(() => {
+    if (urlKey === lastObservedUrlRef.current) return;
+    lastObservedUrlRef.current = urlKey;
+    if (targetUrlRef.current === urlKey) { targetUrlRef.current = null; return; }
+    const fromUrl = parseQuery(urlKey);
+    externalUrlQueryRef.current = fromUrl;
+    setQuery(fromUrl);
+  }, [urlKey]);
   useEffect(() => {
     if(!active)return;
+    const hydrated = externalUrlQueryRef.current;
+    if (hydrated) {
+      if (querySignature(query) !== querySignature(hydrated)) return;
+      externalUrlQueryRef.current = null;
+    }
     setUrl((current)=>{const next=new URLSearchParams(current);
-      for(const key of ['page','pageSize','conn','sort','order','q','group','label'])next.delete(key);
+      for(const key of ['page','pageSize','conn','sort','order','q','group','label','tagId','cursor','groupIds','includeTagIds','excludeTagIds','tagMode'])next.delete(key);
       next.set('page',String(query.page));next.set('pageSize',String(query.pageSize));next.set('conn',query.conn);next.set('sort',query.sort);next.set('order',query.order);
-      if(query.q!==undefined)next.set('q',query.q);if(query.group!==undefined)next.set('group',query.group);if(query.label!==undefined)next.set('label',query.label);
-      return next.toString()===current.toString() ? current : next;
-    },{replace:true});
+      if(query.q!==undefined)next.set('q',query.q);if(query.group!==undefined)next.set('group',query.group);if(query.label!==undefined)next.set('label',query.label);if(query.tagId!==undefined)next.set('tagId',query.tagId);if(query.cursor)next.set('cursor',query.cursor);
+      if(query.groupIds?.length)next.set('groupIds',query.groupIds.join(','));if(query.includeTagIds?.length)next.set('includeTagIds',query.includeTagIds.join(','));if(query.excludeTagIds?.length)next.set('excludeTagIds',query.excludeTagIds.join(','));if(query.tagMode)next.set('tagMode',query.tagMode);
+      const target = next.toString();
+      if (target === current.toString()) { targetUrlRef.current = null; pushUrlRef.current = false; return current; }
+      targetUrlRef.current = target;
+      return next;
+    },{replace:!pushUrlRef.current});
+    pushUrlRef.current = false;
   },[active,query,setUrl]);
+  useEffect(() => {
+    const next = loadCursorTrail(cursorKey);
+    setCursorTrail(next); cursorTrailRef.current = next;
+  }, [cursorKey]);
   const queryRef = useRef(query);
   queryRef.current = query;
 
@@ -54,8 +132,10 @@ export function useServers(active: boolean) {
 
   const pageController = useRef<AbortController | null>(null);
   const facetController = useRef<AbortController | null>(null);
+  const countController = useRef<AbortController | null>(null);
   const pageGeneration = useRef(0);
   const facetGeneration = useRef(0);
+  const countGeneration = useRef(0);
 
   const isVisible = useCallback(
     () => active && document.visibilityState === 'visible',
@@ -69,7 +149,15 @@ export function useServers(active: boolean) {
     pageController.current = controller;
     const generation = ++pageGeneration.current;
     const requested = queryRef.current;
+    setPageLoading(true); setPageError(null);
     try {
+      if (requested.sort === 'ip') {
+        const next = await probeApi.serversCursor(requested, controller.signal);
+        if (controller.signal.aborted || generation !== pageGeneration.current) return;
+        setPage({ items: next.items, page: requested.page, pageSize: requested.pageSize, total: totalCount ?? 0, sort: requested.sort, order: requested.order });
+        setCursorPage({ nextCursor: next.nextCursor, hasMore: next.hasMore });
+        return;
+      }
       const next = await probeApi.servers(requested, controller.signal);
       if (controller.signal.aborted || generation !== pageGeneration.current) return;
       const lastPage = Math.max(1, Math.ceil(next.total / next.pageSize));
@@ -81,7 +169,31 @@ export function useServers(active: boolean) {
       // 跨页勾选是本 hook 的核心语义：不按「是否在当前页」清理；
       // 行消失的清理由删除/导入流程显式调用 removeSelected 完成
     } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) throw error;
+      if (!(error instanceof DOMException && error.name === 'AbortError') && generation === pageGeneration.current) setPageError(requestErrorMessage(error));
+    } finally {
+      if (generation === pageGeneration.current) setPageLoading(false);
+    }
+  }, [isVisible]);
+
+  const refreshCount = useCallback(async () => {
+    if (!isVisible() || queryRef.current.sort !== 'ip') return;
+    const requestedQuery = queryRef.current;
+    const requestedCountKey = countKeyFor(requestedQuery);
+    countController.current?.abort();
+    const controller = new AbortController(); countController.current = controller;
+    const generation = ++countGeneration.current;
+    setCountLoading(true); setCountError(null); setCountErrorKey(null);
+    try {
+      const result = await probeApi.serverCount(requestedQuery, controller.signal);
+      if (!controller.signal.aborted && generation === countGeneration.current) {
+        setTotalCount(result.total); setTotalCountKey(requestedCountKey);
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError') && generation === countGeneration.current) {
+        setCountError(requestErrorMessage(error)); setCountErrorKey(requestedCountKey);
+      }
+    } finally {
+      if (generation === countGeneration.current) setCountLoading(false);
     }
   }, [isVisible]);
 
@@ -100,8 +212,8 @@ export function useServers(active: boolean) {
   }, [isVisible]);
 
   const refreshAll = useCallback(async (options: PageRefreshOptions = {}) => {
-    await Promise.all([refreshPage(options), refreshFacets()]);
-  }, [refreshFacets, refreshPage]);
+    await Promise.all([refreshPage(options), refreshFacets(), refreshCount()]);
+  }, [refreshCount, refreshFacets, refreshPage]);
 
   useEffect(() => {
     if (!isVisible()) return;
@@ -112,6 +224,7 @@ export function useServers(active: boolean) {
     if (!isVisible()) return;
     void refreshFacets().catch(() => {});
   }, [active, isVisible, refreshFacets]);
+  useEffect(() => { if (isVisible() && query.sort === 'ip') void refreshCount().catch(() => {}); }, [active, countFilterKey, isVisible, query.sort, refreshCount]);
 
   // 服务器库轮询：仅 Tab 激活且页面可见时，10s 一拍；隐藏即中止请求，回前台立即刷新
   useEffect(() => {
@@ -121,6 +234,7 @@ export function useServers(active: boolean) {
       if (document.visibilityState !== 'visible') {
         pageController.current?.abort();
         facetController.current?.abort();
+        countController.current?.abort();
         return;
       }
       void refreshAll().catch(() => {});
@@ -137,7 +251,7 @@ export function useServers(active: boolean) {
   }, [active, isVisible, refreshAll]);
 
   const updateQuery = useCallback((changes: Partial<ServerQuery>, resetPage = true) => {
-    setQuery((current) => ({ ...current, ...changes, page: resetPage ? 1 : (changes.page ?? current.page) }));
+    setQuery((current) => ({ ...current, ...changes, ...(resetPage && !Object.prototype.hasOwnProperty.call(changes, 'cursor') ? { cursor: undefined } : {}), page: resetPage ? 1 : (changes.page ?? current.page) }));
   }, []);
 
   const setSearch = useCallback((q: string) => {
@@ -147,10 +261,26 @@ export function useServers(active: boolean) {
   const setGroup = useCallback((group: string) => updateQuery({ group: group === 'all' ? undefined : group }), [updateQuery]);
   // null = 取消筛选；'' = 筛「无标签」行，二者不可混淆
   const setLabel = useCallback((label: string | null) => updateQuery({ label: label === null ? undefined : label }), [updateQuery]);
+  const setTagId = useCallback((tagId: string | null) => updateQuery({ tagId: tagId === null ? undefined : tagId, label: undefined }), [updateQuery]);
   const setConn = useCallback((conn: ServerConn) => updateQuery({ conn }), [updateQuery]);
   const setSort = useCallback((sort: ServerSort, order: DiscoverOrder) => updateQuery({ sort, order }), [updateQuery]);
   const setPageNumber = useCallback((nextPage: number) => updateQuery({ page: nextPage }, false), [updateQuery]);
   const setPageSize = useCallback((pageSize: number) => updateQuery({ pageSize }), [updateQuery]);
+  const cursorIndex = Math.max(0, cursorTrail.lastIndexOf(query.cursor ?? ''));
+  const navigateCursor = useCallback((direction: 'next' | 'previous') => {
+    const current = queryRef.current;
+    const trail = cursorTrailRef.current;
+    const index = Math.max(0, trail.lastIndexOf(current.cursor ?? ''));
+    let nextTrail: string[]; let nextCursor: string | undefined; let nextPage: number;
+    if (direction === 'next' && cursorPage.hasMore && cursorPage.nextCursor) {
+      nextTrail = [...trail.slice(0, index + 1), cursorPage.nextCursor]; nextCursor = cursorPage.nextCursor; nextPage = current.page + 1;
+    } else if (direction === 'previous' && index > 0) {
+      nextTrail = trail.slice(0, index); nextCursor = nextTrail[nextTrail.length - 1] || undefined; nextPage = Math.max(1, current.page - 1);
+    } else return;
+    cursorTrailRef.current = nextTrail; setCursorTrail(nextTrail); sessionStorage.setItem(cursorKey, JSON.stringify(nextTrail));
+    pushUrlRef.current = true;
+    setQuery((value) => ({ ...value, page: nextPage, cursor: nextCursor }));
+  }, [cursorKey, cursorPage.hasMore, cursorPage.nextCursor]);
 
   const toggleSelected = useCallback((id: number, ip: string) => {
     setSelected((current) => {
@@ -184,11 +314,22 @@ export function useServers(active: boolean) {
     query,
     page,
     facets,
+    totalCount: cursorMode ? (totalCountKey === countFilterKey ? totalCount : null) : page.total,
+    pageLoading,
+    pageError,
+    countLoading: cursorMode && countLoading,
+    countError: cursorMode && countErrorKey === countFilterKey ? countError : null,
+    cursorMode,
+    cursorHasMore: cursorPage.hasMore,
+    cursorCanPrevious: cursorIndex > 0,
+    nextCursorPage: () => navigateCursor('next'),
+    previousCursorPage: () => navigateCursor('previous'),
     selected,
     setSelected,
     setSearch,
     setGroup,
     setLabel,
+    setTagId,
     setConn,
     setSort,
     setPageNumber,
@@ -197,6 +338,7 @@ export function useServers(active: boolean) {
     toggleCurrentPage,
     removeSelected,
     refreshPage,
+    refreshCount,
     refreshFacets,
     refreshAll,
   };

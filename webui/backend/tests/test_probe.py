@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
@@ -511,7 +512,7 @@ class ProbeStoreTests(unittest.TestCase):
 
     def test_query_servers_paging_and_numeric_ip_sort(self):
         self._seed_servers_for_paging()
-        from app.probe.store import ServerPageQuery
+        from app.probe.store import ProbeStore, ServerPageQuery
         page = self.store.query_servers(ServerPageQuery(page=1, page_size=2, sort="ip", order="asc"))
         self.assertEqual(page["total"], 4)
         self.assertEqual([row["ip"] for row in page["items"]], ["10.0.0.2", "10.0.0.9"])  # 数值序，非点分字符串序
@@ -519,6 +520,155 @@ class ProbeStoreTests(unittest.TestCase):
         self.assertEqual([row["ip"] for row in last["items"]], ["10.0.0.10", "192.168.1.5"])
         desc = self.store.query_servers(ServerPageQuery(page=1, page_size=1, sort="ip", order="desc"))
         self.assertEqual(desc["items"][0]["ip"], "192.168.1.5")
+
+    def test_server_cursor_filters_binding_and_insert_boundary(self):
+        from app.probe.store import ServerPageQuery
+        ips = ["198.18.0.1", "198.18.0.2", "198.18.0.3", "198.18.0.4"]
+        self.store.create_server(ip=ips[0], labels=["red"], server_group="one")
+        self.store.create_server(ip=ips[1], labels=["red", "blue"], server_group="one")
+        self.store.create_server(ip=ips[2], labels=["blue"], server_group="two")
+        self.store.create_server(ip=ips[3], labels=["green"], server_group="two")
+        from app.control.database import connect_database
+        with closing(connect_database(self.store.database_path)) as connection:
+            tag_ids = {row["name"]: row["id"] for row in connection.execute("SELECT id,name FROM probe_tags")}
+            group_ids = {row["name"]: row["id"] for row in connection.execute("SELECT id,name FROM probe_groups")}
+
+        page_query = ServerPageQuery(page_size=2, sort="ip", order="asc")
+        first = self.store.query_servers_cursor(page_query)
+        self.assertEqual([row["ip"] for row in first["items"]], ips[:2])
+        self.assertTrue(first["hasMore"])
+        # Inserts before the boundary do not shift the next page or duplicate prior rows.
+        self.store.create_server(ip="198.17.255.255")
+        second = self.store.query_servers_cursor(page_query, first["nextCursor"])
+        self.assertEqual([row["ip"] for row in second["items"]], ips[2:])
+        self.assertFalse(second["hasMore"])
+        with self.assertRaisesRegex(ValueError, "cursor"):
+            self.store.query_servers_cursor(ServerPageQuery(page_size=2, sort="ip", q="changed"), first["nextCursor"])
+
+        any_tags = self.store.query_servers_cursor(ServerPageQuery(
+            include_tag_ids=(tag_ids["red"], tag_ids["blue"]), tag_mode="any", sort="ip"))
+        all_tags = self.store.query_servers_cursor(ServerPageQuery(
+            include_tag_ids=(tag_ids["red"], tag_ids["blue"]), tag_mode="all", sort="ip"))
+        excluded = self.store.query_servers_cursor(ServerPageQuery(
+            include_tag_ids=(tag_ids["red"],), exclude_tag_ids=(tag_ids["blue"],), sort="ip"))
+        by_groups = self.store.query_servers_cursor(ServerPageQuery(group_ids=tuple(group_ids.values()), sort="ip"))
+        self.assertEqual(len(any_tags["items"]), 3)
+        self.assertEqual([r["ip"] for r in all_tags["items"]], [ips[1]])
+        self.assertEqual([r["ip"] for r in excluded["items"]], [ips[0]])
+        self.assertEqual(len(by_groups["items"]), 4)
+        self.assertEqual(self.store.count_servers(ServerPageQuery(group_ids=tuple(group_ids.values()))), 4)
+
+    def test_server_cursor_query_shape_uses_indexes_and_direct_source_views(self):
+        from app.probe.store import ProbeStore, ServerPageQuery
+        for i in range(1, 8):
+            self.store.create_server(ip=f"198.19.0.{i}")
+        query = ServerPageQuery(page_size=2, sort="ip", order="asc")
+        first = self.store.query_servers_cursor(query)
+        self.assertEqual(len(first["items"]), 2)
+        from app.control.database import connect_database
+        with closing(connect_database(self.store.database_path)) as connection:
+            source = ProbeStore(self.store.database_path, node_id="fixture")
+            source._source_views(connection)
+            for direction, operator in (("ASC", ">"), ("DESC", "<")):
+                plan = " ".join(str(tuple(row)) for row in connection.execute(
+                    "EXPLAIN QUERY PLAN SELECT s.id " + source._server_from_sql("idx_probe_servers_ip_sort_id") + " "
+                    f"WHERE s.ip_sort IS NOT NULL AND (s.ip_sort,s.id){operator}(?,?) "
+                    f"ORDER BY s.ip_sort {direction},s.id {direction} LIMIT ?",
+                    (int(_ipv4_int("198.19.0.2")), 2, 3)))
+                self.assertIn("SEARCH s USING INDEX idx_probe_servers_ip_sort_id", plan)
+                self.assertIn("ip_sort", plan)
+                self.assertNotIn("SCAN s USING", plan)
+                self.assertNotIn("TEMP B-TREE", plan.upper())
+            for direction in ("ASC", "DESC"):
+                tail_plan = " ".join(str(tuple(row)) for row in connection.execute(
+                    "EXPLAIN QUERY PLAN SELECT s.id " + source._server_from_sql("idx_probe_servers_ip_sort_id") + " "
+                    f"WHERE s.ip_sort IS NULL ORDER BY s.id {direction} LIMIT ?", (3,)))
+                self.assertIn("SEARCH s USING INDEX idx_probe_servers_ip_sort_id (ip_sort=?)", tail_plan)
+                self.assertNotIn("TEMP B-TREE", tail_plan.upper())
+        source = ProbeStore(self.store.database_path, node_id="fixture")
+        from app.control.database import connect_database
+        with closing(connect_database(self.store.database_path)) as connection:
+            source._source_views(connection)
+            objects = {row["name"]: row["type"] for row in connection.execute(
+                "SELECT name,type FROM sqlite_temp_master WHERE name LIKE 'probe_%_results' OR name LIKE '_source_%' "
+                "OR name='_probe_endpoint_assets'")}
+            self.assertEqual(objects["probe_connectivity_results"], "view")
+            self.assertEqual(objects["probe_speed_results"], "view")
+            self.assertNotIn("_probe_endpoint_assets", objects)
+            view_sql = connection.execute(
+                "SELECT sql FROM sqlite_temp_master WHERE name='probe_connectivity_results'").fetchone()[0]
+            self.assertIn("main.probe_current_results", view_sql)
+            self.assertNotIn("CREATE TEMP TABLE", view_sql.upper())
+
+    def test_server_cursor_rejects_bad_mac_payload_and_non_ip_sort(self):
+        import base64
+        from app.control.database import connect_database
+        from app.probe.store import ProbeStore, ServerPageQuery
+        with self.assertRaisesRegex(ValueError, "sort=ip"):
+            self.store.query_servers_cursor(ServerPageQuery(sort="group"))
+        for raw in (b"[]", b"null", b"{", b"\"text\""):
+            cursor = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+            with self.assertRaisesRegex(ValueError, "cursor"):
+                self.store.query_servers_cursor(ServerPageQuery(sort="ip"), cursor)
+        self.store.create_server(ip="198.21.0.1")
+        self.store.create_server(ip="198.21.0.2")
+        page = self.store.query_servers_cursor(ServerPageQuery(sort="ip", page_size=1))
+        with self.assertRaisesRegex(ValueError, "cursor"):
+            self.store.query_servers_cursor(ServerPageQuery(sort="ip", page_size=1), page["nextCursor"][:-1] + "x")
+        with closing(connect_database(self.store.database_path)) as connection:
+            secret = connection.execute(
+                "SELECT value FROM probe_settings WHERE key='probe_server_cursor_secret'").fetchone()[0]
+        self.assertGreaterEqual(len(secret), 40)
+        next_page = ProbeStore(self.store.database_path).query_servers_cursor(
+            ServerPageQuery(sort="ip", page_size=1), page["nextCursor"])
+        self.assertEqual(next_page["items"][0]["ip"], "198.21.0.2")
+
+    def test_server_count_avoids_result_joins_unless_connectivity_filtered(self):
+        from app.control.database import connect_database
+        from app.probe.store import ProbeStore, ServerPageQuery
+        statements = []
+
+        class TraceStore(ProbeStore):
+            def _with_connection(inner, callback, *args):
+                connection = connect_database(inner.database_path)
+                connection.set_trace_callback(statements.append)
+                try:
+                    return callback(connection, *args)
+                finally:
+                    connection.close()
+
+        traced = TraceStore(self.store.database_path)
+        traced.count_servers(ServerPageQuery())
+        count_sql = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT COUNT(*)")][-1]
+        self.assertNotIn("probe_current_results", count_sql)
+        statements.clear()
+        traced.count_servers(ServerPageQuery(conn="pass"))
+        count_sql = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT COUNT(*)")][-1]
+        self.assertIn("kind='connectivity'", count_sql)
+        self.assertNotIn("kind='speed'", count_sql)
+
+    def test_server_facets_are_sql_aggregates(self):
+        self.store.create_server(ip="198.20.0.1", labels=["facet-a"])
+        self.store.create_server(ip="198.20.0.2", labels=["facet-a", "facet-b"])
+        from app.control.database import connect_database
+        from app.probe.store import ProbeStore
+        facets = self.store.server_facets()
+        self.assertEqual({row["label"]: row["count"] for row in facets["labels"]},
+                         {"facet-a": 2, "facet-b": 1})
+        statements = []
+
+        class TraceStore(ProbeStore):
+            def _with_connection(inner, callback, *args):
+                connection = connect_database(inner.database_path)
+                connection.set_trace_callback(statements.append)
+                try:
+                    return callback(connection, *args)
+                finally:
+                    connection.close()
+
+        TraceStore(self.store.database_path).server_facets()
+        self.assertTrue(any("GROUP BY t.name" in statement for statement in statements))
+        self.assertFalse(any("SELECT label FROM probe_servers" in statement for statement in statements))
 
     def test_query_servers_filters(self):
         self._seed_servers_for_paging()
@@ -1424,6 +1574,32 @@ class ProbeApiTests(unittest.TestCase):
         response = client.post("/api/auth/login", json={"username": "admin", "password": "password"})
         token = response.json()["token"]
         return client, {"Authorization": f"Bearer {token}"}
+
+    def test_server_cursor_and_separate_count_endpoints(self):
+        client, headers = self.make_client()
+        from app.probe.store import ProbeStore
+        store = ProbeStore(self.db_path)
+        for ip in ("192.0.2.11", "192.0.2.12", "192.0.2.13"):
+            store.create_server(ip=ip)
+        first = client.get("/api/probe/servers/cursor?pageSize=2&sort=ip&order=asc", headers=headers)
+        self.assertEqual(first.status_code, 200)
+        payload = first.json()
+        self.assertEqual(set(payload), {"items", "nextCursor", "hasMore"})
+        self.assertEqual([item["ip"] for item in payload["items"]], ["192.0.2.11", "192.0.2.12"])
+        self.assertTrue(payload["hasMore"])
+        second = client.get("/api/probe/servers/cursor?pageSize=2&sort=ip&order=asc&cursor=" + payload["nextCursor"], headers=headers)
+        self.assertEqual([item["ip"] for item in second.json()["items"]], ["192.0.2.13"])
+        self.assertFalse(second.json()["hasMore"])
+        self.assertEqual(client.get("/api/probe/servers/count", headers=headers).json(), {"total": 3})
+        mismatch = client.get("/api/probe/servers/cursor?pageSize=2&sort=ip&order=asc&q=other&cursor=" + payload["nextCursor"], headers=headers)
+        self.assertEqual(mismatch.status_code, 400)
+        unsupported = client.get("/api/probe/servers/cursor?sort=group", headers=headers)
+        self.assertEqual(unsupported.status_code, 400)
+        malformed = client.get("/api/probe/servers/cursor?cursor=W10", headers=headers)
+        self.assertEqual(malformed.status_code, 400)
+        too_many_tags = ",".join(f"tag-{i}" for i in range(101))
+        capped = client.get("/api/probe/servers/count?includeTagIds=" + too_many_tags, headers=headers)
+        self.assertEqual(capped.status_code, 400)
 
     def test_missing_frpc_bin_rejected(self):
         client, headers = self.make_client(PROBE_FRPC_BIN="/nonexistent/frpc")

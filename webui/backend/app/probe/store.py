@@ -10,6 +10,11 @@ import ipaddress
 import uuid
 import re
 import sqlite3
+import base64
+import hashlib
+import hmac
+import json
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Literal, NamedTuple, Sequence, TypeVar
@@ -331,6 +336,10 @@ class ServerPageQuery:
     conn: ServerConn = "all"
     sort: ServerSort = "group"
     order: SortOrder = "asc"
+    group_ids: tuple[str, ...] = ()
+    include_tag_ids: tuple[str, ...] = ()
+    exclude_tag_ids: tuple[str, ...] = ()
+    tag_mode: Literal["any", "all"] = "any"
 
     def __post_init__(self) -> None:
         if self.page < 1:
@@ -343,6 +352,17 @@ class ServerPageQuery:
             raise ValueError("sort 必须是 ip/group/conn/speed/time")
         if self.order not in {"asc", "desc"}:
             raise ValueError("order 必须是 asc/desc")
+        if self.tag_mode not in {"any", "all"}:
+            raise ValueError("tag_mode 必须是 any/all")
+        for name, values in (("group_ids", self.group_ids), ("include_tag_ids", self.include_tag_ids),
+                             ("exclude_tag_ids", self.exclude_tag_ids)):
+            normalized = {str(value).strip() for value in values if str(value).strip()}
+            if len(normalized) > 100:
+                raise ValueError(f"{name} 最多支持 100 个 ID")
+        if (len({str(value).strip() for value in self.group_ids if str(value).strip()}) +
+                len({str(value).strip() for value in self.include_tag_ids if str(value).strip()}) +
+                len({str(value).strip() for value in self.exclude_tag_ids if str(value).strip()}) > 300):
+            raise ValueError("ID 筛选总数不能超过 300")
 
 
 def _normalize_ids(ids: Iterable[int]) -> list[int]:
@@ -512,9 +532,6 @@ class ProbeStore:
         default_port = PROBE_TEST_PORT
         connection.create_function('probe_endpoint_host', 1, lambda value: split_probe_endpoint(value, default_port)[0])
         connection.create_function('probe_endpoint_port', 1, lambda value: split_probe_endpoint(value, default_port)[1])
-        connection.execute('CREATE TEMP TABLE _probe_endpoint_assets AS '
-                           'SELECT ip, probe_endpoint_host(ip) AS host, probe_endpoint_port(ip) AS port '
-                           'FROM main.probe_servers')
         for kind, table, fields in [
             ('connectivity', 'probe_connectivity_results', ['frps_reachable','tunnel_established','firewall_open','detail']),
             ('speed', 'probe_speed_results', ['frps_reachable','tunnel_ok','dl_ok','dl_bytes','dl_sec','ul_ok','ul_bytes','ul_sec','detail']),
@@ -531,13 +548,16 @@ class ProbeStore:
                         f"COALESCE(json_extract(r.data,'$.{prefix}_speed_bps'),0)/1048576.0 AS {prefix}_speed_mbs",
                     ])
             projection = ','.join(columns)
-            latest = (f"SELECT {projection} FROM _probe_endpoint_assets a "
-                      "JOIN main.probe_current_results r ON r.server_ip=a.host AND r.port=a.port "
-                      f"WHERE r.kind='{kind}' AND r.port={PROBE_TEST_PORT}")
-            indexed_table = '_source_' + table
-            connection.execute(f'CREATE TEMP TABLE {indexed_table} AS ' + latest)
-            connection.execute(f'CREATE INDEX source_{kind}_latest ON {indexed_table}(server_ip,id)')
-            connection.execute(f'CREATE TEMP VIEW {table} AS SELECT * FROM {indexed_table}')
+            # Keep this as a view over the durable, indexed current projection.
+            # Materializing every asset/result into a TEMP table made a 50-row
+            # server page pay for the entire asset/current-result population.
+            connection.execute(
+                f"CREATE TEMP VIEW {table} AS SELECT {projection} "
+                "FROM main.probe_servers a JOIN main.probe_current_results r "
+                "ON r.server_ip=probe_endpoint_host(a.ip) "
+                f"WHERE r.kind='{kind}' AND r.port={PROBE_TEST_PORT} "
+                f"AND probe_endpoint_port(a.ip)={PROBE_TEST_PORT}"
+            )
         def source_labels(packed, route_json):
             import json
             labels=_unpack_labels(packed)
@@ -1508,120 +1528,249 @@ class ProbeStore:
     # 连通性分级表达式：与前端 ConnBadge 展示语义对齐（未测=0；fail=测过未全过 1..3）。
     _CONN_SCORE_SQL = """(CASE
         WHEN c.test_time IS NULL THEN 0
-        WHEN COALESCE(c.frps_reachable,0)=1 AND COALESCE(c.tunnel_established,0)=1
-             AND COALESCE(c.firewall_open,0)=1 THEN 4
-        WHEN COALESCE(c.frps_reachable,0)=1 AND COALESCE(c.tunnel_established,0)=1 THEN 3
-        WHEN COALESCE(c.frps_reachable,0)=1 THEN 2
+        WHEN COALESCE(json_extract(c.data,'$.frps_reachable'),0)=1
+             AND COALESCE(json_extract(c.data,'$.tunnel_established'),0)=1
+             AND COALESCE(json_extract(c.data,'$.firewall_open'),0)=1 THEN 4
+        WHEN COALESCE(json_extract(c.data,'$.frps_reachable'),0)=1
+             AND COALESCE(json_extract(c.data,'$.tunnel_established'),0)=1 THEN 3
+        WHEN COALESCE(json_extract(c.data,'$.frps_reachable'),0)=1 THEN 2
         ELSE 1 END)"""
 
-    def query_servers(self, query: ServerPageQuery) -> dict:
-        """Return one globally filtered/sorted server page and its metadata."""
+    def _server_where(self, query: ServerPageQuery) -> tuple[str, list[object]]:
+        where: list[str] = []
+        params: list[object] = []
+        q = query.q.strip()
+        if q:
+            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append("(s.ip LIKE ? ESCAPE '\\' OR s.server_group LIKE ? ESCAPE '\\' OR s.label LIKE ? ESCAPE '\\')")
+            params.extend([f"%{escaped}%"] * 3)
+        if query.group is not None:
+            where.append("(s.group_id = (SELECT id FROM probe_groups WHERE id = ? OR name = ? LIMIT 1) OR s.server_group = ?)")
+            params.extend([query.group, query.group, query.group])
+        group_ids = tuple(dict.fromkeys(str(value).strip() for value in query.group_ids if str(value).strip()))
+        if group_ids:
+            where.append(f"s.group_id IN ({','.join('?' for _ in group_ids)})")
+            params.extend(group_ids)
+        if query.label is not None:
+            if query.label == "":
+                where.append("NOT EXISTS (SELECT 1 FROM probe_server_tags st WHERE st.server_id = s.id)")
+            else:
+                where.append("EXISTS (SELECT 1 FROM probe_server_tags st JOIN probe_tags t ON t.id = st.tag_id WHERE st.server_id = s.id AND t.name = ? COLLATE BINARY)")
+                params.append(query.label.strip())
+        include_ids = tuple(dict.fromkeys(str(value).strip() for value in query.include_tag_ids if str(value).strip()))
+        if query.tag_id is not None and query.tag_id.strip() and query.tag_id.strip() not in include_ids:
+            include_ids = (*include_ids, query.tag_id.strip())
+        if include_ids:
+            placeholders = ",".join("?" for _ in include_ids)
+            if query.tag_mode == "all":
+                where.append(f"(SELECT COUNT(DISTINCT st.tag_id) FROM probe_server_tags st WHERE st.server_id=s.id AND st.tag_id IN ({placeholders})) = ?")
+                params.extend(include_ids)
+                params.append(len(include_ids))
+            else:
+                where.append(f"EXISTS (SELECT 1 FROM probe_server_tags st WHERE st.server_id=s.id AND st.tag_id IN ({placeholders}))")
+                params.extend(include_ids)
+        exclude_ids = tuple(dict.fromkeys(str(value).strip() for value in query.exclude_tag_ids if str(value).strip()))
+        if exclude_ids:
+            where.append(f"NOT EXISTS (SELECT 1 FROM probe_server_tags st WHERE st.server_id=s.id AND st.tag_id IN ({','.join('?' for _ in exclude_ids)}))")
+            params.extend(exclude_ids)
+        if query.conn != "all":
+            score = self._CONN_SCORE_SQL
+            where.append({"pass": f"{score} = 4", "partial": f"{score} IN (2, 3)",
+                          "fail": f"{score} BETWEEN 1 AND 3", "untested": f"{score} = 0"}[query.conn])
+        return (" WHERE " + " AND ".join(where) if where else ""), params
 
+    def _server_order_terms(self, query: ServerPageQuery) -> list[tuple[str, str]]:
+        direction = query.order.upper()
+        if query.sort == "ip":
+            return [("(s.ip_sort IS NULL)", "ASC"), ("s.ip_sort", direction), ("s.id", direction)]
+        if query.sort == "group":
+            return [("s.server_group", direction), ("(s.ip_sort IS NULL)", "ASC"),
+                    ("s.ip_sort", direction), ("s.id", direction)]
+        if query.sort == "conn":
+            return [(self._CONN_SCORE_SQL, direction), ("s.id", direction)]
+        if query.sort == "speed":
+            return [("COALESCE(json_extract(p.data,'$.dl_speed_bps'),0)*8.0/1048576", direction), ("s.id", direction)]
+        return [("(p.test_time IS NULL)", "ASC"), ("p.test_time", direction), ("s.id", direction)]
+
+    @staticmethod
+    def _server_from_sql(ip_index: str | None = None) -> str:
+        indexed = f" INDEXED BY {ip_index}" if ip_index else ""
+        return f"""FROM probe_servers s{indexed}
+            LEFT JOIN main.probe_current_results c ON c.server_ip=probe_endpoint_host(s.ip)
+                AND c.kind='connectivity' AND c.port={PROBE_TEST_PORT}
+                AND probe_endpoint_port(s.ip)={PROBE_TEST_PORT}
+            LEFT JOIN main.probe_current_results p ON p.server_ip=probe_endpoint_host(s.ip)
+                AND p.kind='speed' AND p.port={PROBE_TEST_PORT}
+                AND probe_endpoint_port(s.ip)={PROBE_TEST_PORT}"""
+
+    @staticmethod
+    def _server_count_from_sql(query: ServerPageQuery) -> str:
+        if query.conn == "all":
+            return "FROM probe_servers s"
+        return f"""FROM probe_servers s LEFT JOIN main.probe_current_results c
+            ON c.server_ip=probe_endpoint_host(s.ip) AND c.kind='connectivity'
+            AND c.port={PROBE_TEST_PORT} AND probe_endpoint_port(s.ip)={PROBE_TEST_PORT}"""
+
+    @staticmethod
+    def _server_select_sql() -> str:
+        return """SELECT s.*, c.test_time AS c_test_time,
+            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.frps_reachable'),0) END AS c_frps_reachable,
+            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.tunnel_established'),0) END AS c_tunnel_established,
+            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.firewall_open'),0) END AS c_firewall_open,
+            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.detail'),'') END AS c_detail,
+            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.dl_ok'),0) END AS s_dl_ok,
+            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.ul_ok'),0) END AS s_ul_ok,
+            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.dl_speed_bps'),0)*8.0/1048576 END AS s_dl_speed_mbps,
+            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.ul_speed_bps'),0)*8.0/1048576 END AS s_ul_speed_mbps,
+            p.test_time AS s_test_time"""
+
+    @staticmethod
+    def _cursor_binding(query: ServerPageQuery) -> str:
+        clean = lambda values: sorted({str(value).strip() for value in values if str(value).strip()})
+        normalized = {"q": query.q.strip(), "group": query.group, "groups": clean(query.group_ids),
+                      "label": query.label.strip() if query.label else query.label,
+                      "tagId": query.tag_id.strip() if query.tag_id else query.tag_id,
+                      "include": clean(query.include_tag_ids), "exclude": clean(query.exclude_tag_ids),
+                      "tagMode": query.tag_mode, "conn": query.conn, "sort": query.sort, "order": query.order,
+                      "pageSize": query.page_size}
+        return hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    @staticmethod
+    def _cursor_secret(connection: sqlite3.Connection) -> bytes:
+        row = connection.execute("SELECT value FROM probe_settings WHERE key='probe_server_cursor_secret'").fetchone()
+        if row is None:
+            candidate = secrets.token_urlsafe(48)
+            connection.execute(
+                "INSERT OR IGNORE INTO probe_settings(key,value) VALUES('probe_server_cursor_secret',?)",
+                (candidate,),
+            )
+            connection.commit()
+            row = connection.execute(
+                "SELECT value FROM probe_settings WHERE key='probe_server_cursor_secret'"
+            ).fetchone()
+        if row is None or not row[0]:
+            raise RuntimeError("server cursor secret could not be initialized")
+        return str(row[0]).encode("utf-8")
+
+    @classmethod
+    def _encode_server_cursor(cls, connection: sqlite3.Connection, payload: dict) -> str:
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        signature = hmac.new(cls._cursor_secret(connection), body, hashlib.sha256).hexdigest()
+        envelope = json.dumps({"p": payload, "s": signature}, sort_keys=True, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(envelope).decode().rstrip("=")
+
+    @classmethod
+    def _decode_server_cursor(cls, connection: sqlite3.Connection, cursor: str, binding: str) -> tuple[int | None, int]:
+        try:
+            encoded = cursor.encode("ascii")
+            envelope = json.loads(base64.urlsafe_b64decode(encoded + b"=" * (-len(encoded) % 4)))
+            if not isinstance(envelope, dict):
+                raise ValueError
+            payload = envelope.get("p")
+            signature = envelope.get("s")
+            if not isinstance(payload, dict) or not isinstance(signature, str):
+                raise ValueError
+            body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+            expected = hmac.new(cls._cursor_secret(connection), body, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                raise ValueError
+            keys = payload.get("k")
+            if (payload.get("v") != 1 or payload.get("f") != binding or
+                    not isinstance(keys, list) or len(keys) != 2):
+                raise ValueError
+            ip_sort, server_id = keys
+            if ((ip_sort is not None and (isinstance(ip_sort, bool) or not isinstance(ip_sort, int))) or
+                    isinstance(server_id, bool) or not isinstance(server_id, int) or server_id < 0):
+                raise ValueError
+            return ip_sort, server_id
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeError) as exc:
+            raise ValueError("cursor 无效、已损坏或与当前筛选条件不匹配") from exc
+
+    def count_servers(self, query: ServerPageQuery) -> int:
         def read(connection):
             if self.node_id is None:
                 self._source_views(connection)
-            where = []
-            params: list[object] = []
-            q = query.q.strip()
-            if q:
-                escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                where.append(
-                    "(s.ip LIKE ? ESCAPE '\\' OR s.server_group LIKE ? ESCAPE '\\' "
-                    "OR s.label LIKE ? ESCAPE '\\')"
-                )
-                params.extend([f"%{escaped}%"] * 3)
-            if query.group is not None:
-                where.append(
-                    "(s.group_id = (SELECT id FROM probe_groups WHERE id = ? OR name = ? LIMIT 1) "
-                    "OR s.server_group = ?)"
-                )
-                params.extend([query.group, query.group, query.group])
-            if query.label is not None:
-                if query.label == "":
-                    where.append(
-                        "NOT EXISTS (SELECT 1 FROM probe_server_tags st WHERE st.server_id = s.id)"
-                    )
-                else:
-                    where.append(
-                        "EXISTS (SELECT 1 FROM probe_server_tags st "
-                        "JOIN probe_tags t ON t.id = st.tag_id "
-                        "WHERE st.server_id = s.id AND t.name = ? COLLATE BINARY)"
-                    )
-                    params.append(query.label.strip())
-            if query.tag_id is not None:
-                where.append(
-                    "EXISTS (SELECT 1 FROM probe_server_tags st "
-                    "WHERE st.server_id = s.id AND st.tag_id = ?)"
-                )
-                params.append(query.tag_id)
-            if query.conn != "all":
-                score = self._CONN_SCORE_SQL
-                if query.conn == "pass":
-                    where.append(f"{score} = 4")
-                elif query.conn == "partial":
-                    where.append(f"{score} IN (2, 3)")
-                elif query.conn == "fail":
-                    where.append(f"{score} BETWEEN 1 AND 3")
-                else:
-                    where.append(f"{score} = 0")
-            where_sql = " WHERE " + " AND ".join(where) if where else ""
+            where_sql, params = self._server_where(query)
+            # Counts only need the connectivity projection when connectivity is filtered.
+            sql = f"SELECT COUNT(*) {self._server_count_from_sql(query)}" + where_sql
+            return int(connection.execute(sql, params).fetchone()[0])
+        return self._with_connection(read)
+
+    def query_servers(self, query: ServerPageQuery) -> dict:
+        """Legacy offset page, kept compatible for existing clients."""
+        def read(connection):
+            if self.node_id is None:
+                self._source_views(connection)
+            where_sql, params = self._server_where(query)
+            terms = self._server_order_terms(query)
+            order_sql = ", ".join(f"{expr} {direction}" for expr, direction in terms)
+            total_sql = f"SELECT COUNT(*) {self._server_count_from_sql(query)}" + where_sql
+            total = int(connection.execute(total_sql, params).fetchone()[0])
+            rows = connection.execute(self._server_select_sql() + " " + self._server_from_sql() + where_sql + f" ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                (*params, query.page_size, (query.page - 1) * query.page_size)).fetchall()
+            return {"items": [dict(row) for row in rows], "page": query.page,
+                    "pageSize": query.page_size, "total": total, "sort": query.sort, "order": query.order}
+        return self._with_connection(read)
+
+    def query_servers_cursor(self, query: ServerPageQuery, cursor: str | None = None) -> dict:
+        """Return the IP-indexed keyset page without a total-count scan."""
+        if query.sort != "ip":
+            raise ValueError("cursor 分页当前只支持 sort=ip；其他排序请使用 /servers offset API")
+        def read(connection):
+            if self.node_id is None:
+                self._source_views(connection)
+            where_sql, params = self._server_where(query)
+            binding = self._cursor_binding(query)
+            boundary = None
+            if cursor:
+                boundary = self._decode_server_cursor(connection, cursor, binding)
             direction = query.order.upper()
-            if query.sort == "ip":
-                order_sql = f"(s.ip_sort IS NULL) ASC, s.ip_sort {direction}, s.id {direction}"
-            elif query.sort == "group":
-                order_sql = (
-                    f"s.server_group {direction}, (s.ip_sort IS NULL) ASC, "
-                    f"s.ip_sort {direction}, s.id {direction}"
-                )
-            elif query.sort == "conn":
-                order_sql = f"{self._CONN_SCORE_SQL} {direction}, s.id {direction}"
-            elif query.sort == "speed":
-                order_sql = f"COALESCE(p.dl_speed_mbps,0) {direction}, s.id {direction}"
+            ip_direction = "ASC" if direction == "ASC" else "DESC"
+            ip_index = "idx_probe_servers_ip_sort_id"
+            id_op = ">" if direction == "ASC" else "<"
+            range_order_sql = f"s.ip_sort {ip_direction}, s.id {ip_direction}"
+            tail_order_sql = f"s.id {ip_direction}"
+            batch_limit = query.page_size + 1
+
+            def page_query(condition: str, condition_params: Sequence[object], limit: int, order_sql: str):
+                suffix = (" AND " if where_sql else " WHERE ") + condition
+                return connection.execute(
+                    self._server_select_sql() + " " + self._server_from_sql(ip_index) + where_sql + suffix +
+                    f" ORDER BY {order_sql} LIMIT ?",
+                    (*params, *condition_params, limit),
+                ).fetchall()
+
+            if boundary is not None and boundary[0] is None:
+                rows = page_query(f"s.ip_sort IS NULL AND s.id {id_op} ?", (boundary[1],), batch_limit, tail_order_sql)
             else:
-                order_sql = f"(p.test_time IS NULL) ASC, p.test_time {direction}, s.id {direction}"
-
-            total = connection.execute(
-                "SELECT COUNT(*) FROM probe_servers s"
-                " LEFT JOIN probe_connectivity_results c"
-                " ON c.server_ip = s.ip AND c.id = (SELECT id FROM probe_connectivity_results"
-                " WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1)"
-                + where_sql,
-                params,
-            ).fetchone()[0]
-            rows = connection.execute(
-                """
-                SELECT s.*, c.test_time AS c_test_time,
-                    c.frps_reachable AS c_frps_reachable,
-                    c.tunnel_established AS c_tunnel_established,
-                    c.firewall_open AS c_firewall_open,
-                    c.detail AS c_detail,
-                    p.dl_ok AS s_dl_ok, p.ul_ok AS s_ul_ok,
-                    p.dl_speed_mbps AS s_dl_speed_mbps,
-                    p.ul_speed_mbps AS s_ul_speed_mbps,
-                    p.test_time AS s_test_time
-                FROM probe_servers s
-                LEFT JOIN probe_connectivity_results c
-                    ON c.server_ip = s.ip AND c.id = (
-                        SELECT id FROM probe_connectivity_results
-                        WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1
+                range_condition = "s.ip_sort IS NOT NULL"
+                range_params: tuple[object, ...] = ()
+                if boundary is not None:
+                    range_condition += f" AND (s.ip_sort, s.id) {id_op} (?, ?)"
+                    range_params = boundary
+                rows = page_query(range_condition, range_params, batch_limit, range_order_sql)
+                # NULL IPs are always the final stable range, independent of direction.
+                if len(rows) < batch_limit:
+                    tail = page_query(
+                        "s.ip_sort IS NULL",
+                        (),
+                        batch_limit - len(rows),
+                        tail_order_sql,
                     )
-                LEFT JOIN probe_speed_results p
-                    ON p.server_ip = s.ip AND p.id = (
-                        SELECT id FROM probe_speed_results
-                        WHERE server_ip = s.ip ORDER BY id DESC LIMIT 1
-                    )
-                """ + where_sql + f" ORDER BY {order_sql} LIMIT ? OFFSET ?",
-                (*params, query.page_size, (query.page - 1) * query.page_size),
-            ).fetchall()
-            return {
-                "items": [dict(row) for row in rows],
-                "page": query.page,
-                "pageSize": query.page_size,
-                "total": total,
-                "sort": query.sort,
-                "order": query.order,
-            }
+                    rows = [*rows, *tail]
 
+            has_more = len(rows) > query.page_size
+            page_rows = rows[:query.page_size]
+            items = []
+            for row in page_rows:
+                items.append(dict(row))
+            next_cursor = None
+            if has_more and page_rows:
+                last = page_rows[-1]
+                next_cursor = self._encode_server_cursor(
+                    connection, {"v": 1, "f": binding, "k": [last["ip_sort"], last["id"]]}
+                )
+            return {"items": items, "nextCursor": next_cursor, "hasMore": has_more}
         return self._with_connection(read)
 
     def server_facets(self) -> dict:

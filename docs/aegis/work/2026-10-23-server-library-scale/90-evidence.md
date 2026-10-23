@@ -110,6 +110,20 @@ Added stable category/tag CRUD and tag merge/move semantics, asset assignment by
 
 The desktop category/tag management and multiselect UI, cursor pagination and contextual facets, server-side selection snapshots, and 100k/1M performance runs remain pending.
 
+## Slice: cursor browsing and desktop categorized tags
+
+- `./.venv/bin/python -m unittest tests.test_lb_selection tests.test_probe_jobs tests.test_probe tests.test_lb tests.test_database` — exit 0; 225 tests passed.
+- `npm run build` — exit 0.
+- `npm test` — 2 files, 3 tests passed.
+- `npm run test:e2e -- e2e/test-creation.spec.ts` — 26 Playwright tests passed, including stable-ID tag CRUD/merge, legacy label compatibility, cursor pages/count separation, browser back/forward, sort fallback, delayed count responses, and error states.
+- Query-plan coverage verifies ASC/DESC non-null cursor range `SEARCH` on `(ip_sort,id)`, indexed NULL-tail lookup, and no full scan or TEMP B-tree sort.
+- Final code review confirmed the URL/error-state fixes and planner-friendly cursor seek.
+- `git diff --check` — coordinator will rerun before commit.
+
+The server library now uses filter-bound, HMAC-signed keyset cursors for IP sort and loads exact counts separately. The cursor endpoint validates payload shape, caps ID-filter lists, and rejects non-IP sort requests; other sort modes keep the compatible offset endpoint. Browser URL history restores cursor pages, and page/count failures preserve last data without rendering false zero/empty states. The desktop UI groups tags by category, manages categories/tags by stable IDs, and supports tag-ID filters and bulk assignment.
+
+Current limits: multi-group and include-all/any/exclude controls are available at the API but not fully exposed in the UI; contextual facet counts, indexed measurement sort modes, saved views, server-side selection snapshots, asynchronous 100k import/batch jobs, and 100k/1M performance runs remain pending.
+
 ## Slice: unified current-result projection foundation
 
 - `./.venv/bin/python -m unittest tests.test_probe_jobs tests.test_lb tests.test_probe` — exit 0; 171 tests passed after final migration and LB query fixes.
