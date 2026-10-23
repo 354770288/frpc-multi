@@ -9,7 +9,9 @@
   "compatStatus": "旧probe和create路由跳转已验证；worker协议与DNS算法未动",
   "retirementStatus": "旧路由适配暂留；手写弹窗封装已迁至shadcn原语",
   "newRiskSignals": [
-    "尚未完成生产镜像与线上验收"
+    "手机验收为390px浏览器视口，未覆盖真实手机硬件",
+    "arm64镜像经CI构建，本次未执行arm64实机安装",
+    "既有BASELINE-GOVERNANCE格式缺项令workspace helper检查仍失败"
   ],
   "decision": "continue"
 }

@@ -1,16 +1,18 @@
 {
   "schemaVersion": "aegis.schema.v0",
   "taskId": "2026-10-22-frontend-workflow",
-  "currentTodo": "CI镜像构建、备份与生产验收",
+  "currentTodo": "前端改造与线上验收完成",
   "completedTodos": [
-    "兼容分页和显式目标、导航重组、三步新建、草稿保护、域名状态、历史与审计服务端分页已实现",
-    "后端250项、Vitest3项、Playwright11项与前端构建全部通过；真实备份索引迁移和分页性能通过"
+    "主控已部署88663b4；GHCR多架构CI 39895272783成功",
+    "250项后端回归、3项Vitest、11项Playwright、前端构建通过",
+    "真实备份隔离迁移与查询通过；主控API、导航、任务详情、双节点对比、域名、3个Agent/实例验收通过"
   ],
-  "activeSlice": "rollout",
+  "activeSlice": "complete",
   "evidenceRefs": [
-    "docs/aegis/work/2026-10-22-frontend-workflow/evidence-bundle-draft-local-verification.json"
+    "docs/aegis/work/2026-10-22-frontend-workflow/90-evidence.md",
+    "docs/aegis/work/2026-10-22-frontend-workflow/evidence-bundle-draft-production-rollout.json"
   ],
   "blockedOn": null,
-  "nextStep": "提交推送后等待CI成功，生产备份与镜像回滚准备，然后更新主控并只读验收",
-  "updatedAt": "2026-10-22"
+  "nextStep": "日常使用；worker保持兼容版本da8603c，测试节点协议未改",
+  "updatedAt": "2026-10-23"
 }

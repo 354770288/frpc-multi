@@ -2,10 +2,11 @@
   "schemaVersion": "aegis.schema.v0",
   "taskId": "2026-10-22-frontend-workflow",
   "lastCheckpointRef": "docs/aegis/work/2026-10-22-frontend-workflow/todo-checkpoint-draft.json",
-  "resumeInstruction": "仅主Agent继续；检查Git HEAD、CI与Netcatty主控连接后再发布，测试节点worker无需升级",
+  "resumeInstruction": "任务完成。若有新需求，先检查88663b4运行状态与当前main，再读本工作区checkpoint和前端基线。",
   "knownPartialWork": [
-    "兼容分页和显式目标、导航重组、三步新建、草稿保护、域名状态、历史与审计服务端分页已实现",
-    "后端250项、Vitest3项、Playwright11项与前端构建全部通过；真实备份索引迁移和分页性能通过"
+    "主控已部署88663b4；GHCR多架构CI 39895272783成功",
+    "250项后端回归、3项Vitest、11项Playwright、前端构建通过",
+    "真实备份隔离迁移与查询通过；主控API、导航、任务详情、双节点对比、域名、3个Agent/实例验收通过"
   ],
   "mustReadBeforeContinuing": [
     "docs/aegis/work/2026-10-22-frontend-workflow/10-intent.md",
@@ -13,6 +14,6 @@
     "docs/aegis/work/2026-10-22-frontend-workflow/todo-checkpoint-draft.json"
   ],
   "unsafeToAssume": [
-    "当前线上仍旧镜像da8603c；代码尚待提交部署"
+    "工作区结构检查仍报告既有BASELINE-GOVERNANCE格式缺项；本次未修改该治理文档"
   ]
 }

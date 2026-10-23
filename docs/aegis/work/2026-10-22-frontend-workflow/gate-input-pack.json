@@ -7,6 +7,7 @@
   "compatPlan": "旧链接保留跳转；测试执行与DNS算法保持现有行为",
   "retirementPlan": "旧路由适配暂留；手写弹窗封装已迁至shadcn原语",
   "evidenceBundle": [
-    "docs/aegis/work/2026-10-22-frontend-workflow/evidence-bundle-draft-local-verification.json"
+    "docs/aegis/work/2026-10-22-frontend-workflow/evidence-bundle-draft-local-verification.json",
+    "docs/aegis/work/2026-10-22-frontend-workflow/evidence-bundle-draft-production-rollout.json"
   ]
 }

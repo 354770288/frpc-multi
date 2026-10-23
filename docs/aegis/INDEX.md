@@ -58,3 +58,4 @@
 | 2026-10-22 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/evidence-bundle-draft-local-verification.json | 2026-10-22-frontend-workflow evidence local-verification |
 | 2026-10-22 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/gate-input-pack.json | 2026-10-22-frontend-workflow gate input pack |
 | 2026-10-22 | work | docs/aegis/work/2026-10-22-frontend-workflow/proof-bundle.md | 2026-10-22-frontend-workflow proof bundle |
+| 2026-10-23 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/evidence-bundle-draft-production-rollout.json | 2026-10-22-frontend-workflow evidence production-rollout |
