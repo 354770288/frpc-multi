@@ -29,6 +29,7 @@ from .store import (
     MAX_SERVER_IMPORT_ITEMS, MAX_SERVER_IMPORT_TEXT_BYTES, DiscoverPageQuery,
     ProbeStore, ServerImportLimitError, ServerPageQuery, unpack_labels, validate_probe_addr,
 )
+from .bulk import MAX_FILTER_IDS, MAX_SELECTION_IDS, ServerBulkStore
 
 router = APIRouter(prefix="/api/probe", dependencies=[Depends(require_auth)])
 
@@ -81,6 +82,10 @@ def audit(username: str, action: str, *, success: bool = True, message: str = ""
 # 模块级单例：与进程同生命周期；store 每次 start 时重建（跟随 DATABASE_PATH）
 def job_store():
     return ProbeJobStore(settings.database_path)
+
+
+def server_bulk_store():
+    return ServerBulkStore(settings.database_path)
 
 
 def source_store(node_id):
@@ -244,6 +249,108 @@ def _public_speed(row: dict) -> dict:
 # ---------------------------------------------------------------------------
 # 服务器库
 # ---------------------------------------------------------------------------
+class ServerSelectionCreate(BaseModel):
+    ids: list[int] | None = None
+    allMatching: bool = False
+    q: str = ""
+    group: str | None = None
+    groupIds: list[str] = []
+    tagId: str | None = None
+    includeTagIds: list[str] = []
+    excludeTagIds: list[str] = []
+    tagMode: Literal["any", "all"] = "any"
+    conn: Literal["all", "pass", "partial", "fail", "untested"] = "all"
+
+
+class ServerBulkJobCreate(BaseModel):
+    selectionId: str
+    operation: Literal["update", "delete"]
+    payload: dict = {}
+    idempotencyKey: str
+
+
+@router.post("/server-selections")
+def create_server_selection(payload: ServerSelectionCreate, user: Annotated[str, Depends(require_auth)]):
+    store = server_bulk_store()
+    if payload.ids is not None:
+        if payload.allMatching:
+            raise HTTPException(status_code=400, detail="ids 与 allMatching 不能同时使用")
+        if len(payload.ids) > MAX_SELECTION_IDS:
+            raise HTTPException(status_code=400, detail="ids 最多支持 5000 个服务器")
+        try:
+            return store.create_selection(user, ids=payload.ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not payload.allMatching:
+        raise HTTPException(status_code=400, detail="须提供 ids 或 allMatching=true")
+    if sum(len(values) for values in (payload.groupIds, payload.includeTagIds, payload.excludeTagIds)) > MAX_FILTER_IDS:
+        raise HTTPException(status_code=400, detail="ID 筛选总数不能超过 300")
+    filters = {"q": payload.q, "group": payload.group, "groupIds": payload.groupIds,
+               "tagId": payload.tagId, "includeTagIds": payload.includeTagIds,
+               "excludeTagIds": payload.excludeTagIds, "tagMode": payload.tagMode,
+               "conn": payload.conn}
+    try:
+        return store.create_selection(user, filters=filters)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/server-selections/{selection_id}")
+def get_server_selection(selection_id: str, user: Annotated[str, Depends(require_auth)]):
+    try:
+        return server_bulk_store().get_selection(user, selection_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="选择快照不存在") from exc
+
+
+@router.post("/server-bulk-jobs")
+def create_server_bulk_job(payload: ServerBulkJobCreate, user: Annotated[str, Depends(require_auth)]):
+    try:
+        return server_bulk_store().submit_job(user, payload.selectionId, payload.operation,
+                                              payload.payload, payload.idempotencyKey)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="选择快照不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/server-bulk-jobs/{job_id}")
+def get_server_bulk_job(job_id: str, user: Annotated[str, Depends(require_auth)]):
+    try:
+        return server_bulk_store().get_job(user, job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="批量任务不存在") from exc
+
+
+@router.get("/server-bulk-jobs/{job_id}/failures")
+def get_server_bulk_failures(job_id: str, user: Annotated[str, Depends(require_auth)],
+                             cursor: int = 0, limit: int = Query(default=100, ge=1, le=500)):
+    try:
+        return server_bulk_store().failures(user, job_id, cursor=cursor, limit=limit)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="批量任务不存在") from exc
+
+
+@router.post("/server-bulk-jobs/{job_id}/retry-failed")
+def retry_server_bulk_failures(job_id: str, payload: dict, user: Annotated[str, Depends(require_auth)]):
+    store = server_bulk_store()
+    try:
+        original = store.get_job(user, job_id)
+        c = store._db()
+        try:
+            row = c.execute("SELECT selection_id,operation,payload FROM probe_server_bulk_jobs WHERE id=? AND owner=?",
+                            (job_id, user)).fetchone()
+            c.rollback()
+        finally:
+            c.close()
+        return store.submit_job(user, row["selection_id"], row["operation"], json.loads(row["payload"]),
+                                str(payload.get("idempotencyKey", "")), retry_of=job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="批量任务不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 class ServerCreate(BaseModel):
     ip: str
     labels: list[str] = []

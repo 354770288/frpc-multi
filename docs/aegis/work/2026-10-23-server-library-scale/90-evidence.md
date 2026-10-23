@@ -1,5 +1,17 @@
 # 服务器分类与大规模数据交互 Evidence
 
+## Slice: durable selection snapshots and asynchronous update/delete
+
+- `./.venv/bin/python -m unittest tests.test_probe_bulk tests.test_probe tests.test_probe_jobs tests.test_lb tests.test_lb_selection tests.test_database` — coordinator fresh run: 239 tests passed.
+- `./.venv/bin/python -m py_compile app/probe/bulk.py app/probe/router.py app/probe/store.py app/control/database.py app/main.py tests/test_probe_bulk.py` — exit 0.
+- `git diff --check` — exit 0.
+- Spec compliance review: no P0/P1 findings; retry-after-expiry fix re-reviewed and passed. Selection-backed test-job creation remains a separate scope item because the existing ProbeJobStore eagerly expands targets.
+- Code-quality review: cleanup/retry race found and fixed; re-review confirmed active retries preserve source job and failure rows through cleanup.
+
+Selection snapshots now bind an owner, max server ID, filter set, and catalog revision at request acceptance. The background worker builds memberships in bounded 10,000-ID ranges and rejects the snapshot if filter-relevant catalog data changes during construction. Update/delete jobs materialize targets in bounded ranges, execute at most 250 server mutations per transaction, expose progress and cursor-paged failures, and retry failed rows from terminal source jobs. A lease token fences selection builds, bulk mutations, and outcome writes; deleted update targets become explicit failures. Cleanup advances in bounded pages and preserves source failure rows while queued/running retries depend on them. Retry remains possible after selection expiry during the seven-day terminal retention window.
+
+Uncovered: desktop UI does not yet use the snapshot/progress APIs; bulk probe-test creation is deferred to a separate bounded task-producer slice; the 100k fixture verifies membership materialization, not full mutation completion under concurrent load; 1M capacity and production migration/deployment were not tested.
+
 ## Slice: fixed target port
 
 - `./.venv/bin/python -m unittest tests.test_probe_jobs` — exit 0; 35 tests passed.

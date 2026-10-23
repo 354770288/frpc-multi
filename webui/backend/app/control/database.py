@@ -107,6 +107,44 @@ CREATE TABLE IF NOT EXISTS probe_server_tags (
     tag_id TEXT NOT NULL REFERENCES probe_tags(id) ON DELETE CASCADE,
     PRIMARY KEY (server_id, tag_id)
 );
+CREATE TABLE IF NOT EXISTS probe_server_selections (
+    id TEXT PRIMARY KEY, owner TEXT NOT NULL, state TEXT NOT NULL,
+    filters TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0,
+    processed INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
+    max_server_id INTEGER NOT NULL DEFAULT 0, catalog_revision INTEGER NOT NULL DEFAULT 0,
+    build_cursor INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_probe_server_selections_owner ON probe_server_selections(owner,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_probe_server_selections_expiry ON probe_server_selections(expires_at,state);
+CREATE TABLE IF NOT EXISTS probe_server_selection_members (
+    selection_id TEXT NOT NULL REFERENCES probe_server_selections(id) ON DELETE CASCADE,
+    server_id INTEGER NOT NULL, ip TEXT NOT NULL,
+    PRIMARY KEY(selection_id,server_id)
+);
+CREATE TABLE IF NOT EXISTS probe_server_bulk_jobs (
+    id TEXT PRIMARY KEY, owner TEXT NOT NULL, selection_id TEXT NOT NULL,
+    operation TEXT NOT NULL, payload TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+    state TEXT NOT NULL, total INTEGER NOT NULL DEFAULT 0, processed INTEGER NOT NULL DEFAULT 0,
+    succeeded INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
+    items_ready INTEGER NOT NULL DEFAULT 0,
+    materialize_cursor INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, error TEXT NOT NULL DEFAULT '',
+    retry_of TEXT, UNIQUE(owner,idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_probe_server_bulk_jobs_owner ON probe_server_bulk_jobs(owner,created_at DESC);
+CREATE TABLE IF NOT EXISTS probe_server_bulk_items (
+    job_id TEXT NOT NULL REFERENCES probe_server_bulk_jobs(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL, server_id INTEGER NOT NULL, ip TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending', error TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(job_id,ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_probe_server_bulk_items_state ON probe_server_bulk_items(job_id,state,ordinal);
+CREATE TABLE IF NOT EXISTS probe_server_bulk_lease (
+    id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL DEFAULT '', lease_until REAL NOT NULL DEFAULT 0,
+    token TEXT NOT NULL DEFAULT ''
+);
+INSERT OR IGNORE INTO probe_server_bulk_lease(id) VALUES(1);
 CREATE INDEX IF NOT EXISTS idx_probe_server_tags_tag_server
     ON probe_server_tags (tag_id, server_id);
 
@@ -596,6 +634,82 @@ def _open_database(path: Path) -> sqlite3.Connection:
         raise
 
 
+def _migrate_probe_server_bulk(connection: sqlite3.Connection) -> None:
+    """Extend durable selection snapshots, async jobs, and catalog revision fencing."""
+    additions = {
+        "probe_server_bulk_jobs": [
+            ("items_ready", "INTEGER NOT NULL DEFAULT 0"),
+            ("materialize_cursor", "INTEGER NOT NULL DEFAULT 0"),
+        ],
+        "probe_server_selections": [
+            ("max_server_id", "INTEGER NOT NULL DEFAULT 0"),
+            ("catalog_revision", "INTEGER NOT NULL DEFAULT 0"),
+            ("build_cursor", "INTEGER NOT NULL DEFAULT 0"),
+        ],
+        "probe_server_bulk_lease": [("token", "TEXT NOT NULL DEFAULT ''")],
+    }
+    for table, fields in additions.items():
+        columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        for name, declaration in fields:
+            if name not in columns:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+    connection.execute(
+        "UPDATE probe_server_bulk_jobs SET items_ready=1 WHERE items_ready=0 "
+        "AND EXISTS(SELECT 1 FROM probe_server_bulk_items i WHERE i.job_id=probe_server_bulk_jobs.id)"
+    )
+    connection.execute("CREATE TABLE IF NOT EXISTS probe_server_catalog_revision(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL DEFAULT 0)")
+    connection.execute("INSERT OR IGNORE INTO probe_server_catalog_revision(id,revision) VALUES(1,0)")
+    connection.execute(
+        "UPDATE probe_server_selections SET max_server_id=(SELECT COALESCE(MAX(id),0) FROM probe_servers), "
+        "catalog_revision=(SELECT revision FROM probe_server_catalog_revision WHERE id=1) "
+        "WHERE state IN ('queued','building') AND max_server_id=0 AND filters!='{}'"
+    )
+    triggers = {
+        "probe_bulk_servers_update": """CREATE TRIGGER IF NOT EXISTS probe_bulk_servers_update
+            AFTER UPDATE OF ip,label,server_group,group_id,ip_sort ON probe_servers
+            WHEN EXISTS(SELECT 1 FROM probe_server_selections WHERE state IN ('queued','building') AND max_server_id>=OLD.id)
+            BEGIN UPDATE probe_server_catalog_revision SET revision=revision+1 WHERE id=1; END""",
+        "probe_bulk_servers_delete": """CREATE TRIGGER IF NOT EXISTS probe_bulk_servers_delete
+            AFTER DELETE ON probe_servers
+            WHEN EXISTS(SELECT 1 FROM probe_server_selections WHERE state IN ('queued','building') AND max_server_id>=OLD.id)
+            BEGIN UPDATE probe_server_catalog_revision SET revision=revision+1 WHERE id=1; END""",
+        "probe_bulk_tags_insert": """CREATE TRIGGER IF NOT EXISTS probe_bulk_tags_insert
+            AFTER INSERT ON probe_server_tags
+            WHEN EXISTS(SELECT 1 FROM probe_server_selections WHERE state IN ('queued','building') AND max_server_id>=NEW.server_id)
+            BEGIN UPDATE probe_server_catalog_revision SET revision=revision+1 WHERE id=1; END""",
+        "probe_bulk_tags_delete": """CREATE TRIGGER IF NOT EXISTS probe_bulk_tags_delete
+            AFTER DELETE ON probe_server_tags
+            WHEN EXISTS(SELECT 1 FROM probe_server_selections WHERE state IN ('queued','building') AND max_server_id>=OLD.server_id)
+            BEGIN UPDATE probe_server_catalog_revision SET revision=revision+1 WHERE id=1; END""",
+        "probe_bulk_tags_update": """CREATE TRIGGER IF NOT EXISTS probe_bulk_tags_update
+            AFTER UPDATE OF server_id,tag_id ON probe_server_tags
+            WHEN EXISTS(SELECT 1 FROM probe_server_selections WHERE state IN ('queued','building') AND max_server_id>=OLD.server_id)
+            BEGIN UPDATE probe_server_catalog_revision SET revision=revision+1 WHERE id=1; END""",
+        "probe_bulk_current_insert": """CREATE TRIGGER IF NOT EXISTS probe_bulk_current_insert
+            AFTER INSERT ON probe_current_results
+            WHEN EXISTS(SELECT 1 FROM probe_server_selections WHERE state IN ('queued','building'))
+            BEGIN UPDATE probe_server_catalog_revision SET revision=revision+1 WHERE id=1; END""",
+        "probe_bulk_current_update": """CREATE TRIGGER IF NOT EXISTS probe_bulk_current_update
+            AFTER UPDATE ON probe_current_results
+            WHEN EXISTS(SELECT 1 FROM probe_server_selections WHERE state IN ('queued','building'))
+            BEGIN UPDATE probe_server_catalog_revision SET revision=revision+1 WHERE id=1; END""",
+        "probe_bulk_current_delete": """CREATE TRIGGER IF NOT EXISTS probe_bulk_current_delete
+            AFTER DELETE ON probe_current_results
+            WHEN EXISTS(SELECT 1 FROM probe_server_selections WHERE state IN ('queued','building'))
+            BEGIN UPDATE probe_server_catalog_revision SET revision=revision+1 WHERE id=1; END""",
+        "probe_bulk_groups_update": """CREATE TRIGGER IF NOT EXISTS probe_bulk_groups_update
+            AFTER UPDATE OF id,name ON probe_groups
+            WHEN EXISTS(SELECT 1 FROM probe_server_selections WHERE state IN ('queued','building'))
+            BEGIN UPDATE probe_server_catalog_revision SET revision=revision+1 WHERE id=1; END""",
+        "probe_bulk_groups_delete": """CREATE TRIGGER IF NOT EXISTS probe_bulk_groups_delete
+            AFTER DELETE ON probe_groups
+            WHEN EXISTS(SELECT 1 FROM probe_server_selections WHERE state IN ('queued','building'))
+            BEGIN UPDATE probe_server_catalog_revision SET revision=revision+1 WHERE id=1; END""",
+    }
+    for sql in triggers.values():
+        connection.execute(sql)
+
+
 def initialize_database(path: Path) -> None:
     """Initialize one database path once per process, retrying after failures."""
     resolved_path = _resolved_path(path)
@@ -615,6 +729,7 @@ def initialize_database(path: Path) -> None:
                     f"failed to enable SQLite WAL mode for {resolved_path}: {journal_mode}"
                 )
             connection.executescript(SCHEMA)
+            _migrate_probe_server_bulk(connection)
             _migrate_probe_failover(connection)
             _migrate_probe_current_results(connection)
             _migrate_nodes(connection)

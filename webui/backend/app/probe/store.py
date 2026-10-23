@@ -369,6 +369,19 @@ def _normalize_ids(ids: Iterable[int]) -> list[int]:
     return list(dict.fromkeys(int(row_id) for row_id in ids))
 
 
+def _assert_bulk_lease(connection: sqlite3.Connection, lease_guard: tuple[str, str] | None) -> None:
+    if lease_guard is None:
+        return
+    import time
+    owner, token = lease_guard
+    row = connection.execute(
+        "SELECT 1 FROM probe_server_bulk_lease WHERE id=1 AND owner=? AND token=? AND lease_until>?",
+        (owner, token, time.time()),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("bulk worker lease lost")
+
+
 def _chunks(
     connection: sqlite3.Connection, items: Sequence[ChunkItem], *, headroom: int = 0
 ) -> Iterable[Sequence[ChunkItem]]:
@@ -674,6 +687,28 @@ class ProbeStore:
             connection.commit()
 
         self._with_connection(write)
+
+    def delete_servers_batch(self, ids: Sequence[int], *, lease_guard: tuple[str, str] | None = None) -> int:
+        """Delete a bounded server chunk in one immediate transaction.
+
+        Missing IDs are naturally idempotent; normalized tag relations and other
+        dependent rows are removed by SQLite's configured foreign-key cascades.
+        """
+        normalized = _normalize_ids(ids)
+        if not normalized:
+            return 0
+        def write(connection):
+            affected = 0
+            connection.execute("BEGIN IMMEDIATE")
+            _assert_bulk_lease(connection, lease_guard)
+            for chunk in _chunks(connection, normalized):
+                placeholders = ",".join("?" for _ in chunk)
+                affected += connection.execute(
+                    f"DELETE FROM probe_servers WHERE id IN ({placeholders})", chunk
+                ).rowcount
+            connection.commit()
+            return affected
+        return self._with_connection(write)
 
     def import_servers(self, items: list[dict]) -> tuple[int, int]:
         """Atomically import bounded input chunks; very large imports need the async job slice."""
@@ -1412,7 +1447,8 @@ class ProbeStore:
         self, ids: list[int], *, group: str | None = None,
         add_labels: Sequence[str] = (), remove_labels: Sequence[str] = (),
         add_tag_ids: Sequence[str] = (), remove_tag_ids: Sequence[str] = (),
-    ) -> int:
+        lease_guard: tuple[str, str] | None = None, return_ids: bool = False,
+    ) -> int | set[int]:
         """批量更新服务器：分组覆盖 + 标签增/删（多标签语义），返回更新行数。"""
         if group is None and not add_labels and not remove_labels and not add_tag_ids and not remove_tag_ids:
             raise ValueError("至少提供分组或标签之一")
@@ -1424,12 +1460,14 @@ class ProbeStore:
 
         normalized = _normalize_ids(ids)
         if not normalized:
-            return 0
+            return set() if return_ids else 0
 
         def write(connection):
             affected = 0
+            existing_ids: set[int] = set()
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
+                _assert_bulk_lease(connection, lease_guard)
                 group_for_update = (_canonical_group_name(connection, clean_group)
                                     if clean_group is not None else None)
                 add_ids = _tag_ids(connection, add_tag_ids)
@@ -1440,6 +1478,7 @@ class ProbeStore:
                         f"SELECT id FROM probe_servers WHERE id IN ({placeholders})", chunk
                     ).fetchall()
                     affected += len(rows)
+                    existing_ids.update(int(row["id"]) for row in rows)
                     if group_for_update is not None:
                         group_id = _ensure_group_id(connection, group_for_update)
                         connection.execute(
@@ -1483,7 +1522,7 @@ class ProbeStore:
                                         [(server_id, tag_id) for server_id in server_chunk for tag_id in tag_chunk],
                                     )
                             _refresh_server_projections(connection, server_chunk)
-            return affected
+            return existing_ids if return_ids else affected
 
         return self._with_connection(write)
 

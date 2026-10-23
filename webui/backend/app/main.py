@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
     agent_client = None
     scheduler_stop = None
     probe_stop = None
+    bulk_stop = None
     if settings.is_agent:
         from .agent.client import AgentWsClient
 
@@ -56,6 +57,8 @@ async def lifespan(app: FastAPI):
         from .probe.console import start_console_worker
         import os
         probe_stop = start_console_worker(settings.database_path,frpc_bin=settings.probe_frpc_bin,version=os.environ.get("AGENT_VERSION","dev"))
+        from .probe.bulk import ServerBulkStore, ServerBulkWorker
+        bulk_stop = ServerBulkWorker(ServerBulkStore(settings.database_path)).start()
     try:
         yield
     finally:
@@ -69,6 +72,8 @@ async def lifespan(app: FastAPI):
             scheduler_stop.set()
         if probe_stop is not None:
             probe_stop()
+        if bulk_stop is not None:
+            bulk_stop()
 
 
 app = FastAPI(title="frpc 多实例管理面板", version="0.2.0", lifespan=lifespan)
