@@ -74,7 +74,20 @@ At the end of the backend contextual-facet slice, the frontend had not yet expos
 
 The facets API adds opt-in category/name search, page, and page-size parameters. It returns a 50-item first page by default only when paging/search is explicitly requested; no-argument callers preserve the prior unpaged candidate list and response keys. Results are stably ordered by category/name/tag ID, search escapes wildcard characters, and empty pages retain total metadata. The synthetic 100k EXPLAIN checks `LIMIT/OFFSET`, indexed search in the unified current-result projection, and no history-table scan.
 
-Uncovered: the frontend has not yet passed tag search/page state, so its advanced controls still use the no-argument full facet list. The immediately following desktop slice will connect candidate search/pagination; indexed measurement sorts, saved views, capacity benchmarks and production deployment remain pending.
+At the end of the backend tag-pagination slice, the frontend had not yet passed tag search/page state, so its advanced controls still used the no-argument full facet list. The following desktop slice connected candidate search/pagination; indexed measurement sorts, saved views, capacity benchmarks and production deployment remain pending.
+
+## Slice: desktop tag candidate search and pagination
+
+- `npm run build` — exit 0; TypeScript and Vite bundle passed.
+- `npm test` — exit 0; 5 files and 11 tests passed.
+- `npm run test:e2e -- e2e/test-creation.spec.ts` — coordinator fresh run: 34 Playwright tests passed.
+- `git diff --check` — exit 0.
+- Spec compliance review: candidate search/paging is separate from applied filters; stable IDs and legacy no-argument facet behavior remain; no server asset expansion occurs.
+- Code-quality review: requests use a complete filter/search/page key with cancellation and stale-response fencing; quick-tag conflict with excluded tags is resolved; no remaining findings.
+
+The advanced filter area and quick-tag cloud now consume an explicit 50-item candidate page from contextual facets. Search is case-insensitive and scoped to category/tag names; next/previous and matching total are visible. Changing applied server filters or candidate search resets the candidate page; selected include/exclude IDs are preserved, and toggling unrelated quick tags does not clear other exclusions. URL/history continues to persist only applied filters, not candidate browsing state.
+
+Uncovered: no virtualization study for extremely large tag dictionaries; indexed measurement sorts, saved views, scale timing/throughput, 100k mutation/task completion benchmark, 1M capacity, and production deployment remain pending.
 
 ## Slice: desktop multi-group and contextual tag filters
 

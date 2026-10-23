@@ -223,8 +223,16 @@ export const probeApi = {
   },
   serverCount: (query: ServerQuery, signal?: AbortSignal) =>
     api<{ total: number }>(`/api/probe/servers/count?${serverFilterParams(query).toString()}`, { signal }),
-  serverFacets: (query: ServerQuery, signal?: AbortSignal) =>
-    api<ServerFacets>(`/api/probe/servers/facets?${serverFilterParams(query).toString()}`, { signal }),
+  serverFacets: (query?: ServerQuery, signal?: AbortSignal, candidates?: { tagSearch: string; tagPage: number; tagPageSize: number }) => {
+    const params = query ? serverFilterParams(query) : new URLSearchParams();
+    if (candidates) {
+      params.set('tagSearch', candidates.tagSearch);
+      params.set('tagPage', String(candidates.tagPage));
+      params.set('tagPageSize', String(candidates.tagPageSize));
+    }
+    const suffix = params.toString();
+    return api<ServerFacets>(`/api/probe/servers/facets${suffix ? `?${suffix}` : ''}`, { signal });
+  },
   createServerSelection: (payload: { ids?: number[]; allMatching?: boolean; q?: string; group?: string; label?: string; groupIds?: string[]; tagId?: string; includeTagIds?: string[]; excludeTagIds?: string[]; tagMode?: 'any' | 'all'; conn?: ServerQuery['conn'] }) =>
     api<ServerSelection>('/api/probe/server-selections', { method: 'POST', body: JSON.stringify(payload) }),
   serverSelection: (id: string) => api<ServerSelection>(`/api/probe/server-selections/${encodeURIComponent(id)}`),

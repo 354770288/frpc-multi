@@ -385,6 +385,9 @@ export type ServerFacets = {
   labels: LabelCount[];
   tagItems: ServerTagFacet[];
   groups: DiscoverFacetGroup[];
+  tagPage?: number;
+  tagPageSize?: number;
+  tagTotal?: number;
 };
 
 export type ServerTagFacet = { tagId: string; categoryId: string; category: string; name: string; count: number };

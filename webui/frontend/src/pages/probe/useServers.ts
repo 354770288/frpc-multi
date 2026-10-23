@@ -14,6 +14,7 @@ const EMPTY_PAGE: ServerPage = {
   items: [], page: 1, pageSize: 50, total: 0, sort: 'ip', order: 'asc',
 };
 const EMPTY_FACETS: ServerFacets = { labels: [], tagItems: [], groups: [] };
+const TAG_CANDIDATE_PAGE_SIZE = 50;
 
 function parseQuery(search: string): ServerQuery {
   const params = new URLSearchParams(search);
@@ -50,6 +51,10 @@ function facetKeyFor(query: ServerQuery) {
   return JSON.stringify({ q: query.q, group: query.group, groupIds: query.groupIds, label: query.label, tagId: query.tagId, includeTagIds: query.includeTagIds, excludeTagIds: query.excludeTagIds, tagMode: query.tagMode, conn: query.conn });
 }
 
+function facetRequestKeyFor(query: ServerQuery, tagSearch: string, tagPage: number) {
+  return JSON.stringify({ filters: facetKeyFor(query), tagSearch, tagPage, tagPageSize: TAG_CANDIDATE_PAGE_SIZE });
+}
+
 function loadCursorTrail(key: string) {
   try {
     const saved = JSON.parse(sessionStorage.getItem(key) ?? '[]');
@@ -70,6 +75,8 @@ type PageRefreshOptions = { recoverOutOfRange?: boolean };
 export function useServers(active: boolean) {
   const [searchParams,setUrl] = useSearchParams();
   const [query, setQuery] = useState<ServerQuery>(() => parseQuery(window.location.search));
+  const [tagSearch,setTagSearchText] = useState('');
+  const [tagPage,setTagPage] = useState(1);
   const urlKey = searchParams.toString();
   const cursorMode = query.sort === 'ip';
   const countFilterKey = countKeyFor(query);
@@ -122,10 +129,24 @@ export function useServers(active: boolean) {
   }, [cursorKey]);
   const queryRef = useRef(query);
   queryRef.current = query;
+  const tagSearchRef = useRef(tagSearch);
+  tagSearchRef.current = tagSearch;
+  const tagPageRef = useRef(tagPage);
+  tagPageRef.current = tagPage;
+  const facetRequestKey = facetRequestKeyFor(query, tagSearch, tagPage);
+  const facetRequestKeyRef = useRef(facetRequestKey);
+  facetRequestKeyRef.current = facetRequestKey;
+  const priorFacetFilterKey = useRef(facetFilterKey);
+  useLayoutEffect(() => {
+    if (priorFacetFilterKey.current === facetFilterKey) return;
+    priorFacetFilterKey.current = facetFilterKey;
+    setTagPage(1);
+  }, [facetFilterKey]);
 
   const [page, setPage] = useState<ServerPage>(EMPTY_PAGE);
   const [facets, setFacets] = useState<ServerFacets>(EMPTY_FACETS);
   const [facetDataKey, setFacetDataKey] = useState<string | null>(null);
+  const [facetRequestDataKey, setFacetRequestDataKey] = useState<string | null>(null);
   const [facetLoading, setFacetLoading] = useState(false);
   const [facetError, setFacetError] = useState<string | null>(null);
   const [facetErrorKey, setFacetErrorKey] = useState<string | null>(null);
@@ -210,19 +231,24 @@ export function useServers(active: boolean) {
     if (!isVisible()) return;
     const requested = queryRef.current;
     const requestedKey = facetKeyFor(requested);
+    const requestedTagSearch = tagSearchRef.current;
+    const requestedTagPage = tagPageRef.current;
+    const requestedRequestKey = facetRequestKeyFor(requested, requestedTagSearch, requestedTagPage);
     facetController.current?.abort();
     const controller = new AbortController();
     facetController.current = controller;
     const generation = ++facetGeneration.current;
     setFacetLoading(true); setFacetError(null); setFacetErrorKey(null);
     try {
-      const next = await probeApi.serverFacets(requested, controller.signal);
-      if (!controller.signal.aborted && generation === facetGeneration.current) {
-        setFacets(next); setFacetDataKey(requestedKey);
+      const next = await probeApi.serverFacets(requested, controller.signal, {
+        tagSearch: requestedTagSearch, tagPage: requestedTagPage, tagPageSize: TAG_CANDIDATE_PAGE_SIZE,
+      });
+      if (!controller.signal.aborted && generation === facetGeneration.current && requestedRequestKey === facetRequestKeyRef.current) {
+        setFacets(next); setFacetDataKey(requestedKey); setFacetRequestDataKey(requestedRequestKey);
       }
     } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError') && generation === facetGeneration.current) {
-        setFacetError(requestErrorMessage(error)); setFacetErrorKey(requestedKey);
+      if (!(error instanceof DOMException && error.name === 'AbortError') && generation === facetGeneration.current && requestedRequestKey === facetRequestKeyRef.current) {
+        setFacetError(requestErrorMessage(error)); setFacetErrorKey(requestedRequestKey);
       }
     } finally {
       if (generation === facetGeneration.current) setFacetLoading(false);
@@ -241,7 +267,7 @@ export function useServers(active: boolean) {
   useEffect(() => {
     if (!isVisible()) return;
     void refreshFacets().catch(() => {});
-  }, [active, facetFilterKey, isVisible, refreshFacets]);
+  }, [active, facetRequestKey, isVisible, refreshFacets]);
   useEffect(() => { if (isVisible() && query.sort === 'ip') void refreshCount().catch(() => {}); }, [active, countFilterKey, isVisible, query.sort, refreshCount]);
 
   // 服务器库轮询：仅 Tab 激活且页面可见时，10s 一拍；隐藏即中止请求，回前台立即刷新
@@ -270,6 +296,7 @@ export function useServers(active: boolean) {
 
   const updateQuery = useCallback((changes: Partial<ServerQuery>, resetPage = true) => {
     if (resetPage) pushUrlRef.current = true;
+    if (resetPage) setTagPage(1);
     setQuery((current) => ({ ...current, ...changes, ...(resetPage && !Object.prototype.hasOwnProperty.call(changes, 'cursor') ? { cursor: undefined } : {}), page: resetPage ? 1 : (changes.page ?? current.page) }));
   }, []);
 
@@ -292,6 +319,13 @@ export function useServers(active: boolean) {
   const setIncludeTagIds = useCallback((ids: string[]) => updateQuery({ tagId: undefined, label: undefined, includeTagIds: [...new Set(ids)] }), [updateQuery]);
   const setExcludeTagIds = useCallback((ids: string[]) => updateQuery({ excludeTagIds: [...new Set(ids)] }), [updateQuery]);
   const setTagMode = useCallback((tagMode: 'any' | 'all') => updateQuery({ tagMode }), [updateQuery]);
+  const setTagCandidateSearch = useCallback((value: string) => {
+    setTagSearchText(value);
+    setTagPage(1);
+  }, []);
+  const setTagCandidatePage = useCallback((value: number) => {
+    setTagPage(Math.max(1, Math.floor(value)));
+  }, []);
   const setConn = useCallback((conn: ServerConn) => updateQuery({ conn }), [updateQuery]);
   const setSort = useCallback((sort: ServerSort, order: DiscoverOrder) => updateQuery({ sort, order }), [updateQuery]);
   const setPageNumber = useCallback((nextPage: number) => updateQuery({ page: nextPage }, false), [updateQuery]);
@@ -345,8 +379,13 @@ export function useServers(active: boolean) {
     page,
     facets,
     facetsCurrent: facetDataKey === facetFilterKey,
+    tagCandidatesCurrent: facetRequestDataKey === facetRequestKey,
     facetsLoading: facetLoading,
-    facetsError: facetErrorKey === facetFilterKey ? facetError : null,
+    facetsError: facetErrorKey === facetRequestKey ? facetError : null,
+    tagSearch,
+    tagPage,
+    tagPageSize: TAG_CANDIDATE_PAGE_SIZE,
+    tagTotal: facetRequestDataKey === facetRequestKey ? facets.tagTotal ?? null : null,
     totalCount: cursorMode ? (totalCountKey === countFilterKey ? totalCount : null) : page.total,
     pageLoading,
     pageError,
@@ -367,6 +406,8 @@ export function useServers(active: boolean) {
     setIncludeTagIds,
     setExcludeTagIds,
     setTagMode,
+    setTagCandidateSearch,
+    setTagCandidatePage,
     setConn,
     setSort,
     setPageNumber,

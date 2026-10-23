@@ -30,7 +30,7 @@ test.beforeEach(async ({ page }) => {
     }
     if(url.pathname==='/api/probe/tags/categories')return json({items:[{id:'region',name:'地区'},{id:'carrier',name:'线路'}]});
     if(url.pathname==='/api/probe/tags')return json({items:[{id:'tag-region-cn',categoryId:'region',category:'地区',name:'CN',serverCount:1},{id:'tag-carrier-cn',categoryId:'carrier',category:'线路',name:'CN',serverCount:1}]});
-    if(url.pathname==='/api/probe/servers/facets')return json({labels:[{label:'legacy',count:1}],tagItems:[{tagId:'tag-region-cn',categoryId:'region',category:'地区',name:'CN',count:1},{tagId:'tag-carrier-cn',categoryId:'carrier',category:'线路',name:'CN',count:1}],groups:[]});
+    if(url.pathname==='/api/probe/servers/facets')return json({labels:[{label:'legacy',count:1}],tagItems:[{tagId:'tag-region-cn',categoryId:'region',category:'地区',name:'CN',count:1},{tagId:'tag-carrier-cn',categoryId:'carrier',category:'线路',name:'CN',count:1}],groups:[],tagPage:Number(url.searchParams.get('tagPage') || 1),tagPageSize:Number(url.searchParams.get('tagPageSize') || 50),tagTotal:2});
     if(url.pathname==='/api/probe/servers/count'){
       if(url.searchParams.get('tagId')==='tag-carrier-cn'){
         await new Promise((resolve)=>setTimeout(resolve,900));
@@ -240,6 +240,10 @@ test('queued all-matching snapshot continues polling after its ID enters the URL
 test('server advanced filters use stable IDs, contextual counts, and browser history',async ({page})=>{
   const facetQueries:string[]=[];
   const pageQueries:string[]=[];
+  let releaseGroupFacet!:()=>void;
+  let groupFacetStartedResolve!:()=>void;
+  const groupFacetStarted=new Promise<void>((resolve)=>{groupFacetStartedResolve=resolve;});
+  const groupFacetGate=new Promise<void>((resolve)=>{releaseGroupFacet=resolve;});
   const openAdvanced=async()=>{
     const panel=page.locator('details').filter({hasText:'高级分组与标签筛选'});
     if(!await panel.evaluate((element)=>(element as HTMLDetailsElement).open))await panel.locator('summary').click();
@@ -247,7 +251,10 @@ test('server advanced filters use stable IDs, contextual counts, and browser his
   await page.route('**/api/probe/servers/facets**',async (route)=>{
     const url=new URL(route.request().url());
     facetQueries.push(url.toString());
-    if(url.searchParams.get('group')==='QA')await new Promise((resolve)=>setTimeout(resolve,700));
+    if(url.searchParams.get('group')==='QA'){
+      groupFacetStartedResolve();
+      await groupFacetGate;
+    }
     const contextualTags=url.searchParams.has('group') || url.searchParams.has('groupIds') ? 3 : 1;
     const constrainedGroups=url.searchParams.has('includeTagIds') || url.searchParams.has('excludeTagIds');
     return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
@@ -258,6 +265,9 @@ test('server advanced filters use stable IDs, contextual counts, and browser his
         {tagId:'tag-carrier-cn',categoryId:'carrier',category:'线路',name:'CN',count:2},
         {tagId:'tag-purpose-edge',categoryId:'purpose',category:'用途',name:'Edge',count:1},
       ],
+      tagPage:Number(url.searchParams.get('tagPage') || 1),
+      tagPageSize:Number(url.searchParams.get('tagPageSize') || 50),
+      tagTotal:3,
     })});
   });
   page.on('request',(request)=>{
@@ -270,7 +280,9 @@ test('server advanced filters use stable IDs, contextual counts, and browser his
   await page.getByLabel('单一分组筛选').click();
   await page.getByRole('option',{name:/QA/}).click();
   await expect(page).toHaveURL(/group=QA/);
-  await expect(page.getByRole('button',{name:'地区 CN …'})).toBeVisible();
+  await groupFacetStarted;
+  await expect(page.getByText('正在加载标签候选…').last()).toBeVisible();
+  releaseGroupFacet();
   await expect(page.locator('label').filter({hasText:'地区 / CN (3)'}).first()).toBeVisible();
 
   await page.getByLabel('选择分组 West').check();
@@ -330,6 +342,81 @@ test('server advanced filters use stable IDs, contextual counts, and browser his
   expect(filters.get('excludeTagIds')).toBe('tag-carrier-cn');
   expect(filters.has('includeTagIds')).toBe(false);
   expect(pageQueries.every((value)=>Number(new URL(value).searchParams.get('pageSize') || 0)!==200)).toBe(true);
+});
+
+test('tag candidate search and paging stay bounded while applied IDs survive filter changes',async ({page})=>{
+  const facetQueries:string[]=[];
+  const assetQueries:string[]=[];
+  const candidates=Array.from({length:55},(_,index)=>({
+    tagId:`tag-${String(index).padStart(2,'0')}`,categoryId:'candidate',category:'分类',
+    name:index===52?'Special North':index===53?'Special South':`Candidate ${String(index).padStart(2,'0')}`,
+    count:2,
+  }));
+  await page.route('**/api/probe/servers/facets**',async (route)=>{
+    const url=new URL(route.request().url());
+    facetQueries.push(url.toString());
+    const search=url.searchParams.get('tagSearch') || '';
+    const filtered=candidates.filter((tag)=>tag.name.toLowerCase().includes(search.toLowerCase()));
+    const tagPage=Number(url.searchParams.get('tagPage') || 1);
+    const tagPageSize=Number(url.searchParams.get('tagPageSize') || 50);
+    const group=url.searchParams.get('group');
+    const include=url.searchParams.get('includeTagIds');
+    const groupCount=include ? 9 : 5;
+    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+      labels:[],
+      groups:[{group:'QA',count:groupCount},{group:'West',count:3}],
+      tagItems:filtered.slice((tagPage-1)*tagPageSize,tagPage*tagPageSize).map((tag)=>({...tag,count:group==='QA'?6:2})),
+      tagPage,tagPageSize,tagTotal:filtered.length,
+    })});
+  });
+  page.on('request',(request)=>{
+    const url=new URL(request.url());
+    if(url.pathname==='/api/probe/servers' || url.pathname==='/api/probe/servers/cursor')assetQueries.push(url.toString());
+  });
+  await page.goto('/servers');
+  await page.getByText('高级分组与标签筛选').click();
+  await expect(page.getByText('显示 1–50 / 55 个标签',{exact:true})).toBeVisible();
+  await expect(page.locator('label').filter({hasText:'QA (5)'})).toBeVisible();
+  await page.getByRole('checkbox',{name:'包含标签 分类 / Candidate 00'}).check();
+  await expect(page.locator('label').filter({hasText:'QA (9)'})).toBeVisible();
+  await page.getByRole('button',{name:'下一页标签候选'}).click();
+  await expect(page.getByText('显示 51–55 / 55 个标签',{exact:true})).toBeVisible();
+  await expect(page.getByRole('checkbox',{name:'包含标签 分类 / Candidate 50'})).toBeVisible();
+  await page.getByRole('checkbox',{name:'包含标签 分类 / Candidate 50'}).click();
+  let filters=new URL(page.url()).searchParams;
+  expect(filters.get('includeTagIds')?.split(',').sort()).toEqual(['tag-00','tag-50']);
+  await expect(page.getByText('显示 1–50 / 55 个标签',{exact:true})).toBeVisible();
+  await expect.poll(()=>facetQueries.some((value)=>{
+    const query=new URL(value).searchParams;
+    return query.get('tagPage')==='2' && query.get('tagPageSize')==='50' && query.get('includeTagIds')==='tag-00';
+  })).toBe(true);
+
+  await page.getByLabel('搜索标签候选').fill('Special');
+  await expect(page.getByText('显示 1–2 / 2 个标签',{exact:true})).toBeVisible();
+  await expect(page.getByRole('checkbox',{name:'包含标签 分类 / Special North'})).toBeVisible();
+  filters=new URL(page.url()).searchParams;
+  expect(filters.get('includeTagIds')?.split(',').sort()).toEqual(['tag-00','tag-50']);
+  expect(filters.has('tagSearch')).toBe(false);
+  expect(filters.has('tagPage')).toBe(false);
+  await page.getByLabel('搜索标签候选').fill('');
+  await expect(page.getByText('显示 1–50 / 55 个标签',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'下一页标签候选'}).click();
+  await expect(page.getByText('显示 51–55 / 55 个标签',{exact:true})).toBeVisible();
+  await page.getByLabel('单一分组筛选').click();
+  await page.getByRole('option',{name:/QA/}).click();
+  await expect(page).toHaveURL(/group=QA/);
+  await expect(page.getByText('显示 1–50 / 55 个标签',{exact:true})).toBeVisible();
+  await expect(page.locator('label').filter({hasText:'Candidate 00 (6)'}).first()).toBeVisible();
+  await page.getByLabel('搜索标签候选').fill('Special');
+  await expect(page.getByText('显示 1–2 / 2 个标签',{exact:true})).toBeVisible();
+  filters=new URL(page.url()).searchParams;
+  expect(filters.get('includeTagIds')?.split(',').sort()).toEqual(['tag-00','tag-50']);
+  expect(filters.has('groupIds')).toBe(false);
+  await expect.poll(()=>facetQueries.some((value)=>{
+    const query=new URL(value).searchParams;
+    return query.get('group')==='QA' && query.get('tagSearch')==='Special' && query.get('tagPage')==='1' && query.get('includeTagIds')==='tag-00,tag-50';
+  })).toBe(true);
+  expect(assetQueries.every((value)=>Number(new URL(value).searchParams.get('pageSize') || 0)!==200)).toBe(true);
 });
 
 test('manual targets reject explicit ports other than 7000', async ({page})=>{
