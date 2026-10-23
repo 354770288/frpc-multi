@@ -9,19 +9,20 @@
 - [x] New task creation automatically assigns only to configured primary.
 - [x] Remove execution-node and port selectors from task creation UI; summarize saved primary/backup policy.
 - [x] Lease-based backup transfer, generation fencing, bounded failover work, transfer history, and waiting-state UI.
-- [ ] Unified current results.
-- [ ] Domestic primary/backup scheduler and unified result projection.
+- [x] Domestic primary/backup scheduler and backend unified current-result projection with LB reader.
+- [ ] Switch server-library current-result queries and daily UI to the unified projection; remove source switching/comparison.
 - [ ] Classification schema, scalable query APIs, and reversible migration.
 - [ ] Desktop server-library UI, saved views, and server-side bulk snapshots.
 - [ ] 100k acceptance dataset and isolated 1M capacity tests; regression and release readiness.
 
 ## ResumeStateHint
 
-- Current status: fixed-port, node-policy API/UI, atomic primary assignment, primary-only task creation, and durable lease failover slices verified; broader plan remains active.
-- Active slice: unify current-result projection and its consumers, then implement classification/query and large-library UI work.
+- Current status: fixed-port, node-policy API/UI, atomic primary assignment, durable lease failover, and the current-result projection foundation/LB reader are verified; broader plan remains active.
+- Active slice: switch server-library current-result queries and daily UI to the source-free projection, then implement classification/query and large-library UI work.
 - Completed: fixed target port 7000 across task creation paths; server result projection matches fixed port regardless of frps_port setting; HTTP validation maps to 400 including compatibility and route-start paths; historical alternate-port record remains retrievable; persisted policy validates stable worker IDs, preserves backup order, permits offline nodes, fails closed on corrupt state, protects referenced-node deletion; desktop test-node page explicitly saves primary and ordered backups; public task creation resolves the saved primary and checks policy plus inserts tasks atomically; task creation/discovery UI shows the saved role policy, distinguishes policy/node-list errors, submits no nodeIds and fixes port 7000.
 - Completed failover: jobs snapshot the ordered node chain; expired/unclaimed tasks transfer only to the next online generation-capable backup; pipeline child tasks preserve generation; old attempts are fenced; no-backup tasks remain pending and recover on owner heartbeat; transfer history is paged; batch waiting count is independent of task filters/pages.
-- Next: unify current result projection and source migration; then complete classification/filter/query UI and capacity acceptance.
+- Current-result foundation: canonical history stays immutable; a durable route/connectivity/speed projection seeds only from the first valid configured primary, updates only on accepted primary-managed results (including failover owners), stores provenance, clears with its source history, and is read by LB through candidate-group-scoped queries at fixed port 7000. Legacy history/source APIs remain during consumer migration.
+- Next: switch the server library and daily UI to the current projection, retire routine result-source selection/comparison, then complete classification/filter/query UI and capacity acceptance.
 
 ## Execution Readiness View
 
@@ -39,4 +40,4 @@
 - Decision: continue after source-of-truth audit.
 - Scope/compatibility: aligned with revised plan; old plan remains a historical baseline pending comparison with current code.
 - Open unknowns: current production domestic primary must be explicitly selected; result consumers that assume multi-node results; feasibility of 1M target data under existing SQLite deployment.
-- Slice result: backup lease transfer is implemented and regression-tested; 10万/100万 capacity, scan throughput/memory, unified result projection and migration remain unverified; no production writes or deployment occurred.
+- Slice result: backup lease transfer is implemented and regression-tested; current-result projection is implemented for backend/LB but server-library consumer migration remains; 10万/100万 capacity, scan throughput/memory, and full rollout migration remain unverified; no production writes or deployment occurred.

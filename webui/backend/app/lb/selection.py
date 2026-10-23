@@ -6,6 +6,7 @@ import ipaddress
 import json
 from datetime import datetime, timezone
 
+from ..probe.constants import PROBE_TEST_PORT
 from ..probe.store import ProbeStore
 from .store import LbDomain, LbStore
 
@@ -60,37 +61,29 @@ def _fresh(row: dict, seconds: float) -> bool:
 
 def selection_for_domain(domain: LbDomain, probe: ProbeStore, monitor) -> dict:
     """One decision shared by preview, scheduled failover and DNS synchronization."""
-    from .health import select_best_ip
-
     config = selection_config(LbStore(probe.database_path))
-    source = config["nodeId"]
-    status_store = ProbeStore(probe.database_path, node_id="console") if source == "console" else probe
-    rows = [r for r in status_store.list_servers_with_status() if r["server_group"] == domain.group_name]
+    legacy_source = config["nodeId"]
+    rows = [r for r in probe.list_servers_with_status() if r["server_group"] == domain.group_name]
     healthy = [r for r in rows if monitor.is_healthy(_endpoint(r["ip"], 7000)[0])]
-    view = {"nodeId": source, "healthSource": "console", "maxAgeHours": config["maxAgeHours"],
+    view = {"nodeId": legacy_source, "healthSource": "console", "maxAgeHours": config["maxAgeHours"],
             "observedAt": None, "validCandidates": 0, "bestIp": None, "reason": "no_healthy_candidates"}
     if not healthy:
         return view
-    if source == "console":
-        selected = select_best_ip(healthy, lambda _: True)
-        view.update(bestIp=_endpoint(selected, 7000)[0] if selected else None, reason="console_observation")
-        return view
 
     from ..probe.jobs import ProbeJobStore
-    from ..settings import settings
-
-    default_port = int(probe.get_config_overrides().get("frps_port", settings.probe_frps_port))
     observations = ProbeJobStore(probe.database_path)
     max_age = config["maxAgeHours"] * 3600
+    candidate_ips = list(dict.fromkeys(_endpoint(row["ip"], PROBE_TEST_PORT)[0] for row in healthy))
     # Choose latest first, THEN filter age: failed recent results must hide older successes.
-    latest = {kind: {_endpoint(r["server_ip"], int(r.get("port") or default_port)): r
-                     for r in observations.latest_results(source, kind) if _fresh(r, max_age)}
+    latest = {kind: {_endpoint(r["server_ip"], PROBE_TEST_PORT): r
+                     for r in observations.current_results(kind, candidate_ips, server_group=domain.group_name)
+                     if _fresh(r, max_age)}
               for kind in ("connectivity", "speed")}
     ranked = []
     observed = set()
     timestamps = []
     for row in healthy:
-        endpoint = _endpoint(row["ip"], default_port)
+        endpoint = _endpoint(row["ip"], PROBE_TEST_PORT)
         conn = latest["connectivity"].get(endpoint)
         speed = latest["speed"].get(endpoint)
         if conn is not None or speed is not None:
@@ -99,16 +92,16 @@ def selection_for_domain(domain: LbDomain, probe: ProbeStore, monitor) -> dict:
         ranked.append({"ip": row["ip"], "c_frps_reachable": bool(conn and conn.get("frps_reachable")),
                        "s_dl_speed_mbps": (float(speed.get("dl_speed_bps", 0)) * 8 / 1024**2
                                            if speed and speed.get("dl_ok") else 0)})
-    observed_hosts = {_endpoint(addr, default_port)[0] for addr in observed}
+    observed_hosts = {_endpoint(addr, PROBE_TEST_PORT)[0] for addr in observed}
     view.update(validCandidates=len(observed_hosts), observedAt=max(timestamps) if timestamps else None)
-    current_healthy = any(_endpoint(r["ip"], default_port)[0] == domain.current_ip for r in healthy)
+    current_healthy = any(_endpoint(r["ip"], PROBE_TEST_PORT)[0] == domain.current_ip for r in healthy)
     if current_healthy and domain.current_ip not in observed_hosts:
         view.update(bestIp=domain.current_ip, reason="keep_healthy_current")
     elif observed:
         ranked.sort(key=lambda r: _order(r["ip"]))
         ranked.sort(key=lambda r: (r["c_frps_reachable"], r["s_dl_speed_mbps"]), reverse=True)
-        view.update(bestIp=_endpoint(ranked[0]["ip"], default_port)[0], reason="node_observation")
+        view.update(bestIp=_endpoint(ranked[0]["ip"], PROBE_TEST_PORT)[0], reason="primary_observation")
     else:
         selected = min((r["ip"] for r in healthy), key=_order)
-        view.update(bestIp=_endpoint(selected, default_port)[0], reason="healthy_ip_order")
+        view.update(bestIp=_endpoint(selected, PROBE_TEST_PORT)[0], reason="healthy_ip_order")
     return view

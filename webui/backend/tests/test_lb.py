@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("PROJECT_DIR", tempfile.mkdtemp(prefix="frpc-multi-lb-tests-"))
 
@@ -156,16 +157,71 @@ class SyncerTests(unittest.TestCase):
 
     def test_rank_prefers_tested_reachable_and_faster(self):
         # 2.2.2.2 穿透测试可达且速率更高 → 优先于 IP 更小的 1.1.1.1
-        self.probe.add_connectivity_result({"server_ip": "2.2.2.2", "frps_reachable": True,
-                                            "tunnel_established": True, "firewall_open": True})
-        self.probe.add_speed_result({"server_ip": "2.2.2.2", "frps_reachable": True, "tunnel_ok": True,
-                                     "dl_ok": True, "dl_speed_mbps": 100.0, "ul_ok": True,
-                                     "ul_speed_mbps": 50.0})
+        from app.probe.jobs import ProbeJobStore
+        jobs = ProbeJobStore(self.probe.database_path)
+        node = jobs.create_node('lb-primary')['id']
+        jobs.set_execution_policy(node, [])
+        jobs.heartbeat(node, 'test', ['discover', 'route', 'connectivity', 'speed'], [])
+        conn_job = jobs.create_primary_job('connectivity', ips=['2.2.2.2'])
+        conn_task = jobs.claim(node)
+        jobs.report(node, conn_task['taskId'], conn_task['attemptId'], result={
+            'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True,
+        })
+        speed_job = jobs.create_primary_job('speed', ips=['2.2.2.2'])
+        speed_task = jobs.claim(node)
+        jobs.report(node, speed_task['taskId'], speed_task['attemptId'], result={
+            'frps_reachable': True, 'tunnel_ok': True, 'dl_ok': True,
+            'dl_speed_bps': 100 * 1024 * 1024 / 8, 'ul_ok': True,
+            'ul_speed_bps': 50 * 1024 * 1024 / 8,
+        })
         monitor = make_monitor({"1.1.1.1": True, "2.2.2.2": True})
         cf = FakeCloudflare()
         result = sync_domain(self.domain, self.probe, self.lb, cf, monitor)
         self.assertEqual(result.target_ip, "2.2.2.2")
-        self.assertEqual(cf.ips("frps.example.com"), ["2.2.2.2"])
+
+    def test_lb_ignores_legacy_observation_source_without_unified_projection(self):
+        from app.probe.jobs import ProbeJobStore
+        jobs = ProbeJobStore(self.probe.database_path)
+        node = jobs.create_node('legacy-lb-source')['id']
+        jobs.create_job('connectivity', [node], ips=['2.2.2.2'])
+        task = jobs.claim(node)
+        jobs.report(node, task['taskId'], task['attemptId'],
+                    result={'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True})
+        self.lb.set_setting('selection_config', json.dumps({'nodeId': node, 'maxAgeHours': 24}))
+        from app.lb.selection import selection_for_domain
+        result = selection_for_domain(self.domain, self.probe, make_monitor())
+        self.assertEqual(result['bestIp'], '1.1.1.1')
+        self.assertEqual(result['reason'], 'healthy_ip_order')
+        self.assertEqual(result['nodeId'], node)  # legacy config remains visible for API/UI compatibility
+
+    def test_lb_scopes_current_result_reads_to_healthy_group_candidates(self):
+        from app.probe.jobs import ProbeJobStore
+        jobs = ProbeJobStore(self.probe.database_path)
+        node = jobs.create_node('scoped-lb-primary')['id']
+        jobs.set_execution_policy(node, [])
+        jobs.heartbeat(node, 'test', ['discover', 'route', 'connectivity', 'speed'], [])
+        jobs.create_primary_job('connectivity', ips=['2.2.2.2', '3.3.3.3'])
+        for _ in range(2):
+            task = jobs.claim(node)
+            jobs.report(node, task['taskId'], task['attemptId'],
+                        result={'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True})
+        self.probe.update_config_overrides({'frps_port': 7001})
+
+        original = ProbeJobStore.current_results
+        calls = []
+
+        def scoped(store, kind, ips=None, *, server_group=None):
+            calls.append((kind, ips, server_group))
+            return original(store, kind, ips, server_group=server_group)
+
+        from app.lb.selection import selection_for_domain
+        with patch.object(ProbeJobStore, 'current_results', scoped):
+            selection = selection_for_domain(self.domain, self.probe, make_monitor())
+        self.assertEqual(selection['bestIp'], '2.2.2.2')
+        self.assertEqual(len(calls), 2)
+        for _, ips, group in calls:
+            self.assertEqual(group, 'pool')
+            self.assertEqual(set(ips), {'1.1.1.1', '2.2.2.2'})
 
     def test_failover_switches_on_unhealthy(self):
         monitor = make_monitor({"1.1.1.1": True, "2.2.2.2": True})

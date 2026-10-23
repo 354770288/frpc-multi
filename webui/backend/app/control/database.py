@@ -132,6 +132,14 @@ CREATE TABLE IF NOT EXISTS probe_results (
 );
 CREATE INDEX IF NOT EXISTS idx_probe_results_source ON probe_results(node_id,kind,server_ip,port,id);
 CREATE INDEX IF NOT EXISTS idx_probe_results_history ON probe_results(node_id,kind,id DESC);
+CREATE TABLE IF NOT EXISTS probe_current_results (
+    server_ip TEXT NOT NULL, kind TEXT NOT NULL, port INTEGER NOT NULL CHECK(port=7000),
+    source_result_id INTEGER NOT NULL, node_id TEXT NOT NULL, job_id TEXT NOT NULL,
+    task_id TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0,
+    test_time TEXT NOT NULL, data TEXT NOT NULL,
+    PRIMARY KEY(server_ip,kind,port)
+);
+CREATE INDEX IF NOT EXISTS idx_probe_current_results_kind_ip ON probe_current_results(kind,server_ip);
 CREATE TABLE IF NOT EXISTS probe_discover_observations (
     node_id TEXT NOT NULL, ip TEXT NOT NULL, port INTEGER NOT NULL,
     latency_ms REAL NOT NULL, discovered_at TEXT NOT NULL,
@@ -454,6 +462,7 @@ def initialize_database(path: Path) -> None:
                 )
             connection.executescript(SCHEMA)
             _migrate_probe_failover(connection)
+            _migrate_probe_current_results(connection)
             _migrate_nodes(connection)
             _migrate_lb_domains(connection)
             _migrate_probe_groups(connection)
@@ -496,6 +505,67 @@ def _migrate_probe_failover(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE INDEX IF NOT EXISTS idx_probe_tasks_failover_wait ON probe_tasks(job_id,node_id,state,failover_waiting,created_at)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_probe_tasks_failover_batch ON probe_tasks(node_id,state,job_id,created_at)")
     connection.execute("INSERT OR IGNORE INTO probe_failover_scan_cursor(id,job_id,owner_index) VALUES(1,'',-1)")
+
+
+def _migrate_probe_current_results(connection: sqlite3.Connection) -> None:
+    """Seed the rebuildable current projection from the configured policy primary only.
+
+    If policy has not been configured yet, leave the projection empty and retry on
+    the next initialization. Accepted primary-managed reports maintain it after seed.
+    """
+    if connection.execute(
+        "SELECT 1 FROM probe_settings WHERE key='probe_current_results_seeded'"
+    ).fetchone():
+        return
+    try:
+        row = connection.execute(
+            "SELECT value FROM probe_settings WHERE key='probe_execution_policy'"
+        ).fetchone()
+        if row is None:
+            return
+        import json
+        policy = json.loads(row[0])
+        primary = policy.get('primaryNodeId') if isinstance(policy, dict) else None
+        backups = policy.get('backupNodeIds') if isinstance(policy, dict) else None
+        if (not isinstance(primary, str) or not primary or not isinstance(backups, list)
+                or any(not isinstance(node_id, str) or not node_id for node_id in backups)
+                or len(set(backups)) != len(backups) or primary in backups):
+            return
+        for node_id in [primary, *backups]:
+            node = connection.execute('SELECT kind,capabilities FROM probe_nodes WHERE id=?', (node_id,)).fetchone()
+            if node is None or node['kind'] != 'worker':
+                return
+            capabilities = json.loads(node['capabilities'])
+            if (not isinstance(capabilities, list)
+                    or not all(isinstance(capability, str) for capability in capabilities)
+                    or not {'discover', 'route', 'connectivity', 'speed'}.issubset(capabilities)):
+                return
+    except (ValueError, TypeError, sqlite3.Error):
+        return
+
+    # INSERT OR IGNORE keeps a live projection maintained by accepted reports
+    # intact across repeated startup migrations.
+    connection.create_function("canonical_ipv4", 1, _canonical_ipv4)
+    connection.execute(
+        "INSERT OR IGNORE INTO probe_current_results "
+        "(server_ip,kind,port,source_result_id,node_id,job_id,task_id,generation,test_time,data) "
+        "SELECT r.server_ip,r.kind,r.port,r.id,r.node_id,r.job_id,r.task_id,r.generation,r.test_time,r.data "
+        "FROM probe_results r WHERE r.node_id=? AND r.port=7000 "
+        "AND r.kind IN ('route','connectivity','speed') AND canonical_ipv4(r.server_ip)=1 "
+        "AND r.id=(SELECT MAX(x.id) FROM probe_results x WHERE x.node_id=r.node_id "
+        "AND x.kind=r.kind AND x.server_ip=r.server_ip AND x.port=r.port)",
+        (primary,),
+    )
+    connection.execute(
+        "INSERT INTO probe_settings(key,value) VALUES('probe_current_results_seeded','1')"
+    )
+
+
+def _canonical_ipv4(value: str) -> int:
+    try:
+        return int(str(ipaddress.IPv4Address(value)) == value)
+    except (ipaddress.AddressValueError, ValueError, TypeError):
+        return 0
 
 
 def connect_database(path: Path) -> sqlite3.Connection:

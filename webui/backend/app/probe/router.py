@@ -1001,6 +1001,11 @@ def results_latest(kind: Literal['route','connectivity','speed'],nodeId: str='co
     return {'items':[r for r in items if ip is None or r['server_ip']==ip]}
 
 
+@router.get('/current-results/{kind}')
+def results_current(kind: Literal['route','connectivity','speed'], ip: str | None = None):
+    return {'items': job_store().current_results(kind, [ip] if ip else None)}
+
+
 @router.get('/compare')
 def results_compare(ip: str,port: int=7000):
     items=[]

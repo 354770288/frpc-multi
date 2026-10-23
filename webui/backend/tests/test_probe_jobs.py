@@ -39,6 +39,151 @@ class ProbeJobsTests(unittest.TestCase):
         self.assertFalse(self.store.latest_results(self.b,'connectivity')[0]['frps_reachable'])
         self.assertEqual(self.store.latest_results(self.a,'connectivity')[0]['port'],7000)
 
+    def test_current_projection_seeds_once_from_explicit_primary(self):
+        with self.store._db() as c:
+            for node, reachable in ((self.a, True), (self.b, False)):
+                self.store._result(c, 'seed-' + node, 'seed-job', node, 'connectivity',
+                                   '192.0.2.81', 7000,
+                                   {'frps_reachable': reachable, 'tunnel_established': reachable,
+                                    'firewall_open': reachable}, stamp='2026-10-20T00:00:00+00:00')
+                self.store._result(c, 'seed-route-' + node, 'seed-job', node, 'route',
+                                   '192.0.2.81', 7000, {'ok': reachable},
+                                   stamp='2026-10-20T00:00:00+00:00')
+        self.set_primary(self.a)
+        current = self.store.current_results('connectivity')
+        self.assertEqual(len(current), 1)
+        self.assertTrue(current[0]['frps_reachable'])
+        self.assertEqual(current[0]['node_id'], self.a)
+        route = self.store.current_results('route')[0]
+        self.assertTrue(route['ok'])
+        self.assertEqual(route['node_id'], self.a)
+        # Saving a later role order and repeating the seed preserves current state.
+        self.store.set_execution_policy(self.b, [self.a])
+        self.assertEqual(self.store.current_results('connectivity')[0]['node_id'], self.a)
+        self.assertEqual(self.store.current_results('route')[0]['node_id'], self.a)
+        with self.store._db() as c:
+            from app.control.database import _migrate_probe_current_results
+            _migrate_probe_current_results(c)
+        self.assertEqual(self.store.current_results('connectivity')[0]['node_id'], self.a)
+
+    def test_invalid_primary_does_not_mark_seed_complete_and_valid_policy_repairs_it(self):
+        with self.store._db() as c:
+            self.store._result(c, 'invalid-primary-seed', 'seed-job', self.a, 'connectivity',
+                               '192.0.2.86', 7000, {'frps_reachable': True},
+                               stamp='2026-10-20T00:00:00+00:00')
+            self.store._seed_current_results(c, 'deleted-node')
+            c.execute("INSERT INTO probe_settings(key,value) VALUES('probe_execution_policy',?)",
+                      (json.dumps({'primaryNodeId': 'deleted-node', 'backupNodeIds': []}),))
+            from app.control.database import _migrate_probe_current_results
+            _migrate_probe_current_results(c)
+            self.assertIsNone(c.execute(
+                "SELECT 1 FROM probe_settings WHERE key='probe_current_results_seeded'"
+            ).fetchone())
+        self.set_primary(self.a)
+        current = self.store.current_results('connectivity')
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]['node_id'], self.a)
+
+    def test_invalid_backup_does_not_mark_seed_complete_until_policy_chain_is_repaired(self):
+        with self.store._db() as c:
+            self.store._result(c, 'invalid-backup-seed', 'seed-job', self.a, 'connectivity',
+                               '192.0.2.88', 7000, {'frps_reachable': True},
+                               stamp='2026-10-20T00:00:00+00:00')
+            c.execute("INSERT INTO probe_settings(key,value) VALUES('probe_execution_policy',?)",
+                      (json.dumps({'primaryNodeId': self.a, 'backupNodeIds': ['deleted-backup']}),))
+            from app.control.database import _migrate_probe_current_results
+            _migrate_probe_current_results(c)
+            self.store._seed_current_results(c, self.a)
+            self.assertIsNone(c.execute(
+                "SELECT 1 FROM probe_settings WHERE key='probe_current_results_seeded'"
+            ).fetchone())
+        self.store.set_execution_policy(self.a, [self.b])
+        current = self.store.current_results('connectivity')
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]['node_id'], self.a)
+
+    def test_unmanaged_node_history_does_not_fall_back_into_current_projection(self):
+        job = self.job(nodes=[self.b], ips=['192.0.2.82'])
+        task = self.store.claim(self.b)
+        self.finish(self.b, task, {'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True})
+        self.assertEqual(self.store.latest_results(self.b, 'connectivity')[0]['job_id'], job['id'])
+        self.assertEqual(self.store.current_results('connectivity'), [])
+        with self.store._db() as c:
+            self.assertIsNone(c.execute("SELECT 1 FROM probe_settings WHERE key='probe_current_results_seeded'").fetchone())
+
+    def test_current_results_api_is_source_free(self):
+        self.set_primary(self.a)
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.82'])
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        task = self.store.claim(self.a)
+        self.finish(self.a, task, {'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True})
+        from app.probe import router
+        with patch.object(router, 'job_store', return_value=self.store):
+            response = router.results_current('connectivity')
+        self.assertEqual(response['items'][0]['job_id'], job['id'])
+        self.assertEqual(response['items'][0]['node_id'], self.a)
+
+    def test_primary_managed_route_report_updates_current_projection(self):
+        self.set_primary(self.a)
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        self.store.create_primary_job('route', ips=['192.0.2.85'])
+        task = self.store.claim(self.a)
+        self.assertEqual(task['stage'], 'route')
+        self.finish(self.a, task, {'ok': False, 'error': 'route failed'})
+        current = self.store.current_results('route')[0]
+        self.assertFalse(current['ok'])
+        self.assertEqual(current['node_id'], self.a)
+
+    def test_accepted_backup_result_updates_projection_and_stale_owner_does_not(self):
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b])
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.83'])
+        task_id = job['tasks'][0]['taskId']
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        first = self.store.claim(self.a)
+        self.expire(first)
+        with self.store._db() as c:
+            c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (self.a,))
+        self.online_generation_worker(self.b)
+        second = self.store.claim(self.b)
+        self.assertEqual(second['generation'], 1)
+        stale = self.store.report(self.a, task_id, first['attemptId'], generation=0,
+                                  result={'frps_reachable': True})
+        self.assertFalse(stale['applied'])
+        accepted = self.store.report(self.b, task_id, second['attemptId'], generation=1,
+                                     result={'frps_reachable': True, 'tunnel_established': True,
+                                             'firewall_open': True})
+        self.assertTrue(accepted['accepted'])
+        current = self.store.current_results('connectivity')[0]
+        self.assertEqual(current['node_id'], self.b)
+        self.assertEqual(current['job_id'], job['id'])
+        self.assertEqual(current['generation'], 1)
+
+    def test_latest_accepted_failure_replaces_current_success(self):
+        self.set_primary(self.a)
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        good = self.store.create_primary_job('connectivity', ips=['192.0.2.84'])
+        good_task = self.store.claim(self.a)
+        self.finish(self.a, good_task, {'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True})
+        self.assertTrue(self.store.current_results('connectivity')[0]['frps_reachable'])
+        bad = self.store.create_primary_job('connectivity', ips=['192.0.2.84'])
+        bad_task = self.store.claim(self.a)
+        self.finish(self.a, bad_task, {'frps_reachable': False, 'tunnel_established': False, 'firewall_open': False})
+        current = self.store.current_results('connectivity')[0]
+        self.assertFalse(current['frps_reachable'])
+        self.assertEqual(current['job_id'], bad['id'])
+        self.assertNotEqual(current['job_id'], good['id'])
+
+    def test_clear_history_removes_projection_for_deleted_source_result(self):
+        self.set_primary(self.a)
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        self.store.create_primary_job('connectivity', ips=['192.0.2.87'])
+        task = self.store.claim(self.a)
+        self.finish(self.a, task, {'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True})
+        self.assertEqual(len(self.store.current_results('connectivity')), 1)
+        self.store.clear_history(self.a, 'connectivity')
+        self.assertEqual(self.store.current_results('connectivity'), [])
+
     def test_job_owner_rejects_nonfixed_ports(self):
         with self.assertRaisesRegex(ValueError, '端口固定为 7000'):
             self.job(port=7001)

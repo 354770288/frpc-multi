@@ -76,4 +76,14 @@ Policy validation, node eligibility, job creation, and task insertion run in one
 
 Failover now snapshots the ordered policy into each job, transfers unfinished tasks only after lease/owner failure, increments and validates execution generation, preserves generation across pipeline stages, and requires the protocol feature on backup claim. Sweep work is bounded to at most 500 job/owner pairs and 500 task IDs per poll, with persistent cursor progress. Task transfer audit rows are available through a paginated endpoint. Legacy workers remain compatible for generation-zero primary tasks; backups without the new feature remain on standby.
 
-The full scale target, unified current-result projection and source migration, classification/filter/query redesign, 100k acceptance data, 1M stress, 10M scan throughput/memory, and production deployment remain unverified.
+The full scale target, server-library consumer migration to the current projection, classification/filter/query redesign, 100k acceptance data, 1M stress, 10M scan throughput/memory, and production deployment remain unverified.
+
+## Slice: unified current-result projection foundation
+
+- `./.venv/bin/python -m unittest tests.test_probe_jobs tests.test_lb tests.test_probe` — exit 0; 171 tests passed after final migration and LB query fixes.
+- `git diff --check` — coordinator rerun before commit.
+- Spec review identified and fixed invalid primary/backup policy seeding, fixed-port LB lookup, stale projection after history clearing, and unscoped projection reads. Final focused seed review found no remaining P-level issue.
+
+Added a durable current-results projection for route, connectivity and speed. It seeds once from the first fully valid configured primary, preserves current rows across later policy changes, and only updates from accepted primary-managed reports (including accepted backup failover work). Each row retains its canonical history ID and actual node/job/task/generation/time. History clearing removes matching projection rows in the same transaction. LB keeps its health, freshness and ranking rules, reads the unified projection for candidates in the domain group, and uses fixed test port 7000 regardless of frpc instance settings. The source-free read API is available; old source-scoped history APIs remain during caller migration.
+
+Server-library status/query views and UI source-selector retirement remain the next dependent slice. Full-scale data tests and production migration remain unverified.

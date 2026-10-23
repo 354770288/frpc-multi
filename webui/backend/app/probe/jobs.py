@@ -37,6 +37,13 @@ def _id():
     return str(uuid.uuid4())
 
 
+def _canonical_ipv4(value):
+    try:
+        return int(str(ipaddress.IPv4Address(value)) == value)
+    except (ipaddress.AddressValueError, ValueError, TypeError):
+        return 0
+
+
 
 class ProbeJobStore:
     def __init__(self, database_path: Path):
@@ -215,7 +222,32 @@ class ProbeJobStore:
             value = {'primaryNodeId': primary_node_id, 'backupNodeIds': backup_node_ids}
             c.execute("INSERT INTO probe_settings(key,value) VALUES('probe_execution_policy',?) "
                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (_json(value),))
+            self._seed_current_results(c, primary_node_id)
         return self.get_execution_policy()
+
+    @staticmethod
+    def _seed_current_results(c, primary_node_id):
+        """Seed the current projection once, from the first configured primary."""
+        if c.execute("SELECT 1 FROM probe_settings WHERE key='probe_current_results_seeded'").fetchone():
+            return
+        try:
+            policy = ProbeJobStore._stored_execution_policy(c)
+        except ValueError:
+            return
+        if policy is None or policy['primaryNodeId'] != primary_node_id:
+            return
+        c.create_function('canonical_ipv4', 1, _canonical_ipv4)
+        c.execute(
+            "INSERT OR IGNORE INTO probe_current_results "
+            "(server_ip,kind,port,source_result_id,node_id,job_id,task_id,generation,test_time,data) "
+            "SELECT r.server_ip,r.kind,r.port,r.id,r.node_id,r.job_id,r.task_id,r.generation,r.test_time,r.data "
+            "FROM probe_results r WHERE r.node_id=? AND r.port=? "
+            "AND r.kind IN ('route','connectivity','speed') AND canonical_ipv4(r.server_ip)=1 "
+            "AND r.id=(SELECT MAX(x.id) FROM probe_results x WHERE x.node_id=r.node_id "
+            "AND x.kind=r.kind AND x.server_ip=r.server_ip AND x.port=r.port)",
+            (primary_node_id, PROBE_TEST_PORT),
+        )
+        c.execute("INSERT INTO probe_settings(key,value) VALUES('probe_current_results_seeded','1')")
 
     @staticmethod
     def _normalize_requested_node_ids(requested_node_ids):
@@ -722,6 +754,7 @@ class ProbeJobStore:
                 if stage!='discover':
                     result.update(server_ip=t['ip'],port=t['port'])
                     self._result(c,task_id,t['job_id'],node_id,stage,t['ip'],t['port'],result,attempt_id=attempt_id,generation=t['generation'])
+                    self._update_current_result(c, t, node_id, stage)
                 passed=(bool(result.get('ok')) if stage=='route' else all(result.get(k) for k in ('frps_reachable','tunnel_established','firewall_open')) if stage=='connectivity' else bool(result.get('dl_ok') and result.get('ul_ok')) if stage=='speed' else True)
                 c.execute("UPDATE probe_tasks SET state=?,lease_until=0,error='' WHERE id=?",('done' if passed else 'failed',task_id))
                 full=t['mode']=='full' or payload.get('full')
@@ -735,6 +768,39 @@ class ProbeJobStore:
             self._refresh(c)
             return {'ok':True,'applied':True,'accepted':True}
 
+    @staticmethod
+    def _update_current_result(c, task, node_id, kind):
+        """Project accepted primary-managed endpoint results without losing provenance."""
+        if kind not in {'route', 'connectivity', 'speed'} or task['port'] != PROBE_TEST_PORT:
+            return
+        job = c.execute('SELECT primary_managed,execution_policy FROM probe_jobs WHERE id=?',
+                        (task['job_id'],)).fetchone()
+        if not job or not job['primary_managed']:
+            return
+        try:
+            if not _canonical_ipv4(task['ip']):
+                return
+            policy = json.loads(job['execution_policy'])
+            owners = [policy['primaryNodeId'], *policy['backupNodeIds']]
+            if node_id not in owners:
+                return
+        except (KeyError, TypeError, ValueError):
+            return
+        history = c.execute(
+            'SELECT * FROM probe_results WHERE task_id=? AND attempt_id=?',
+            (task['id'], task['attempt_id']),
+        ).fetchone()
+        if not history:
+            return
+        c.execute(
+            "INSERT INTO probe_current_results "
+            "(server_ip,kind,port,source_result_id,node_id,job_id,task_id,generation,test_time,data) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(server_ip,kind,port) DO UPDATE SET "
+            "source_result_id=excluded.source_result_id,node_id=excluded.node_id,job_id=excluded.job_id,"
+            "task_id=excluded.task_id,generation=excluded.generation,test_time=excluded.test_time,data=excluded.data",
+            (history['server_ip'], history['kind'], history['port'], history['id'], history['node_id'],
+             history['job_id'], history['task_id'], history['generation'], history['test_time'], history['data']),
+        )
     def action(self,job_id,action,task_ids=None):
         if action not in {'stop','skip','retry'}:raise ValueError('unknown action')
         with self._db() as c:
@@ -860,11 +926,58 @@ class ProbeJobStore:
             cutoff=time.time()-max_age_seconds if max_age_seconds is not None else None
             return [self._flatten(r) for r in rows if cutoff is None or datetime.fromisoformat(r['test_time'].replace('Z','+00:00')).timestamp()>=cutoff]
 
+    def current_results(self, kind, ips=None, *, server_group=None):
+        wanted = None if ips is None else tuple(dict.fromkeys(ips))
+        if wanted == ():
+            return []
+        with self._db() as c:
+            items = []
+            if server_group is not None:
+                c.create_function('probe_endpoint_host', 1,
+                                  lambda value: split_endpoint(value, PROBE_TEST_PORT)[0])
+            chunks = [wanted[i:i + 400] for i in range(0, len(wanted), 400)] if wanted is not None else [None]
+            for chunk in chunks:
+                filters = ['r.kind=?']
+                args = [kind]
+                if chunk is not None:
+                    filters.append('r.server_ip IN (' + ','.join('?' for _ in chunk) + ')')
+                    args.extend(chunk)
+                if server_group is not None:
+                    filters.append('EXISTS (SELECT 1 FROM probe_servers s WHERE s.server_group=? '
+                                   'AND probe_endpoint_host(s.ip)=r.server_ip)')
+                    args.append(server_group)
+                rows = c.execute('SELECT r.* FROM probe_current_results r WHERE ' + ' AND '.join(filters) +
+                                 ' ORDER BY r.server_ip', args).fetchall()
+                for row in rows:
+                    item = json.loads(row['data'])
+                    item.update({
+                        'id': row['source_result_id'], 'source_result_id': row['source_result_id'],
+                        'job_id': row['job_id'], 'task_id': row['task_id'], 'node_id': row['node_id'],
+                        'kind': row['kind'], 'server_ip': row['server_ip'], 'port': row['port'],
+                        'test_time': row['test_time'], 'generation': row['generation'],
+                    })
+                    item.setdefault('detail', '')
+                    if kind == 'connectivity':
+                        for field in ('frps_reachable', 'tunnel_established', 'firewall_open'):
+                            item.setdefault(field, False)
+                    elif kind == 'speed':
+                        for field in ('frps_reachable', 'tunnel_ok', 'dl_ok', 'ul_ok'):
+                            item.setdefault(field, False)
+                        for field in ('dl_bytes', 'ul_bytes', 'dl_sec', 'ul_sec', 'dl_speed_bps', 'ul_speed_bps'):
+                            item.setdefault(field, 0)
+                        for prefix in ('dl', 'ul'):
+                            item[prefix + '_speed_mbps'] = item.get(prefix + '_speed_bps', 0) * 8 / (1024 * 1024)
+                            item[prefix + '_speed_mbs'] = item.get(prefix + '_speed_bps', 0) / (1024 * 1024)
+                    items.append(item)
+            return items
+
 
     def clear_history(self,node_id,kind):
         with self._db() as c:
             # Canonical rows and legacy console history are one logical history.
             canonical=c.execute("SELECT COUNT(*) FROM probe_results WHERE node_id=? AND kind=? AND task_id NOT LIKE 'legacy-%'",(node_id,kind)).fetchone()[0]
+            c.execute('DELETE FROM probe_current_results WHERE source_result_id IN '
+                      '(SELECT id FROM probe_results WHERE node_id=? AND kind=?)', (node_id, kind))
             c.execute('DELETE FROM probe_results WHERE node_id=? AND kind=?',(node_id,kind))
             legacy=0
             if node_id=='console' and kind in {'connectivity','speed'}:
