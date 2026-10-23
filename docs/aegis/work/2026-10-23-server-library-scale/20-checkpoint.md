@@ -16,9 +16,9 @@
 
 ## ResumeStateHint
 
-- Current status: fixed-port, node-policy API/UI, atomic primary assignment, and task-creation frontend slices verified; broader plan remains active.
+- Current status: fixed-port, node-policy API/UI, atomic primary assignment, and primary-only task-creation frontend slices verified; broader plan remains active.
 - Active slice: implement lease-based transfer of unfinished tasks to ordered backups, with generation fencing for late progress/report and same-primary stage continuation.
-- Completed: fixed target port 7000 across task creation paths; server result projection matches fixed port regardless of frps_port setting; HTTP validation maps to 400 including compatibility and route-start paths; historical alternate-port record remains retrievable; persisted policy validates stable worker IDs, preserves backup order, permits offline nodes, fails closed on corrupt state, protects referenced-node deletion; desktop test-node page explicitly saves primary and ordered backups; public task creation resolves the saved primary and checks policy plus inserts tasks atomically; task creation/discovery UI shows the saved role policy and submits no nodeIds, with port 7000 fixed.
+- Completed: fixed target port 7000 across task creation paths; server result projection matches fixed port regardless of frps_port setting; HTTP validation maps to 400 including compatibility and route-start paths; historical alternate-port record remains retrievable; persisted policy validates stable worker IDs, preserves backup order, permits offline nodes, fails closed on corrupt state, protects referenced-node deletion; desktop test-node page explicitly saves primary and ordered backups; public task creation resolves the saved primary and checks policy plus inserts tasks atomically; task creation/discovery UI shows the saved role policy, distinguishes policy/node-list errors, submits no nodeIds and fixes port 7000.
 - Next: implement fenced lease failover, unified current result projection and source migration; then complete classification/filter/query UI and capacity acceptance.
 
 ## Execution Readiness View
