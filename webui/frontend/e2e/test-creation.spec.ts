@@ -16,6 +16,18 @@ test.beforeEach(async ({ page }) => {
       return json({items:[{id:page,taskId:`task-${page}`,jobId:'job-qa',fromNodeId:'remote',toNodeId:'backup',generation:page,reason:'primary_offline',transferredAt:'2026-10-23T10:00:00+00:00'}],page,pageSize:20,total:21});
     }
     if(url.pathname==='/api/probe/servers/groups')return json([{name:'QA',color:''}]);
+    if(url.pathname==='/api/probe/server-selections' && route.request().method()==='POST'){
+      const body=route.request().postDataJSON() as {group?:string};
+      const count=body.group==='QA' ? 1 : 120;
+      const now=new Date().toISOString();
+      return json({selectionId:body.group==='QA'?'group-selection':'all-selection',state:'ready',count,processed:count,createdAt:now,updatedAt:now,expiresAt:new Date(Date.now()+86400000).toISOString(),error:null});
+    }
+    if(url.pathname.startsWith('/api/probe/server-selections/')){
+      const now=new Date().toISOString();
+      const selectionId=url.pathname.split('/').pop() || '';
+      const count=selectionId==='all-selection' ? 120 : selectionId==='group-selection' ? 1 : 2;
+      return json({selectionId,state:'ready',count,processed:count,createdAt:now,updatedAt:now,expiresAt:new Date(Date.now()+86400000).toISOString(),error:null});
+    }
     if(url.pathname==='/api/probe/tags/categories')return json({items:[{id:'region',name:'地区'},{id:'carrier',name:'线路'}]});
     if(url.pathname==='/api/probe/tags')return json({items:[{id:'tag-region-cn',categoryId:'region',category:'地区',name:'CN',serverCount:1},{id:'tag-carrier-cn',categoryId:'carrier',category:'线路',name:'CN',serverCount:1}]});
     if(url.pathname==='/api/probe/servers/facets')return json({labels:[{label:'legacy',count:1}],tagItems:[{tagId:'tag-region-cn',categoryId:'region',category:'地区',name:'CN',count:1},{tagId:'tag-carrier-cn',categoryId:'carrier',category:'线路',name:'CN',count:1}],groups:[]});
@@ -63,7 +75,7 @@ test.beforeEach(async ({ page }) => {
     if(url.pathname==='/api/lb/health')return json({states:[],domains:[{domainId:1,name:'qa.example.com',group:'QA',currentIp:'192.0.2.1',bestIp:'192.0.2.1',poolIps:['192.0.2.1'],selection:{nodeId:'remote',healthSource:'console',maxAgeHours:24,observedAt:null,validCandidates:0,bestIp:'192.0.2.1',reason:'keep_healthy_current'}}]});
     if(url.pathname==='/api/probe/jobs' && route.request().method()==='POST')return json({id:'created-qa-job',mode:'full',state:'running',counts:{pending:3},taskTotal:3,nodeIds:['remote'],stageCounts:[],progress:{scanned:0,foundCount:0},createdAt:new Date().toISOString(),tasks:[],page:1,pageSize:200});
     if(url.pathname==='/api/probe/jobs')return json({items:[],page:1,pageSize:20,total:0});
-    if(url.pathname==='/api/probe/jobs/created-qa-job')return json({id:'created-qa-job',mode:'full',state:'running',counts:{pending:3},taskTotal:3,filteredTaskTotal:3,nodeIds:['remote'],stageCounts:[],progress:{scanned:0,foundCount:0},createdAt:new Date().toISOString(),tasks:[],page:1,pageSize:200});
+    if(url.pathname==='/api/probe/jobs/created-qa-job')return json({id:'created-qa-job',mode:'full',state:'running',counts:{pending:3},taskTotal:3,targetTotal:120,targetMaterialized:8,targetRemaining:112,targetProducer:{state:'running',nodeId:'remote',generation:0,failoverWaiting:true,error:''},filteredTaskTotal:3,nodeIds:['remote'],stageCounts:[],progress:{scanned:0,foundCount:0},createdAt:new Date().toISOString(),tasks:[],page:1,pageSize:200});
     return json({});
   });
 });
@@ -73,22 +85,156 @@ test('new test requires an explicit target and review before submitting', async 
   page.on('request',(request)=>{if(request.url().endsWith('/api/probe/jobs') && request.method()==='POST'){submissions++;submitted=request.postDataJSON();}});
   await page.goto('/tests/new');
   await expect(page.getByRole('heading',{name:'新建测试',level:2})).toBeVisible();
-  await page.getByRole('button',{name:'下一步'}).click();
+  await expect(page.getByRole('button',{name:'下一步'})).toBeDisabled();
   expect(submissions).toBe(0);
   await page.getByLabel('目标范围').selectOption('group');
   await page.getByLabel('分组').selectOption('QA');
-  await expect(page.getByText('将测试 1 个不同端点')).toBeVisible();
+  await expect(page.getByText(/冻结快照目标：1 台/)).toBeVisible();
   await page.getByRole('button',{name:'下一步'}).click();
   await expect(page.getByText(/主节点：国内测试节点/)).toBeVisible();
   await expect(page.getByText(/备用节点顺序：备用测试节点/)).toBeVisible();
   await page.getByRole('button',{name:'下一步'}).click();
-  await expect(page.getByText('目标：1 个端点 · 分组 QA')).toBeVisible();
+  await expect(page.getByText('目标：1 台冻结快照 · 分组 QA')).toBeVisible();
   expect(submissions).toBe(0);
   await page.getByRole('button',{name:'提交测试'}).click();
   await expect(page).toHaveURL(/\/tests\/created-qa-job/);
   expect(submissions).toBe(1);
-  expect(submitted).toMatchObject({mode:'full',ips:['192.0.2.1:7000'],targetScope:'explicit'});
+  expect(submitted).toMatchObject({mode:'full',targetScope:'selection',selectionId:'group-selection',idempotencyKey:expect.any(String)});
+  expect(submitted).not.toHaveProperty('ips');
   expect(submitted).not.toHaveProperty('nodeIds');
+});
+
+test('frozen server snapshot deep link shows count and submits by selection ID only', async ({page})=>{
+  let submitted:Record<string,unknown>|null=null;
+  const assetPageRequests:string[]=[];
+  page.on('request',(request)=>{
+    const url=new URL(request.url());
+    if(['/api/probe/servers','/api/probe/servers/cursor'].includes(url.pathname) && new URL(page.url()).pathname==='/tests/new')assetPageRequests.push(url.pathname);
+    if(url.pathname==='/api/probe/jobs' && request.method()==='POST')submitted=request.postDataJSON();
+  });
+  await page.goto('/servers');
+  await page.getByRole('button',{name:/冻结全部匹配/}).click();
+  await expect(page.getByLabel('服务器选择快照').getByText('冻结快照 120 台')).toBeVisible();
+  await page.getByRole('button',{name:'创建测试任务'}).click();
+  await expect(page).toHaveURL(/\/tests\/new\?selectionId=all-selection/);
+  await expect(page.getByText(/冻结快照目标：120 台/)).toBeVisible();
+  await page.getByRole('button',{name:'下一步'}).click();
+  await page.getByRole('button',{name:'下一步'}).click();
+  await page.getByRole('button',{name:'提交测试'}).click();
+  await expect(page).toHaveURL(/\/tests\/created-qa-job/);
+  expect(submitted).toMatchObject({mode:'full',targetScope:'selection',selectionId:'all-selection',idempotencyKey:expect.any(String)});
+  expect(submitted).not.toHaveProperty('ips');
+  expect(submitted).not.toHaveProperty('nodeIds');
+  await expect(page.getByText('等待备用节点接管 · 目标物化 8/120 · 剩余 112')).toBeVisible();
+  expect(assetPageRequests).toEqual([]);
+});
+
+test('selection submission keeps its idempotency key after an uncertain response and reload',async ({page})=>{
+  const submissions:Record<string,unknown>[]=[];
+  await page.route('**/api/probe/jobs',async (route)=>{
+    if(route.request().method()!=='POST')return route.fallback();
+    submissions.push(route.request().postDataJSON());
+    if(submissions.length===1)return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({detail:'temporary submit failure'})});
+    return route.fallback();
+  });
+  await page.goto('/tests/new?selectionId=retry-selection');
+  await expect(page.getByText(/冻结快照目标：2 台/)).toBeVisible();
+  await page.getByRole('button',{name:'下一步'}).click();
+  await page.getByLabel('测试方式').selectOption('speed');
+  await page.getByRole('button',{name:'下一步'}).click();
+  await page.getByRole('button',{name:'提交测试'}).click();
+  await expect(page.getByText('temporary submit failure')).toBeVisible();
+  expect(submissions).toHaveLength(1);
+  await page.reload();
+  await expect(page.getByText(/冻结快照目标：2 台/)).toBeVisible();
+  await page.getByRole('button',{name:'下一步'}).click();
+  await expect(page.getByLabel('测试方式')).toHaveValue('speed');
+  await page.getByRole('button',{name:'下一步'}).click();
+  await page.getByRole('button',{name:'提交测试'}).click();
+  await expect(page).toHaveURL(/\/tests\/created-qa-job/);
+  expect(submissions).toHaveLength(2);
+  expect(submissions[0].idempotencyKey).toBe(submissions[1].idempotencyKey);
+  expect(submissions[1]).toMatchObject({mode:'speed',targetScope:'selection',selectionId:'retry-selection'});
+});
+
+test('Back and Forward restore snapshot scope and mode without creating another selection',async ({page})=>{
+  const selectionCreates:Record<string,unknown>[]=[];
+  page.on('request',(request)=>{if(new URL(request.url()).pathname==='/api/probe/server-selections' && request.method()==='POST')selectionCreates.push(request.postDataJSON());});
+  await page.goto('/tests/new');
+  await page.getByLabel('目标范围').selectOption('all');
+  await expect(page.getByText(/冻结快照目标：120 台/)).toBeVisible();
+  expect(selectionCreates).toHaveLength(1);
+  await page.getByRole('button',{name:'下一步'}).click();
+  await page.getByLabel('测试方式').selectOption('speed');
+  await expect(page).toHaveURL(/mode=speed/);
+
+  await page.goBack();
+  await expect(page).not.toHaveURL(/mode=speed/);
+  await expect(page.getByLabel('测试方式')).toHaveValue('full');
+  await page.goForward();
+  await expect(page.getByLabel('测试方式')).toHaveValue('speed');
+  await page.goBack();
+  await expect(page.getByLabel('测试方式')).toHaveValue('full');
+  await page.getByRole('button',{name:'上一步'}).click();
+  await page.goBack();
+  await expect(page.getByLabel('目标范围')).toHaveValue('');
+  await page.goForward();
+  await expect(page.getByLabel('目标范围')).toHaveValue('all');
+  await expect(page.getByText(/冻结快照目标：120 台/)).toBeVisible();
+  await page.getByRole('button',{name:'下一步'}).click();
+  await page.goForward();
+  await expect(page.getByLabel('测试方式')).toHaveValue('speed');
+  expect(selectionCreates).toHaveLength(1);
+});
+
+test('group and all test scopes snapshot matches without paging server assets',async ({page})=>{
+  const assetPageRequests:string[]=[];
+  const selectionBodies:Record<string,unknown>[]=[];
+  page.on('request',(request)=>{
+    const url=new URL(request.url());
+    if(['/api/probe/servers','/api/probe/servers/cursor'].includes(url.pathname))assetPageRequests.push(url.pathname);
+    if(url.pathname==='/api/probe/server-selections' && request.method()==='POST')selectionBodies.push(request.postDataJSON());
+  });
+  await page.goto('/tests/new');
+  await page.getByLabel('目标范围').selectOption('group');
+  await page.getByLabel('分组').selectOption('QA');
+  await expect(page.getByText(/冻结快照目标：1 台/)).toBeVisible();
+  await page.getByLabel('目标范围').selectOption('all');
+  await expect(page.getByText(/冻结快照目标：120 台/)).toBeVisible();
+  expect(selectionBodies).toHaveLength(2);
+  expect(selectionBodies[0]).toMatchObject({allMatching:true,group:'QA'});
+  expect(selectionBodies[1]).toMatchObject({allMatching:true});
+  expect(assetPageRequests).toEqual([]);
+  await expect(page).toHaveURL(/selectionId=all-selection/);
+  await page.reload();
+  await expect(page.getByText(/冻结快照目标：120 台/)).toBeVisible();
+  expect(selectionBodies).toHaveLength(2);
+  expect(assetPageRequests).toEqual([]);
+  await page.getByLabel('目标范围').selectOption('group');
+  await page.getByLabel('分组').selectOption('QA');
+  await expect(page.getByText(/冻结快照目标：1 台/)).toBeVisible();
+  expect(selectionBodies).toHaveLength(3);
+  expect(selectionBodies[2]).toMatchObject({allMatching:true,group:'QA'});
+});
+
+test('queued all-matching snapshot continues polling after its ID enters the URL',async ({page})=>{
+  let creates=0;let polls=0;
+  await page.route('**/api/probe/server-selections**',async (route)=>{
+    const request=route.request();
+    if(request.method()==='POST'){
+      creates++;
+      return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({selectionId:'queued-selection',state:'queued',count:7,processed:0,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+86400000).toISOString(),error:null})});
+    }
+    polls++;
+    const ready=polls>=2;
+    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({selectionId:'queued-selection',state:ready?'ready':'building',count:7,processed:ready?7:3,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+86400000).toISOString(),error:null})});
+  });
+  await page.goto('/tests/new');
+  await page.getByLabel('目标范围').selectOption('all');
+  await expect(page).toHaveURL(/selectionId=queued-selection/);
+  await expect(page.getByText(/冻结快照目标：7 台 · 状态：ready/)).toBeVisible({timeout:7000});
+  expect(creates).toBe(1);
+  expect(polls).toBeGreaterThanOrEqual(2);
 });
 
 test('manual targets reject explicit ports other than 7000', async ({page})=>{
@@ -99,6 +245,20 @@ test('manual targets reject explicit ports other than 7000', async ({page})=>{
   await page.locator('textarea').fill('192.0.2.8:7001');
   await expect(page.getByRole('alert').filter({hasText:'端口固定为 7000'})).toBeVisible();
   await expect(page.getByRole('button',{name:'下一步'})).toBeDisabled();
+  expect(submissions).toBe(0);
+});
+
+test('manual target lists above 5000 are blocked and point to frozen server snapshots',async ({page})=>{
+  let submissions=0;
+  page.on('request',(request)=>{if(request.url().endsWith('/api/probe/jobs') && request.method()==='POST')submissions++;});
+  await page.goto('/tests/new');
+  await page.getByLabel('目标范围').selectOption('manual');
+  const targets=Array.from({length:5001},(_,index)=>`192.0.2.${index+1}`).join('\n');
+  await page.locator('textarea').fill(targets);
+  await expect(page.getByRole('alert').filter({hasText:'手动目标共 5001 个，超过 5000 个上限'})).toBeVisible();
+  await expect(page.getByRole('link',{name:'前往服务器库冻结匹配结果'})).toHaveAttribute('href','/servers');
+  await expect(page.getByRole('button',{name:'下一步'})).toBeDisabled();
+  await expect(page.getByRole('button',{name:'提交测试'})).toHaveCount(0);
   expect(submissions).toBe(0);
 });
 
@@ -281,7 +441,7 @@ test('server tags group by category, filter with stable id, and batch assignment
   page.on('request',(request)=>{
     const url=new URL(request.url());
     if(url.pathname==='/api/probe/servers' || url.pathname==='/api/probe/servers/cursor')serverRequests.push(request.url());
-    if(url.pathname==='/api/probe/servers/batch-update' && request.method()==='POST')assignment=request.postDataJSON();
+    if(url.pathname==='/api/probe/server-bulk-jobs' && request.method()==='POST')assignment=request.postDataJSON();
   });
   await page.goto('/servers?nodeId=remote&group=QA');
   await expect(page.getByText('地区',{exact:true})).toBeVisible();
@@ -297,7 +457,8 @@ test('server tags group by category, filter with stable id, and batch assignment
   await page.getByRole('button',{name:'添加'}).first().click();
   await page.getByRole('button',{name:'保存'}).click();
   await expect.poll(()=>assignment).not.toBeNull();
-  expect(assignment).toMatchObject({ids:[1],addTagIds:['tag-region-cn'],removeTagIds:[]});
+  expect(assignment).toMatchObject({selectionId:'all-selection',operation:'update',payload:{addTagIds:['tag-region-cn'],removeTagIds:[]},idempotencyKey:expect.any(String)});
+  expect(assignment).not.toHaveProperty('ids');
 });
 
 test('tag management creates, renames, moves, and merges by stable ids',async ({page})=>{

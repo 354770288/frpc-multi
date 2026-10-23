@@ -645,6 +645,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                 </Badge>
                 {serverBulk.selection.error && <span role="alert" className="text-destructive">{serverBulk.selection.error}</span>}
                 {serverBulk.selection.state === 'ready' && <>
+                  <Button size="sm" onClick={() => navigate(`/tests/new?${new URLSearchParams({ selectionId: serverBulk.selection!.selectionId })}`)}>创建测试任务</Button>
                   <Button size="sm" variant="outline" disabled={bulkActionBusy} onClick={() => setBatchEditSnapshot('group')}>改分组</Button>
                   <Button size="sm" variant="outline" disabled={bulkActionBusy} onClick={() => setBatchEditSnapshot('label')}>改旧标签</Button>
                   <Button size="sm" variant="outline" disabled={bulkActionBusy} onClick={() => setBatchTagsSnapshotOpen(true)}>分类标签</Button>

@@ -35,9 +35,22 @@ At the end of the desktop batch-integration slice, no E2E browser run had been p
 
 The `/api/probe/jobs` selection scope accepts a selection ID, mode, options, and idempotency key, not IP arrays. Creation atomically checks owner/readiness/expiry, primary policy, capabilities, and port 7000. A producer record stores its cursor, saved owner, generation, and progress. Claims create up to 250 tasks per transaction while limiting active backlog to 500. The job stays running until both target production and all generated tasks finish. Failover transfers the producer cursor and pending tasks using the job's policy snapshot; zero-task failover, partial sweeps, wait/resume, monotone cursor, stop/retry, owner deletion, and 100k bounded generation have regression coverage.
 
-Uncovered: the frontend has not yet created tests from saved selection snapshots; no end-to-end 100k task execution/concurrent write benchmark, 1M capacity test, browser E2E for the new selection flow, or production migration/deployment was performed.
+At the end of the producer-backend slice, the frontend had not yet created tests from saved selection snapshots; no end-to-end 100k task execution/concurrent write benchmark, 1M capacity test, browser E2E for the new selection flow, or production migration/deployment had been performed.
 
 Complexity control: `jobs.py` is now 1,254 lines, crossing the strong 1,200-line pressure signal. Producer logic remains in the scheduler transaction owner to keep policy, task insertion, cursor movement, and lease/failover changes atomic. Treat this as `exceeded-and-governed`: the next maintainability slice should extract cohesive producer operations without adding a second transaction owner, after the desktop selection-test flow is integrated. This is a follow-up, not a claim that the complexity issue is fully closed.
+
+## Slice: desktop selection-backed test creation
+
+- `npm run build` — exit 0; TypeScript and Vite bundle passed.
+- `npm test` — exit 0; 4 files and 9 tests passed.
+- `npm run test:e2e -- e2e/test-creation.spec.ts` — coordinator fresh run: 32 Playwright tests passed.
+- `git diff --check` — exit 0.
+- Spec compliance review: Back/Forward state restoration, no duplicate snapshot POST, snapshot-only submission, group/all no-IP expansion, 5,000 explicit target cap, and producer waiting progress passed.
+- Code-quality review: no actionable findings.
+
+The Server Library snapshot now links directly to TestCreatePage. Group/all scopes create and poll a fixed server selection; deep links load the existing owner-bound snapshot. Test submission uses `targetScope='selection'`, selection ID, and an idempotency key without `ips` or `nodeIds`. The UI preserves uncertain submissions across reload, shows snapshot count/state/expiry, displays producer target materialization and backup-waiting status, and restores scope/group/mode from URL navigation. The manual endpoint textarea and previous explicit selection are limited to 5,000 targets; larger sets are directed to a frozen server snapshot.
+
+Uncovered: E2E for asynchronous batch update/delete UI progress and failure retry; exactly-5,000 boundary is accepted by implementation but only 5,001 rejection has browser coverage; no full 100k task execution benchmark, 1M capacity test, or production deployment.
 
 ## Slice: fixed target port
 

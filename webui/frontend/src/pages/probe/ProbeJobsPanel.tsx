@@ -63,6 +63,15 @@ const ERROR_NAMES: Record<string, string> = {
   'lease expired': '节点连接超时，等待重新领取',
 };
 const retryable = (task: ProbeTask) => ['failed', 'skipped', 'stopped'].includes(task.state);
+function targetProducerProgress(job: ProbeJob) {
+  const producer = job.targetProducer;
+  if (!producer || !['queued', 'running', 'waiting'].includes(producer.state) && !producer.failoverWaiting) return null;
+  const materialized = job.targetMaterialized ?? 0;
+  const total = job.targetTotal ?? 0;
+  const remaining = job.targetRemaining ?? Math.max(0, total - materialized);
+  const waiting = producer.failoverWaiting || producer.state === 'waiting';
+  return `${waiting ? '等待备用节点接管 · ' : ''}目标物化 ${materialized}/${total} · 剩余 ${remaining}`;
+}
 export function ProbeJobsPanel({
   nodes,
   focusJobId,
@@ -277,6 +286,7 @@ export function ProbeJobsPanel({
           {jobs.map((job) => <button key={job.id} type="button" onClick={()=>navigate(`/tests/${job.id}${searchParams.size ? `?${searchParams.toString()}` : ''}`)} className={`rounded-lg border p-3 text-left text-sm hover:bg-muted ${job.id===jobId ? 'border-primary' : ''}`}>
             <span className="font-medium">{MODE_NAMES[job.mode]}</span> · {formatLastSeen(job.createdAt)} · <span>{STATES[job.state] || job.state}</span>
             <span className="mt-1 block text-xs text-muted-foreground">执行节点 {job.nodeIds.map(nodeName).join('、')} · 阶段任务 {job.taskTotal} · 异常 {(job.counts.failed || 0)+(job.counts.skipped || 0)}</span>
+            {targetProducerProgress(job) && <span className="mt-1 block text-xs text-muted-foreground">{targetProducerProgress(job)}</span>}
           </button>)}
           {!loading && !jobs.length && <p className="text-sm text-muted-foreground">暂无匹配批次</p>}
         </div>
@@ -302,6 +312,7 @@ export function ProbeJobsPanel({
               ))}
             </div>
             <Progress value={total ? (done / total) * 100 : 0} />
+            {targetProducerProgress(detail) && <p className="text-xs text-muted-foreground">{targetProducerProgress(detail)}</p>}
             {detail.mode === 'discover' && (
               <p className="text-xs text-muted-foreground">
                 扫描完成 {detail.progress.scanned} · 命中 {detail.progress.foundCount}
