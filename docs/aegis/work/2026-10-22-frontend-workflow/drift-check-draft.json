@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-10-22-frontend-workflow",
+  "taskIntentRef": "docs/aegis/work/2026-10-22-frontend-workflow/task-intent-draft.json",
+  "baselineRefs": [
+    "docs/aegis/baseline/2026-10-21-probe-workers.md"
+  ],
+  "scopeStatus": "按已批准前端计划实现导航和兼容API",
+  "compatStatus": "旧probe和create路由跳转已验证；worker协议与DNS算法未动",
+  "retirementStatus": "旧路由适配暂留；手写弹窗封装已迁至shadcn原语",
+  "newRiskSignals": [
+    "尚未完成生产镜像与线上验收"
+  ],
+  "decision": "continue"
+}

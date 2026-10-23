@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  ArrowRight,
-  Check,
   Pause,
   Play,
   Plus,
@@ -34,13 +32,12 @@ import {
   instanceStateBadge,
   shortNodeUuid
 } from '../lib/format';
-import { api, lbApi, probeApi, nodesApi } from '../lib/api';
+import { api, nodesApi } from '../lib/api';
 import { useConsole } from '../context/ConsoleContext';
 import type {
   InstanceDetail,
   InstanceRef,
   InstanceSummary,
-  LbDomain,
   NodeStatus,
 } from '../lib/types';
 
@@ -54,6 +51,9 @@ export function Overview() {
     instances,
     stats,
     counts,
+    summaryLoaded,
+    summaryError,
+    loadSummary,
     dockerAvailable,
     dockerError,
     pendingAction,
@@ -71,26 +71,6 @@ export function Overview() {
   const [enabledFilter, setEnabledFilter] = useState<EnabledFilter>('all');
   const [proxyTypeFilter, setProxyTypeFilter] = useState('all');
   const [summaryCache, setSummaryCache] = useState<SummaryCache>({});
-  // 部署链路卡：一次性拉取资源侧进度（失败按 0 处理，不打扰工作台）
-  const [chain, setChain] = useState<{ reachable: number; domains: number; domainPooled: number } | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([
-      probeApi.dashboard().catch(() => null),
-      lbApi.domains().catch(() => null as unknown as LbDomain[]),
-    ]).then(([dash, domains]) => {
-      if (cancelled) return;
-      const list = Array.isArray(domains) ? domains : [];
-      setChain({
-        reachable: dash?.connectivity?.reachable ?? 0,
-        domains: list.filter((item) => item.enabled).length,
-        domainPooled: list.reduce((sum, item) => sum + (item.enabled ? item.poolSize : 0), 0),
-      });
-    });
-    return () => { cancelled = true; };
-  }, []);
-
   function openInstance(item: InstanceRef, tab?: 'config') {
     const suffix = tab === 'config' ? '?tab=config' : '';
     navigate(`/instances/${item.nodeId}/${encodeURIComponent(item.name)}${suffix}`);
@@ -251,6 +231,8 @@ export function Overview() {
       : nodeStatusLabel(selectedNode.status)
     : `${onlineNodes} / ${nodes.length || 0}`;
 
+  if (!summaryLoaded) return <main role="status" className="mx-auto max-w-[1200px] p-6 text-sm text-muted-foreground">实例信息加载中…</main>;
+  if (summaryError && nodes.length===0 && instances.length===0) return <main className="mx-auto max-w-[1200px] p-6"><p role="alert" className="text-sm text-destructive">{summaryError}；实例数量尚未确认。</p><Button className="mt-3" onClick={()=>void loadSummary()}>重试</Button></main>;
   return (
     <main className="w-full max-w-[1720px] mx-auto px-4 sm:px-6 py-5 sm:py-6">
       <SummaryCards
@@ -282,15 +264,6 @@ export function Overview() {
         ]}
       />
 
-      <DeployChainCard
-        reachable={chain?.reachable ?? null}
-        domains={chain?.domains ?? null}
-        domainPooled={chain?.domainPooled ?? 0}
-        nodesOnline={onlineNodes}
-        nodesTotal={nodes.length}
-        instances={counts.total}
-      />
-
       {!dockerAvailable && dockerError && (
         <div className="mb-4 rounded-lg border border-secondary bg-secondary px-3 py-2 text-[12px] text-secondary-foreground">
           Console 摘要：{dockerError}
@@ -300,7 +273,7 @@ export function Overview() {
       <section className="grid grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)] gap-4 items-start">
         <aside className="rounded-lg border border-border bg-card shadow-sm overflow-hidden">
           <PanelHead
-            title="Agent 节点"
+            title="部署节点"
             badge={`${onlineNodes} 在线`}
           />
 
@@ -321,7 +294,7 @@ export function Overview() {
           <div className="p-3 grid gap-2.5">
             {nodes.length === 0 ? (
               <EmptyState
-                title="还没有 Agent 节点"
+                title="还没有部署节点"
                 actions={
                   <Button size="sm" onClick={() => navigate('/nodes')}>
                     <Plus data-icon="inline-start" />
@@ -381,7 +354,7 @@ export function Overview() {
               <Button variant="outline" size="sm" onClick={() => navigate('/nodes')}>
                 节点管理
               </Button>
-              <Button size="sm" onClick={() => navigate('/create')} disabled={nodes.length === 0}>
+              <Button size="sm" onClick={() => navigate('/instances/new')} disabled={nodes.length === 0}>
                 <Plus data-icon="inline-start" />
                 {selectedNode ? '在此节点创建实例' : '创建实例'}
               </Button>
@@ -477,7 +450,7 @@ export function Overview() {
                     title={selectedNode ? '该节点还没有实例' : '还没有实例'}
                     actions={
                       selectedNode ? (
-                        <Button size="sm" onClick={() => navigate('/create')}>
+                        <Button size="sm" onClick={() => navigate('/instances/new')}>
                           <Plus data-icon="inline-start" />
                           在此节点创建实例
                         </Button>
@@ -814,89 +787,4 @@ function parseMemoryPart(value: string): { value: number; unit: string } | null 
   const parsedValue = Number(match[1]);
   if (!Number.isFinite(parsedValue)) return null;
   return { value: parsedValue, unit: match[2] };
-}
-
-/**
- * 部署链路卡：横向四步（测试入池 → 域名池 → 节点 → 实例）。
- * 步骤未完成时即跳转入口，新用户首屏就能看到全链路方向。
- */
-function DeployChainCard({ reachable, domains, domainPooled, nodesOnline, nodesTotal, instances }: {
-  reachable: number | null;
-  domains: number | null;
-  domainPooled: number;
-  nodesOnline: number;
-  nodesTotal: number;
-  instances: number;
-}) {
-  const navigate = useNavigate();
-  const steps = [
-    {
-      to: '/probe',
-      title: '① 测试入池',
-      done: (reachable ?? 0) > 0,
-      detail: reachable === null ? '加载中…' : reachable > 0 ? `${reachable} 台 frps 测通可入池` : '穿透测试通过 → 批量入健康分组',
-    },
-    {
-      to: '/lb',
-      title: '② 候选域名',
-      done: (domains ?? 0) > 0 && domainPooled > 0,
-      detail: domains === null ? '加载中…' : domains > 0
-        ? (domainPooled > 0 ? `${domains} 个域名 · 池 ${domainPooled} 台` : '域名已建，池为空（去服务器库入组）')
-        : '建候选域名并绑定健康分组',
-    },
-    {
-      to: '/nodes',
-      title: '③ Agent 节点',
-      done: nodesOnline > 0,
-      detail: nodesTotal > 0
-        ? `${nodesOnline} / ${nodesTotal} 在线`
-        : '在需要穿透的机器上接入 Agent',
-    },
-    {
-      to: '/create',
-      title: '④ 创建实例',
-      done: instances > 0,
-      detail: instances > 0 ? `${instances} 个实例` : '选候选域名，serverAddr 自动填域名',
-    },
-  ];
-  const allDone = steps.every((step) => step.done);
-
-  return (
-    <section className="mb-4 rounded-lg border border-border bg-card shadow-sm">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-4 py-2.5">
-        <h2 className="text-sm font-semibold">部署链路</h2>
-        <span className="text-[11px] text-muted-foreground">
-          服务器库入池 → 域名主备切换 → Agent 节点 → frpc 实例
-        </span>
-        {allDone && <Badge tone="success">全链就绪</Badge>}
-      </div>
-      <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 xl:grid-cols-4">
-        {steps.map((step, index) => (
-          <div key={step.to} className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => navigate(step.to)}
-              className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg border border-border bg-background px-3 py-2 text-left transition-colors hover:border-primary/50 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {step.done
-                ? <span className="grid size-5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground"><Check size={11} /></span>
-                : <span className="grid size-5 shrink-0 place-items-center rounded-full border border-border text-[10px] text-muted-foreground">{index + 1}</span>}
-              <span className="min-w-0">
-                <span className="flex items-center gap-1.5 text-[12px] font-medium">
-                  {step.title}
-                  {!step.done && <Badge tone="muted">待完成</Badge>}
-                </span>
-                <span className="block truncate text-[11px] text-muted-foreground" title={step.detail}>
-                  {step.detail}
-                </span>
-              </span>
-            </button>
-            {index < steps.length - 1 && (
-              <ArrowRight size={14} className="hidden shrink-0 text-muted-foreground xl:block" aria-hidden="true" />
-            )}
-          </div>
-        ))}
-      </div>
-    </section>
-  );
 }

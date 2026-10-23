@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-10-22-frontend-workflow",
+  "lastCheckpointRef": "docs/aegis/work/2026-10-22-frontend-workflow/todo-checkpoint-draft.json",
+  "resumeInstruction": "仅主Agent继续；检查Git HEAD、CI与Netcatty主控连接后再发布，测试节点worker无需升级",
+  "knownPartialWork": [
+    "兼容分页和显式目标、导航重组、三步新建、草稿保护、域名状态、历史与审计服务端分页已实现",
+    "后端250项、Vitest3项、Playwright11项与前端构建全部通过；真实备份索引迁移和分页性能通过"
+  ],
+  "mustReadBeforeContinuing": [
+    "docs/aegis/work/2026-10-22-frontend-workflow/10-intent.md",
+    "docs/aegis/work/2026-10-22-frontend-workflow/20-checkpoint.md",
+    "docs/aegis/work/2026-10-22-frontend-workflow/todo-checkpoint-draft.json"
+  ],
+  "unsafeToAssume": [
+    "当前线上仍旧镜像da8603c；代码尚待提交部署"
+  ]
+}

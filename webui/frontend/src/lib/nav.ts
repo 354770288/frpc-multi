@@ -1,13 +1,4 @@
-import {
-  CirclePlus,
-  Globe,
-  LayoutDashboard,
-  Monitor,
-  Radar,
-  ScrollText,
-  ShieldCheck,
-  type LucideIcon,
-} from 'lucide-react';
+import { Globe, LayoutDashboard, Monitor, Radar, ScrollText, ShieldCheck, Server, FlaskConical, ListChecks, History, type LucideIcon } from 'lucide-react';
 
 export type NavItem = {
   to: string;
@@ -22,40 +13,41 @@ export type NavGroup = {
   items: NavItem[];
 };
 
-/**
- * 主导航的唯一来源：分组顺序即使用链方向——
- * frps 资源（服务器库→负载均衡）是供给侧，部署接入（节点→创建实例）是消费侧。
- */
 export const NAV_GROUPS: NavGroup[] = [
   {
     label: '总览',
     items: [{ to: '/workspace', label: '工作台', icon: LayoutDashboard }],
   },
   {
-    label: 'frps 资源',
+    label: '资源与测试',
     items: [
-      { to: '/probe', label: '服务器库', hint: '穿透测试 → 入池', icon: Radar },
-      { to: '/lb', label: '负载均衡', hint: '候选域名', icon: Globe },
+      { to: '/discovery', label: '网段发现', icon: Radar },
+      { to: '/servers', label: '服务器库', icon: Server },
+      { to: '/tests', label: '测试任务', icon: ListChecks },
+      { to: '/results', label: '测试结果', icon: History },
+      { to: '/lb', label: '域名选优', icon: Globe },
+      { to: '/test-nodes', label: '测试节点', icon: FlaskConical },
     ],
   },
   {
-    label: '部署接入',
+    label: '部署与运维',
     items: [
-      { to: '/nodes', label: '节点', hint: 'Agent 管理', icon: Monitor },
-      { to: '/create', label: '创建实例', icon: CirclePlus },
+      { to: '/instances', label: '实例', icon: Monitor },
+      { to: '/nodes', label: '部署节点', icon: Server },
     ],
   },
   {
-    label: '管理',
+    label: '系统',
     items: [
-      { to: '/audit', label: '审计日志', icon: ScrollText },
-      { to: '/system', label: '账号与安全', icon: ShieldCheck },
+      { to: '/audit', label: '操作记录', icon: ScrollText },
+      { to: '/system', label: '系统设置', icon: ShieldCheck },
     ],
   },
 ];
 
 /** 命中当前路由的导航项（含分组名），供侧边栏激活态与顶栏页标题共用。 */
 export function findActiveNav(pathname: string): { item: NavItem; groupLabel: string } | null {
+  if (pathname === '/instances/new') return { item: NAV_GROUPS[2].items[0], groupLabel: NAV_GROUPS[2].label };
   for (const group of NAV_GROUPS) {
     for (const item of group.items) {
       if (pathname === item.to || pathname.startsWith(`${item.to}/`)) {

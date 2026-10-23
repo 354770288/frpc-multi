@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "实施用户确认的前端改造计划并部署验收",
+  "goal": "实施用户确认的前端改造计划并部署验收",
+  "successEvidence": [],
+  "stopCondition": "Stop when success evidence is satisfied or a blocker/risk requires pause.",
+  "nonGoals": [
+    "修改worker调度算法"
+  ],
+  "scope": "导航与页面重组、任务与历史分页、配置草稿保护、域名状态、响应式与测试",
+  "changeKinds": [
+    "feature"
+  ],
+  "riskHints": []
+}

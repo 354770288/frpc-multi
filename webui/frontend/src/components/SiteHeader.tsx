@@ -1,14 +1,11 @@
-import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Github,
   LogOut,
   Monitor,
   Moon,
-  Search,
   Settings,
   Sun,
-  X,
   ChevronDown,
 } from 'lucide-react';
 import { useConsole } from '../context/ConsoleContext';
@@ -17,12 +14,6 @@ import { findActiveNav } from '../lib/nav';
 import { Button } from './ui/button';
 import { Separator } from './ui/separator';
 import { SidebarTrigger } from './ui/sidebar';
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-  InputGroupInput,
-} from './ui/input-group';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,6 +26,11 @@ import {
 } from './ui/dropdown-menu';
 
 function pageTitle(pathname: string): string {
+  if (pathname === '/instances/new') return '创建实例';
+  if (pathname.startsWith('/instances/')) return '实例详情';
+  if (pathname === '/tests/new') return '新建测试';
+  if (pathname.startsWith('/tests/')) return '批次详情';
+  if (pathname === '/lb/settings') return '域名设置';
   return findActiveNav(pathname)?.item.label ?? (
     pathname.startsWith('/instances') ? '实例详情' : 'frpc 多实例管理'
   );
@@ -43,25 +39,11 @@ function pageTitle(pathname: string): string {
 export function SiteHeader() {
   const {
     auth,
-    workspaceSearch,
-    setWorkspaceSearch,
-    setWorkspaceNodeId,
   } = useConsole();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { theme, setTheme } = useTheme();
-  const [searchValue, setSearchValue] = useState(workspaceSearch);
-
-  useEffect(() => {
-    setSearchValue(workspaceSearch);
-  }, [workspaceSearch]);
-
-  function applySearch(value: string) {
-    setSearchValue(value);
-    setWorkspaceSearch(value);
-    if (value.trim()) setWorkspaceNodeId('all');
-    navigate('/workspace');
-  }
+  const groupLabel = findActiveNav(pathname)?.groupLabel;
 
   return (
     <header className="sticky top-0 z-40 flex h-16 shrink-0 items-center gap-3 border-b bg-card/90 px-4 backdrop-blur sm:px-6">
@@ -69,34 +51,13 @@ export function SiteHeader() {
 
       <Separator orientation="vertical" className="hidden h-5 sm:block" />
 
+      {groupLabel && <span className="hidden text-xs text-muted-foreground sm:inline">{groupLabel} /</span>}
+
       <h1 className="min-w-0 truncate text-sm font-semibold" aria-current="page">
         {pageTitle(pathname)}
       </h1>
 
       <div className="ml-auto flex min-w-0 items-center gap-2">
-        <InputGroup className="hidden w-[clamp(220px,30vw,420px)] md:flex">
-          <InputGroupAddon>
-            <Search aria-hidden="true" />
-          </InputGroupAddon>
-          <InputGroupInput
-            value={searchValue}
-            onFocus={() => navigate('/workspace')}
-            onChange={(event) => applySearch(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape' && searchValue) applySearch('');
-            }}
-            aria-label="搜索节点工作台实例"
-            placeholder="搜索工作台实例、节点、配置路径"
-          />
-          {searchValue && (
-            <InputGroupAddon align="inline-end">
-              <InputGroupButton onClick={() => applySearch('')} aria-label="清除工作台搜索">
-                <X />
-              </InputGroupButton>
-            </InputGroupAddon>
-          )}
-        </InputGroup>
-
         <Button variant="ghost" size="icon-sm" asChild>
           <a
             href="https://github.com/354770288/frpc-multi"
@@ -123,7 +84,7 @@ export function SiteHeader() {
               <div className="font-semibold">{auth.username || 'admin'}</div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => navigate('/system')} className="text-xs">
+            <DropdownMenuItem onClick={() => navigate('/system?tab=security')} className="text-xs">
               <Settings size={13} />
               账号与安全
             </DropdownMenuItem>

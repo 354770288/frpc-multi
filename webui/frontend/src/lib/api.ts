@@ -26,6 +26,7 @@ import type {
   ProbeConnectivityHistory,
   ProbeDashboard,
   ProbeSpeedHistory,
+  ProbeResultBase,
   ProbeTestConfig,
   ProbeTestStatus,
   ServerFacets,
@@ -145,7 +146,8 @@ export const nodesApi = {
 };
 
 export const auditLogsApi = {
-  list: (limit = 100) => api<AuditLog[]>(`/api/audit-logs?limit=${limit}`)
+  list: (limit = 100) => api<AuditLog[]>(`/api/audit-logs?limit=${limit}`),
+  page: (query: Record<string,string|number|boolean>) => api<{items:AuditLog[];page:number;pageSize:number;total:number}>(`/api/audit-logs/page?${new URLSearchParams(Object.entries(query).map(([key,value])=>[key,String(value)]))}`),
 };
 
 export type ProbeServerPayload = {
@@ -159,8 +161,11 @@ export const probeApi = {
   createTestNode: (name: string) => api<TestNode & { token: string }>('/api/probe/nodes', { method: 'POST', body: JSON.stringify({ name }) }),
   deleteTestNode: (id: string) => api<{ ok: boolean }>(`/api/probe/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   jobs: () => api<{ items: ProbeJob[] }>('/api/probe/jobs'),
+  jobsPage: (query: Record<string, string | number>) => api<{ items: ProbeJob[]; page: number; pageSize: number; total: number }>(`/api/probe/jobs?${new URLSearchParams(Object.entries(query).map(([k,v]) => [k,String(v)]))}`),
   createJob: (payload: ProbeJobInput) => api<ProbeJobDetail>('/api/probe/jobs', { method: 'POST', body: JSON.stringify(payload) }),
   job: (id: string, page = 1, pageSize = 200) => api<ProbeJobDetail>(`/api/probe/jobs/${encodeURIComponent(id)}?page=${page}&pageSize=${pageSize}`),
+  jobFiltered: (id: string, query: Record<string,string|number>) => api<ProbeJobDetail>(`/api/probe/jobs/${encodeURIComponent(id)}?${new URLSearchParams(Object.entries(query).map(([k,v]) => [k,String(v)]))}`),
+  historyPage: (kind: 'route' | 'connectivity' | 'speed', query: Record<string,string|number>) => api<{ items: ProbeResultBase[]; page: number; pageSize: number; total: number }>(`/api/probe/history/${kind}/page?${new URLSearchParams(Object.entries(query).map(([k,v]) => [k,String(v)]))}`),
   jobAction: (id: string, action: 'stop' | 'skip' | 'retry', taskIds?: string[]) => api<{ ok: boolean; changed: number }>(`/api/probe/jobs/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify({ taskIds }) }),
   compare: (ip: string, port: number) => api<{ items: ProbeComparison[] }>(`/api/probe/compare?${new URLSearchParams({ ip, port: String(port) })}`),
   servers: (query: ServerQuery, signal?: AbortSignal, nodeId = 'console') => {

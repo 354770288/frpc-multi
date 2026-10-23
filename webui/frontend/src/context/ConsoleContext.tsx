@@ -1,10 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { toast as sonnerToast } from 'sonner';
-import { api, auditLogsApi, nodesApi } from '../lib/api';
+import { api, nodesApi } from '../lib/api';
 import { actionLabel, instanceStateBadge, parsePercent } from '../lib/format';
 import type {
-  AuditLog,
   AuthState,
   ConsoleInfo,
   InstanceRef,
@@ -49,8 +49,6 @@ interface ConsoleContextValue {
   dockerError: string;
   system: ConsoleInfo | null;
   pendingAction: Record<string, string>;
-  auditLogs: AuditLog[];
-  setAuditLogs: (logs: AuditLog[]) => void;
   nodeSystems: NodeSystemSnapshot;
   nodeHealthById: Record<number, NodeInstanceHealth>;
   // workspace filters
@@ -77,6 +75,8 @@ export function useConsole() {
 // ── provider ───────────────────────────────────────────────────────────────
 
 export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthState; onAuthRefresh: (state: AuthState) => void; children: ReactNode }) {
+  const {pathname}=useLocation();
+  const instanceArea=/^\/(instances|nodes|system|audit)(\/|$)/.test(pathname);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [instances, setInstances] = useState<InstanceRef[]>([]);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -89,7 +89,6 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
   const [dockerError, setDockerError] = useState('');
   const [system, setSystem] = useState<ConsoleInfo | null>(null);
   const [pendingAction, setPendingAction] = useState<Record<string, string>>({});
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [nodeSystems, setNodeSystems] = useState<NodeSystemSnapshot>({});
   const [workspaceNodeId, setWorkspaceNodeId] = useState<number | 'all'>('all');
   const [workspaceSearch, setWorkspaceSearch] = useState('');
@@ -135,12 +134,9 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
       setDockerError(data.dockerError || '');
       setSummaryError('');
     } catch {
-      setInstances([]);
-      setStats({});
-      setCounts(EMPTY_COUNTS);
-      setDockerAvailable(false);
-      setDockerError('无法访问 /api/summary');
-      setSummaryError('无法访问 /api/summary');
+      // Keep the last successful snapshot; consumers mark it stale separately.
+      setDockerError('无法访问 /api/summary；显示上次成功的数据');
+      setSummaryError('无法访问 /api/summary；显示上次成功的数据');
     } finally {
       setSummaryLoaded(true);
       setSummaryLoading(false);
@@ -152,21 +148,17 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
     setSystem(data);
   }
 
-  async function loadAuditLogs() {
-    const data = await auditLogsApi.list(200).catch(() => []);
-    setAuditLogs(data);
-  }
-
   async function refreshAll() {
-    await Promise.all([loadSummary(), loadSystem(), loadAuditLogs()]);
+    await Promise.all([loadSummary(), loadSystem()]);
   }
 
   useEffect(() => {
-    refreshAll();
-    const timer = window.setInterval(loadSummary, 5000);
+    if(!instanceArea)return;
+    void refreshAll();
+    const timer = window.setInterval(() => {if(document.visibilityState==='visible')void loadSummary();}, 5000);
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [instanceArea]);
 
   const nodeSystemKey = useMemo(
     () => nodes.map((node) => `${node.id}:${node.online || node.status === 'online'}`).join('|'),
@@ -174,7 +166,7 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
   );
 
   useEffect(() => {
-    if (!nodes.length) { setNodeSystems({}); return; }
+    if (!instanceArea || !nodes.length) { setNodeSystems({}); return; }
     let cancelled = false;
     async function loadNodeSystems() {
       const entries = await Promise.all(
@@ -192,7 +184,7 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
     loadNodeSystems();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodeSystemKey]);
+  }, [nodeSystemKey,instanceArea]);
 
   const action = useCallback(async (item: InstanceRef, verb: string) => {
     const key = instanceKey(item.nodeId, item.name);
@@ -263,7 +255,7 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
 
   const value: ConsoleContextValue = {
     auth, onAuthRefresh,
-    nodes, instances, summaryLoading, summaryLoaded, summaryError, stats, statsHistory, counts, dockerAvailable, dockerError, system, pendingAction, auditLogs, setAuditLogs, nodeSystems, nodeHealthById,
+    nodes, instances, summaryLoading, summaryLoaded, summaryError, stats, statsHistory, counts, dockerAvailable, dockerError, system, pendingAction, nodeSystems, nodeHealthById,
     workspaceNodeId, setWorkspaceNodeId, workspaceSearch, setWorkspaceSearch,
     action, patchInstance, deleteInstance, refreshAll, loadSummary,
   };

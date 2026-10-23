@@ -59,6 +59,22 @@ export function splitTomlAtProxies(text: string): { preface: string; proxiesBody
   return { preface, proxiesBody };
 }
 
+/** A structured edit rewrites proxy blocks; admit only the fields it can round-trip. */
+export function canEditProxiesStructurally(text: string): boolean {
+  const { proxiesBody } = splitTomlAtProxies(text);
+  if (!proxiesBody.trim()) return true;
+  const fields = new Set(['name','type','localIP','localPort','remotePort','subdomain','customDomains']);
+  for (const line of proxiesBody.split(/\r?\n/)) {
+    const value = line.trim();
+    if (!value || value === '[[proxies]]') continue;
+    // Comments and nested tables would be removed by the serializer.
+    if (value.startsWith('#') || value.startsWith('[')) return false;
+    const match = /^([A-Za-z][A-Za-z0-9]*)\s*=/.exec(value);
+    if (!match || !fields.has(match[1])) return false;
+  }
+  return proxiesBody.trim() === serializeProxies(parseProxies(proxiesBody)).trim();
+}
+
 /**
  * Parse the proxies portion of a frpc.toml file into a list of editable drafts.
  * Handles the common subset of fields (strings, integers, simple string arrays)
@@ -365,6 +381,11 @@ export function serializeFrpcConfig(draft: FrpcConfigDraft): string {
   }
 
   return lines.join('\n') + '\n';
+}
+
+/** Create form may serialize the entire document only when no content would change. */
+export function canEditFullConfigStructurally(text: string): boolean {
+  return text.trim() === serializeFrpcConfig(parseFrpcConfig(text)).trim();
 }
 
 export function validateFrpcDraft(draft: FrpcConfigDraft): string[] {

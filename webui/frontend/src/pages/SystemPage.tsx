@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -47,7 +48,9 @@ function formatTimestamp(epochSeconds: number): string {
 
 export function SystemPage() {
   const { auth, system, nodes, onAuthRefresh } = useConsole();
-  const [tab, setTab] = useState('console');
+  const [params,setParams]=useSearchParams();
+  const tab=['console','nodes','security'].includes(params.get('tab') || '') ? params.get('tab')! : 'console';
+  const setTab=(value:string)=>setParams((current)=>{const next=new URLSearchParams(current);next.set('tab',value);return next;});
   const [currentUsername, setCurrentUsername] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
   const [newUsername, setNewUsername] = useState('');

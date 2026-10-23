@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { probeApi } from '../../lib/api';
 import type {
   DiscoverOrder,
@@ -17,22 +18,44 @@ const EMPTY_FACETS: ServerFacets = { labels: [], groups: [] };
 type PageRefreshOptions = { recoverOutOfRange?: boolean };
 
 export function useServers(active: boolean, nodeId = 'console') {
-  const [query, setQuery] = useState<ServerQuery>({
-    page: 1,
-    pageSize: 50,
-    conn: 'all',
-    sort: 'group',
-    order: 'asc',
+  const [,setUrl] = useSearchParams();
+  const [query, setQuery] = useState<ServerQuery>(() => {
+    const p=new URLSearchParams(window.location.search);
+    const pageSize=Number(p.get('pageSize'));
+    const sort=p.get('sort');const order=p.get('order');const conn=p.get('conn');
+    return {page:Math.max(1,Number(p.get('page')) || 1),pageSize:[25,50,100,200].includes(pageSize) ? pageSize : 50,
+      conn:conn==='pass'||conn==='partial'||conn==='fail'||conn==='untested' ? conn : 'all',
+      sort:sort==='ip'||sort==='conn'||sort==='speed'||sort==='time' ? sort : 'group',order:order==='desc' ? 'desc':'asc',
+      ...(p.has('q') ? {q:p.get('q') || ''} : {}),...(p.has('group') ? {group:p.get('group') || ''} : {}),...(p.has('label') ? {label:p.get('label') || ''} : {})};
   });
+  useEffect(() => {
+    if(!active)return;
+    setUrl((current)=>{const next=new URLSearchParams(current);
+      for(const key of ['page','pageSize','conn','sort','order','q','group','label'])next.delete(key);
+      next.set('page',String(query.page));next.set('pageSize',String(query.pageSize));next.set('conn',query.conn);next.set('sort',query.sort);next.set('order',query.order);
+      if(query.q!==undefined)next.set('q',query.q);if(query.group!==undefined)next.set('group',query.group);if(query.label!==undefined)next.set('label',query.label);
+      return next.toString()===current.toString() ? current : next;
+    },{replace:true});
+  },[active,query,setUrl]);
   const queryRef = useRef(query);
   queryRef.current = query;
 
   const [page, setPage] = useState<ServerPage>(EMPTY_PAGE);
   const [facets, setFacets] = useState<ServerFacets>(EMPTY_FACETS);
   // 跨页勾选：id → ip（一键测试需要 IP 列表，跨页后不能只靠当前页推导）
-  const [selected, setSelected] = useState<Map<number, string>>(new Map());
-
+  const [selected, setSelected] = useState<Map<number, string>>(() => {
+    try { return new Map(JSON.parse(sessionStorage.getItem('probe_selected_servers') || '[]') as [number,string][]); }
+    catch { return new Map(); }
+  });
   useEffect(() => {
+    sessionStorage.setItem('probe_selected_servers', JSON.stringify([...selected]));
+    sessionStorage.setItem('probe_selected_endpoints', JSON.stringify([...selected.values()]));
+  }, [selected]);
+
+  const lastNode=useRef(nodeId);
+  useEffect(() => {
+    if(lastNode.current===nodeId)return;
+    lastNode.current=nodeId;
     pageController.current?.abort(); facetController.current?.abort();
     pageGeneration.current++; facetGeneration.current++;
     setPage(EMPTY_PAGE);

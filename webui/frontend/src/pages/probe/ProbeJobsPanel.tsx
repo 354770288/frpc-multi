@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { probeApi } from '../../lib/api';
 import type { ProbeJob, ProbeJobDetail, ProbeTask, TestNode } from '../../lib/types';
@@ -12,17 +13,10 @@ import {
   CardTitle,
 } from '../../components/ui/card';
 import { Progress } from '../../components/ui/progress';
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../../components/ui/select';
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '../../components/ui/empty';
 import { formatLastSeen } from '../../lib/format';
 import { MODE_NAMES } from './NodeControls';
+import { ConfirmOverlay } from '../../components/Overlay';
 
 const STATES: Record<string, string> = {
   pending: '待执行',
@@ -80,12 +74,27 @@ export function ProbeJobsPanel({
   onChanged: () => void;
 }) {
   const [jobs, setJobs] = useState<ProbeJob[]>([]);
-  const [jobId, setJobId] = useState(() => sessionStorage.getItem('probe_job_id') || '');
+  const navigate = useNavigate();
+  const [searchParams,setSearchParams] = useSearchParams();
+  const listPage = Math.max(1,Number(searchParams.get('page') || 1) || 1);
+  const listState = searchParams.get('state') || '';
+  const listMode = searchParams.get('mode') || '';
+  const listNode = searchParams.get('listNode') || '';
+  const listTarget = searchParams.get('q') || '';
+  const fromDate = searchParams.get('from') || '';
+  const toDate = searchParams.get('to') || '';
+  const taskState = searchParams.get('taskState') || '';
+  const taskNode = searchParams.get('taskNode') || '';
+  const taskStage = searchParams.get('taskStage') || '';
+  const taskTarget = searchParams.get('target') || '';
+  const [listTotal,setListTotal] = useState(0);
+  const [jobId, setJobId] = useState(focusJobId || '');
   const [loadedDetail, setDetail] = useState<ProbeJobDetail | null>(null);
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirmStop,setConfirmStop] = useState(false);
   const [loading, setLoading] = useState(true);
   const changedRef = useRef(onChanged);
   changedRef.current = onChanged;
@@ -107,10 +116,8 @@ export function ProbeJobsPanel({
     };
   }, []);
   useEffect(() => {
-    if (focusJobId) {
-      setJobId(focusJobId);
-      setPage(1);
-    }
+    setJobId(focusJobId || '');
+    setPage(1);
   }, [focusJobId]);
   useEffect(() => {
     setDetail(null);
@@ -125,18 +132,24 @@ export function ProbeJobsPanel({
     const isCurrent = () =>
       mounted.current && selection.current === owner && generation === requestId.current;
     try {
-      const list = await probeApi.jobs();
+      const query:Record<string,string|number>={page:listPage,pageSize:20};
+      if(listState)query.state=listState;
+      if(listMode)query.mode=listMode;
+      if(listNode)query.nodeId=listNode;
+      if(listTarget)query.target=listTarget;
+      const start=fromDate && /^\d{4}-\d{2}-\d{2}$/.test(fromDate) ? new Date(`${fromDate}T00:00:00`) : null;
+      const end=toDate && /^\d{4}-\d{2}-\d{2}$/.test(toDate) ? new Date(`${toDate}T23:59:59.999`) : null;
+      if(start && Number.isFinite(start.getTime()))query.fromTime=start.toISOString().replace('Z','+00:00');
+      if(end && Number.isFinite(end.getTime()))query.toTime=end.toISOString().replace('Z','+00:00');
+      const list = await probeApi.jobsPage(query);
       if (!isCurrent()) return;
       setJobs(list.items);
-      const id = list.items.some((job) => job.id === jobId) ? jobId : list.items[0]?.id;
-      if (id && id !== jobId) {
-        setJobId(id);
-        return;
-      }
+      setListTotal(list.total);
+      const id = focusJobId || jobId;
       if (id) {
-        const next = await probeApi.job(id, page);
+        const next = await probeApi.jobFiltered(id,{page,pageSize:200,...(taskState ? {state:taskState} : {}),...(taskNode ? {nodeId:taskNode} : {}),...(taskStage ? {stage:taskStage} : {}),...(taskTarget ? {target:taskTarget} : {})});
         if (!isCurrent()) return;
-        const lastPage = Math.max(1, Math.ceil(next.taskTotal / next.pageSize));
+        const lastPage = Math.max(1, Math.ceil((next.filteredTaskTotal ?? next.taskTotal) / next.pageSize));
         if (page > lastPage) {
           setPage(lastPage);
           return;
@@ -152,7 +165,11 @@ export function ProbeJobsPanel({
     } finally {
       if (isCurrent()) setLoading(false);
     }
-  }, [jobId, page, owner]);
+  }, [jobId, page, owner, listPage, listState, listMode, listNode, listTarget, fromDate, toDate, focusJobId, taskState, taskNode, taskStage, taskTarget]);
+  const changeFilter = (key:string,value:string) => {
+    setSearchParams((current)=>{const next=new URLSearchParams(current);if(value)next.set(key,value);else next.delete(key);next.delete('page');return next;});
+    setPage(1);
+  };
   useEffect(() => {
     void load();
     const timer = setInterval(() => {
@@ -229,6 +246,7 @@ export function ProbeJobsPanel({
     !!detail.counts.pending &&
     detail.nodeIds.some((id) => nodes.some((node) => node.id === id && !node.online));
   const total = detail?.taskTotal || 0;
+  const filteredTotal = detail?.filteredTaskTotal ?? total;
   const done = detail
     ? Object.entries(detail.counts).reduce(
         (count, [state, n]) =>
@@ -246,25 +264,24 @@ export function ProbeJobsPanel({
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center gap-2">
-          <Select value={jobId} onValueChange={setJobId} disabled={busy}>
-            <SelectTrigger className="min-w-0 flex-1" aria-label="测试批次">
-              <SelectValue placeholder="选择批次" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {jobs.map((job) => (
-                  <SelectItem key={job.id} value={job.id}>
-                    {MODE_NAMES[job.mode]} · {formatLastSeen(job.createdAt)} ·{' '}
-                    {STATES[job.state] || job.state}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
+          <label className="text-sm">批次状态 <select className="ml-2 rounded-md border bg-background p-2" value={listState} onChange={(event)=>changeFilter('state',event.target.value)}><option value="">全部状态</option><option value="running">进行中</option><option value="done">已完成</option><option value="failed">失败</option><option value="stopped">已停止</option></select></label>
+          <label className="text-sm">类型 <select className="ml-2 rounded-md border bg-background p-2" value={listMode} onChange={(event)=>changeFilter('mode',event.target.value)}><option value="">全部类型</option>{(['discover','route','connectivity','speed','full'] as const).map((item)=><option key={item} value={item}>{MODE_NAMES[item]}</option>)}</select></label>
+          <label className="text-sm">执行节点 <select className="ml-2 rounded-md border bg-background p-2" value={listNode} onChange={(event)=>changeFilter('listNode',event.target.value)}><option value="">全部节点</option>{nodes.map((node)=><option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
+          <label className="text-sm">目标 <input className="ml-2 rounded-md border bg-background p-2" value={listTarget} onChange={(event)=>changeFilter('q',event.target.value)} placeholder="IP 或域名" /></label>
+          <label className="text-sm">起 <input className="ml-2 rounded-md border bg-background p-2" type="date" value={fromDate} onChange={(event)=>changeFilter('from',event.target.value)} /></label>
+          <label className="text-sm">止 <input className="ml-2 rounded-md border bg-background p-2" type="date" value={toDate} onChange={(event)=>changeFilter('to',event.target.value)} /></label>
           <Button size="sm" variant="outline" onClick={load} disabled={busy}>
             刷新
           </Button>
         </div>
+        <div className="grid gap-2" aria-label="测试批次列表">
+          {jobs.map((job) => <button key={job.id} type="button" onClick={()=>navigate(`/tests/${job.id}${searchParams.size ? `?${searchParams.toString()}` : ''}`)} className={`rounded-lg border p-3 text-left text-sm hover:bg-muted ${job.id===jobId ? 'border-primary' : ''}`}>
+            <span className="font-medium">{MODE_NAMES[job.mode]}</span> · {formatLastSeen(job.createdAt)} · <span>{STATES[job.state] || job.state}</span>
+            <span className="mt-1 block text-xs text-muted-foreground">执行节点 {job.nodeIds.map(nodeName).join('、')} · 阶段任务 {job.taskTotal} · 异常 {(job.counts.failed || 0)+(job.counts.skipped || 0)}</span>
+          </button>)}
+          {!loading && !jobs.length && <p className="text-sm text-muted-foreground">暂无匹配批次</p>}
+        </div>
+        <div className="flex items-center gap-2 text-sm"><span>第 {listPage} 页 / 共 {listTotal} 批</span><Button variant="outline" size="sm" disabled={listPage<=1} onClick={()=>setSearchParams((current)=>{const next=new URLSearchParams(current);next.set('page',String(listPage-1));return next;})}>上一页</Button><Button variant="outline" size="sm" disabled={listPage*20>=listTotal} onClick={()=>setSearchParams((current)=>{const next=new URLSearchParams(current);next.set('page',String(listPage+1));return next;})}>下一页</Button></div>
         {error && (
           <p role="alert" className="text-xs text-destructive">
             {error}
@@ -300,7 +317,7 @@ export function ProbeJobsPanel({
                 size="sm"
                 variant="destructive"
                 disabled={busy || detail.state !== 'running'}
-                onClick={() => actions('stop')}
+                onClick={() => setConfirmStop(true)}
               >
                 停止整个批次
               </Button>
@@ -360,6 +377,13 @@ export function ProbeJobsPanel({
               >
                 重试选中失败项
               </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <label>节点 <select className="ml-1 rounded-md border bg-background p-2" value={taskNode} onChange={(event)=>changeFilter('taskNode',event.target.value)}><option value="">全部</option>{nodes.map((node)=><option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
+              <label>阶段 <select className="ml-1 rounded-md border bg-background p-2" value={taskStage} onChange={(event)=>changeFilter('taskStage',event.target.value)}><option value="">全部</option>{['discover','route','connectivity','speed'].map((stage)=><option key={stage} value={stage}>{MODE_NAMES[stage as keyof typeof MODE_NAMES]}</option>)}</select></label>
+              <label>状态 <select className="ml-1 rounded-md border bg-background p-2" value={taskState} onChange={(event)=>changeFilter('taskState',event.target.value)}><option value="">全部</option>{Object.entries(STATES).map(([state,name])=><option key={state} value={state}>{name}</option>)}</select></label>
+              <label>目标 <input className="ml-1 rounded-md border bg-background p-2" value={taskTarget} onChange={(event)=>changeFilter('target',event.target.value)} placeholder="IP 或域名" /></label>
+              <span>匹配 {detail.filteredTaskTotal ?? detail.taskTotal} 项 / 全批次 {detail.taskTotal} 项</span>
             </div>
             <div className="max-h-[560px] overflow-auto">
               <table className="w-full min-w-[660px] text-xs">
@@ -462,7 +486,7 @@ export function ProbeJobsPanel({
             </div>
             <div className="flex items-center justify-end gap-2 text-xs">
               <span>
-                共 {total} 项 · 第 {page}/{Math.max(1, Math.ceil(total / (detail.pageSize || 200)))}{' '}
+                共 {filteredTotal} 项 · 第 {page}/{Math.max(1, Math.ceil(filteredTotal / (detail.pageSize || 200)))}{' '}
                 页
               </span>
               <Button
@@ -479,7 +503,7 @@ export function ProbeJobsPanel({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={busy || page * detail.pageSize >= total}
+                disabled={busy || page * detail.pageSize >= filteredTotal}
                 onClick={() => {
                   setPage(page + 1);
                   setSelected(new Set());
@@ -492,11 +516,12 @@ export function ProbeJobsPanel({
         ) : (
           <Empty>
             <EmptyHeader>
-              <EmptyTitle>{loading ? '批次加载中' : '尚无测试批次'}</EmptyTitle>
-              <EmptyDescription>选择执行节点和目标后开始测试。</EmptyDescription>
+              <EmptyTitle>{loading ? '批次加载中' : '选择批次查看详情'}</EmptyTitle>
+              <EmptyDescription>在上方列表选择批次，或新建测试。</EmptyDescription>
             </EmptyHeader>
           </Empty>
         )}
+        {confirmStop && detail && <ConfirmOverlay title="停止整个测试批次" description={`将停止批次 ${detail.id} 的待执行和运行中任务；正在执行的任务会先清理。`} confirmLabel="确认停止" variant="destructive" onCancel={()=>setConfirmStop(false)} onConfirm={()=>{setConfirmStop(false);void actions('stop');}} />}
       </CardContent>
     </Card>
   );

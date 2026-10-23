@@ -4,7 +4,7 @@
 
 ## 安装
 
-在面板「服务器库 → 测试节点」创建节点，复制只显示一次的安装命令，在 Debian/Ubuntu 的 amd64 或 arm64 服务器上执行。命令会传入 Console 地址和节点 Token。安装器安装 Python、mtr 和固定版本 frpc，并校验 Console 下发的程序包 SHA256。
+在面板「测试节点」创建节点，复制只显示一次的安装命令，在 Debian/Ubuntu 的 amd64 或 arm64 服务器上执行。命令会传入 Console 地址和节点 Token。安装器安装 Python、mtr 和固定版本 frpc，并校验 Console 下发的程序包 SHA256。
 
 程序：`/opt/frpc-probe/versions/`，当前版本：`/opt/frpc-probe/current`。配置：`/etc/frpc-probe/worker.env`，权限 `0600`。服务：`frpc-probe.service`。节点仅需能出站访问 Console 和被测目标。
 

@@ -278,3 +278,42 @@ class ProbeJobsTests(unittest.TestCase):
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]['server_ip'], ips[0])
         self.assertEqual(self.store.latest_results(self.a, 'connectivity', ips=[]), [])
+
+    def test_paged_jobs_and_history_keep_global_counts(self):
+        first=self.job(ips=['192.0.2.10'])
+        second=self.job(ips=['192.0.2.11'])
+        third=self.job(ips=['192.0.2.12'])
+        page=self.store.query_jobs(page=2,page_size=1,mode='connectivity',node_id=self.a)
+        self.assertEqual(page['total'],3)
+        self.assertEqual(len(page['items']),1)
+        self.assertEqual(self.store.query_jobs(page=1,page_size=20,target='192.0.2.11')['items'][0]['id'],second['id'])
+        self.assertEqual(self.store.query_jobs(page=1,page_size=20,target='192.0.2.11')['total'],1)
+        self.assertEqual(self.store.get_job(first['id'],node_id=self.b)['filteredTaskTotal'],0)
+        self.assertEqual(self.store.get_job(first['id'])['taskTotal'],1)
+        task=self.store.claim(self.a)
+        self.finish(self.a,task,{'frps_reachable':True})
+        history=self.store.history_page(self.a,'connectivity',ip='192.0.2.10',port=7000)
+        self.assertEqual(history['total'],1)
+        self.assertEqual(history['items'][0]['job_id'],first['id'])
+        self.assertEqual(self.store.history_page(self.b,'connectivity')['total'],0)
+        self.assertEqual(self.store.query_jobs(page=1,page_size=20)['total'],3)
+
+    def test_audit_pagination_searches_beyond_first_two_hundred(self):
+        from app.control.audit_store import AuditStore
+        audit=AuditStore(self.path)
+        for i in range(205):audit.create_log(username='tester',action='review',message=f'entry-{i}',success=i!=0)
+        result=audit.query_logs(page=5,page_size=50)
+        self.assertEqual(result['total'],205)
+        self.assertEqual(len(result['items']),5)
+        self.assertEqual(audit.query_logs(page=1,page_size=50,success=False)['total'],1)
+        self.assertEqual(audit.query_logs(page=1,page_size=50,keyword='entry-0')['total'],1)
+
+    def test_explicit_job_scope_rejects_empty_or_mixed_target(self):
+        from fastapi import HTTPException
+        from app.probe.router import JobCreate, jobs_create
+        with self.assertRaises(HTTPException) as empty:
+            jobs_create(JobCreate(mode='connectivity',nodeIds=[self.a],ips=[],targetScope='explicit'))
+        self.assertEqual(empty.exception.status_code,400)
+        with self.assertRaises(HTTPException) as mixed:
+            jobs_create(JobCreate(mode='connectivity',nodeIds=[self.a],ips=['192.0.2.1'],targetScope='all'))
+        self.assertEqual(mixed.exception.status_code,400)

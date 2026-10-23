@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   ChevronDown, Cloud, Globe, ListChecks, Pencil, Plus, RefreshCw, RefreshCcw, Trash2,
 } from 'lucide-react';
@@ -23,7 +23,7 @@ import {
   Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import { ConfirmOverlay, Overlay } from '../components/Overlay';
-import type { CloudflareZone, GroupInfo, LbDomain, LbDnsRecord, LbHealth, LbSyncLog } from '../lib/types';
+import type { CloudflareZone, GroupInfo, LbDomain, LbDnsRecord, LbHealth, LbSyncLog, LbSelectionConfig } from '../lib/types';
 
 type GroupBadgeVariant = 'destructive' | 'warning' | 'info' | 'success' | 'muted';
 
@@ -39,13 +39,17 @@ function groupVariant(color: GroupInfo['color'] | undefined): GroupBadgeVariant 
 }
 
 export function LbPage() {
+  const navigate=useNavigate();
+  const {domainId}=useParams<{domainId:string}>();
   const [domains, setDomains] = useState<LbDomain[]>([]);
   const [health, setHealth] = useState<LbHealth | null>(null);
   const [tokenConfigured, setTokenConfigured] = useState(false);
-  const [tokenMasked, setTokenMasked] = useState('');
   const [zones, setZones] = useState<CloudflareZone[]>([]);
   const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectionConfig,setSelectionConfig]=useState<LbSelectionConfig|null>(null);
+  const [observationNodeName,setObservationNodeName]=useState('');
+  const [loadError,setLoadError]=useState('');
 
   const [editing, setEditing] = useState<LbDomain | 'new' | null>(null);
   const [inspecting, setInspecting] = useState<LbDomain | null>(null);
@@ -54,16 +58,18 @@ export function LbPage() {
 
   const load = useCallback(async () => {
     try {
-      const [list, info, groupList, healthSnapshot] = await Promise.all([
-        lbApi.domains(), lbApi.cloudflare(), probeApi.groups(), lbApi.health().catch(() => null),
+      const [list, info, groupList, healthSnapshot,selection,testNodes] = await Promise.all([
+        lbApi.domains(), lbApi.cloudflare(), probeApi.groups(), lbApi.health(),lbApi.selectionConfig(),probeApi.testNodes().catch(()=>({items:[]})),
       ]);
       setDomains(list);
       setTokenConfigured(info.configured);
-      setTokenMasked(info.tokenMasked);
       setGroups(groupList);
       setHealth(healthSnapshot);
+      setSelectionConfig(selection);
+      setObservationNodeName(testNodes.items.find((node)=>node.id===selection.nodeId)?.name || selection.nodeId);
+      setLoadError('');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '负载均衡数据加载失败');
+      setLoadError(err instanceof Error ? err.message : '域名数据加载失败');
     } finally {
       setLoading(false);
     }
@@ -74,6 +80,7 @@ export function LbPage() {
     const timer = setInterval(load, 15000);
     return () => clearInterval(timer);
   }, [load]);
+  useEffect(()=>{if(!domainId || !domains.length)return;setInspecting(domains.find((item)=>item.id===Number(domainId)) || null);},[domainId,domains]);
 
   const syncNow = async (domain: LbDomain) => {
     setSyncing((prev) => ({ ...prev, [domain.id]: true }));
@@ -92,39 +99,19 @@ export function LbPage() {
   return (
     <div className="mx-auto max-w-[1600px] px-6 py-6">
       <div className="mb-5 flex flex-wrap items-center gap-3">
-        <h2 className="text-lg font-semibold">负载均衡</h2>
+        <h2 className="text-lg font-semibold">域名选优</h2>
         <Badge tone="muted">Cloudflare DDNS · 单 A 主备</Badge>
+        <Button asChild variant="outline" size="sm"><Link to="/lb/settings">域名设置</Link></Button>
         <div className="ml-auto flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={load} disabled={loading}>
             <RefreshCw size={13} />刷新
           </Button>
         </div>
       </div>
+      {loadError && <p role="alert" className="mb-4 rounded-md border border-destructive/30 p-3 text-sm text-destructive">{loadError}；当前信息可能不是最新。请重试。</p>}
+      <p className="mb-4 text-sm text-muted-foreground">域名选优来源：{observationNodeName || '加载中'} · 有效期 {selectionConfig?.maxAgeHours ?? '—'} 小时 · 实时健康检查：主控</p>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
-        <aside className="flex flex-col gap-4">
-          {/* 首次加载完成后再挂载：defaultOpen 依赖 configured，须等真实值就绪 */}
-          {!loading && (
-            <CloudflareCard
-              configured={tokenConfigured}
-              masked={tokenMasked}
-              zones={zones}
-              onZones={setZones}
-              onSaved={load}
-            />
-          )}
-          <LbSelectionCard onSaved={load} />
-          <Card>
-            <CardHeader><CardTitle className="text-sm">工作原理（单 A 主备）</CardTitle></CardHeader>
-            <CardContent className="flex flex-col gap-2 text-[11px] leading-5 text-muted-foreground">
-              <p>候选域名绑定服务器库的健康分组；A 记录永远只有一条，指向池内「最优健康」的 frps（按穿透测试可达与速率选优）。</p>
-              <p>frpc 的 serverAddr 与访问端填同一个域名，解析到同一台 → 命中率 100%（多 A 轮询会让访问端随机落到没有隧道的机器）。</p>
-              <p>当前指向的 frps 故障时（tcping 连续失败），自动把 A 记录切到下一台健康机器，frpc 断线重连即完成故障切换。</p>
-              <p>只增删带「frpc-multi-lb」托管标记的灰云记录，手动添加的 DNS 记录不受影响。</p>
-            </CardContent>
-          </Card>
-        </aside>
-
+      <div>
         <Card>
           <CardHeader className="flex-row flex-wrap items-center gap-2">
             <CardTitle className="text-sm">候选域名</CardTitle>
@@ -136,10 +123,10 @@ export function LbPage() {
           </CardHeader>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[880px]">
+              <table className="w-full min-w-[700px]">
                 <thead>
                   <tr className="border-b bg-muted/50">
-                    <Th>域名</Th><Th>Zone</Th><Th>绑定分组</Th><Th>当前指向</Th><Th>池</Th><Th>模式</Th><Th>最近同步</Th><Th align="right">操作</Th>
+                    <Th>域名</Th><Th>绑定分组</Th><Th>当前指向 / 选优</Th><Th>主控健康</Th><Th>最近同步</Th><Th align="right">操作</Th>
                   </tr>
                 </thead>
                 <tbody>
@@ -148,7 +135,8 @@ export function LbPage() {
                     const poolStates = domainHealth
                       ? domainHealth.poolIps.map((ip) => health?.states.find((s) => s.ip === ip) ?? null)
                       : [];
-                    const healthyCount = poolStates.filter((s) => !s || s.ok !== false).length;
+                    const healthyCount = poolStates.filter((s) => s?.ok === true).length;
+                    const unknownCount = domainHealth ? poolStates.filter((s) => s?.ok == null).length : domain.poolSize;
                     const pendingSwitch = domainHealth?.bestIp && domainHealth.bestIp !== domain.currentIp;
                     return (
                     <tr key={domain.id} className="border-b last:border-b-0 hover:bg-muted/50 transition-colors">
@@ -159,14 +147,13 @@ export function LbPage() {
                           {!domain.enabled && <Badge tone="muted">已停用</Badge>}
                         </div>
                       </Td>
-                      <Td><span className="text-xs text-muted-foreground">{domain.zoneName}</span></Td>
                       <Td>
                         <div className="flex items-center gap-1.5">
                           <Badge variant={groupVariant(groups.find((g) => g.name === domain.group)?.color)} dot>{domain.group}</Badge>
                           {domain.poolSize === 0 && (
                             <>
                               <Badge tone="warning">空池</Badge>
-                              <Link to="/probe" className="whitespace-nowrap text-[11px] text-primary underline underline-offset-2">
+                              <Link to="/servers" className="whitespace-nowrap text-[11px] text-primary underline underline-offset-2">
                                 去服务器库 →
                               </Link>
                             </>
@@ -179,24 +166,17 @@ export function LbPage() {
                             <span className="font-mono text-[12px]">{domain.currentIp}</span>
                             {pendingSwitch
                               ? <Badge tone="warning">建议 → {domainHealth?.bestIp}</Badge>
-                              : <Badge tone={poolStates.some((state) => state?.ip === domain.currentIp && state.ok === false) ? 'danger' : 'muted'} dot>{poolStates.some((state) => state?.ip === domain.currentIp && state.ok === false) ? '健康检查失败' : '当前指向'}</Badge>}
+                              : <Badge tone={poolStates.some((state) => state?.ip === domain.currentIp && state.ok === false) ? 'danger' : 'muted'} dot>{poolStates.some((state) => state?.ip === domain.currentIp && state.ok === false) ? '健康检查失败' : poolStates.some((state)=>state?.ip===domain.currentIp && state.ok===true) ? '健康' : '待检查'}</Badge>}
                           </div>
                         ) : (
                           <span className="text-xs text-muted-foreground">未同步</span>
                         )}
                         {domainHealth?.selection && <div className="mt-2"><SelectionReason selection={domainHealth.selection} /></div>}
-                        <Link to={`/probe?${new URLSearchParams({ tab: 'test', group: domain.group, nodeId: domainHealth?.selection.nodeId || 'console' })}`} className="mt-2 inline-block text-[11px] text-primary underline underline-offset-2">选择节点手动完整测试此分组 →</Link>
+                        <Link to={`/tests/new?${new URLSearchParams({ group: domain.group, nodeId: domainHealth?.selection.nodeId || 'console' })}`} className="mt-2 inline-block text-sm text-primary underline underline-offset-2">测量此分组 →</Link>
                       </Td>
                       <Td>
-                        <span className="font-mono text-xs tabular-nums" title={poolStates.map((s) => s ? `${s.ip} ${s.ok === false ? '✗' : '✓'}` : '').filter(Boolean).join('\n')}>
-                          {healthyCount}/{domain.poolSize} 健康
-                        </span>
-                      </Td>
-                      <Td>
-                        <span className="text-xs">
-                          {domain.syncMode === 'scheduled'
-                            ? `定时 ${Math.round(domain.intervalSeconds / 60)} 分钟`
-                            : '手动'}
+                        <span className="font-mono text-sm tabular-nums" title={poolStates.map((s) => s ? `${s.ip} ${s.ok === false ? '失败' : s.ok === true ? '健康' : '待检查'}` : '').filter(Boolean).join('\n')}>
+                          {healthyCount}/{domain.poolSize} 已确认健康{unknownCount ? ` · ${unknownCount} 待检查` : ''}
                         </span>
                       </Td>
                       <Td>
@@ -223,7 +203,7 @@ export function LbPage() {
                           <Button size="sm" variant="outline" onClick={() => syncNow(domain)} disabled={!!syncing[domain.id]}>
                             <RefreshCcw size={13} />{syncing[domain.id] ? '同步中…' : '立即同步'}
                           </Button>
-                          <Button size="sm" variant="outline" onClick={() => setInspecting(domain)}>
+                          <Button size="sm" variant="outline" onClick={() => {setInspecting(domain);navigate(`/lb/${domain.id}`);}}>
                             <ListChecks size={13} />记录
                           </Button>
                           <Button size="icon-sm" variant="secondary" onClick={() => setEditing(domain)} aria-label="编辑"><Pencil size={13} /></Button>
@@ -234,7 +214,7 @@ export function LbPage() {
                     );
                   })}
                   {!domains.length && (
-                    <tr><td colSpan={8} className="px-0 py-0">
+                    <tr><td colSpan={6} className="px-0 py-0">
                       {loading ? (
                         <div className="px-4 py-10 text-center text-xs text-muted-foreground">加载中…</div>
                       ) : !tokenConfigured ? (
@@ -242,7 +222,7 @@ export function LbPage() {
                           <EmptyHeader>
                             <EmptyMedia variant="icon"><Cloud /></EmptyMedia>
                             <EmptyTitle>先配置 Cloudflare</EmptyTitle>
-                            <EmptyDescription>展开左上角 Cloudflare 卡片，粘贴 API Token（Zone 读 + DNS 编辑权限）后即可添加候选域名。</EmptyDescription>
+                            <EmptyDescription>在“域名设置”中配置 Cloudflare API Token 后即可添加候选域名。</EmptyDescription>
                           </EmptyHeader>
                         </Empty>
                       ) : (
@@ -257,7 +237,7 @@ export function LbPage() {
                               <div>
                                 <span className="mr-1 font-medium text-foreground">① 备池</span>
                                 服务器库穿透测试，通过的服务器勾选批量改入健康分组
-                                <Link to="/probe" className="ml-1 text-primary underline underline-offset-2">去服务器库 →</Link>
+                                <Link to="/servers" className="ml-1 text-primary underline underline-offset-2">去服务器库 →</Link>
                               </div>
                               <div>
                                 <span className="mr-1 font-medium text-foreground">② 建域名</span>
@@ -266,7 +246,7 @@ export function LbPage() {
                               <div>
                                 <span className="mr-1 font-medium text-foreground">③ 使用</span>
                                 创建实例时选择该域名，serverAddr 自动填域名
-                                <Link to="/create" className="ml-1 text-primary underline underline-offset-2">去创建实例 →</Link>
+                                <Link to="/instances/new" className="ml-1 text-primary underline underline-offset-2">去创建实例 →</Link>
                               </div>
                             </div>
                           </EmptyContent>
@@ -296,7 +276,7 @@ export function LbPage() {
         />
       )}
       {inspecting && (
-        <RecordsDialog domain={inspecting} onClose={() => setInspecting(null)} />
+        <RecordsDialog domain={inspecting} onClose={() => {setInspecting(null);navigate('/lb');}} />
       )}
       {deleting && (
         <DeleteDomainDialog domain={deleting} onCancel={() => setDeleting(null)}
@@ -304,6 +284,25 @@ export function LbPage() {
       )}
     </div>
   );
+}
+
+export function LbSettingsPage() {
+  const [configured,setConfigured]=useState(false);
+  const [masked,setMasked]=useState('');
+  const [zones,setZones]=useState<CloudflareZone[]>([]);
+  const [error,setError]=useState('');
+  const load=useCallback(async()=>{
+    try {const info=await lbApi.cloudflare();setConfigured(info.configured);setMasked(info.tokenMasked);setError('');}
+    catch(err){setError(err instanceof Error ? err.message : '域名设置加载失败');}
+  },[]);
+  useEffect(()=>{void load();},[load]);
+  return <main className="mx-auto max-w-3xl space-y-4 px-4 py-6 sm:px-6">
+    <div><Link to="/lb" className="text-sm text-muted-foreground hover:underline">← 返回域名选优</Link><h2 className="mt-3 text-xl font-semibold">域名设置</h2><p className="text-sm text-muted-foreground">配置所有域名共享的观测来源与 Cloudflare 接入</p></div>
+    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+    <LbSelectionCard onSaved={()=>{}} />
+    <CloudflareCard configured={configured} masked={masked} zones={zones} onZones={setZones} onSaved={()=>void load()} />
+    <Card><CardHeader><CardTitle>工作原理</CardTitle></CardHeader><CardContent className="space-y-2 text-sm text-muted-foreground"><p>域名池内的候选由指定测试节点观测排序，主控持续检查当前 IP 的实时健康。</p><p>启用域名会在当前目标故障时切换到健康候选；“手动/定时”描述平时同步频率。</p><p>客户端 DNS 缓存和 frpc 重连时间会影响实际切换时长。</p></CardContent></Card>
+  </main>;
 }
 
 /** Cloudflare 凭据配置卡。 */
@@ -498,13 +497,13 @@ function DomainDialog({ domain, zones, groups, onClose, onSaved, onNeedZones }: 
             <Input value={ttl} onChange={(e) => setTtl(e.target.value)} inputMode="numeric" />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">同步模式</Label>
+            <Label className="text-sm">常规 DNS 同步方式</Label>
             <Select value={mode} onValueChange={(value) => setMode(value as 'manual' | 'scheduled')}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectGroup>
-                  <SelectItem value="manual">手动</SelectItem>
-                  <SelectItem value="scheduled">定时</SelectItem>
+                  <SelectItem value="manual">手动同步</SelectItem>
+                  <SelectItem value="scheduled">定时同步</SelectItem>
                 </SelectGroup>
               </SelectContent>
             </Select>
@@ -516,6 +515,7 @@ function DomainDialog({ domain, zones, groups, onClose, onSaved, onNeedZones }: 
             <Input value={interval} onChange={(e) => setIntervalValue(e.target.value)} inputMode="numeric" />
           </div>
         )}
+        <p className="text-sm text-muted-foreground">启用域名仍会按主控健康检查自动故障切换；这里设置的是平时的 DNS 同步方式。</p>
         <div className="flex items-center justify-between rounded-md bg-muted px-3 py-2">
           <span className="text-xs">启用（停用后不参与定时同步与故障切换）</span>
           <Switch checked={enabled} onCheckedChange={setEnabled} />

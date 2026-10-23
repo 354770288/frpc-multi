@@ -535,6 +535,11 @@ def list_history(
     raise HTTPException(status_code=404, detail="history 类型必须是 connectivity 或 speed")
 
 
+@router.get('/history/{kind}/page')
+def history_page(kind: Literal['route','connectivity','speed'],nodeId: str='console',page: int=Query(default=1,ge=1),pageSize: int=Query(default=50,ge=1,le=200),ip: str | None=None,port: int | None=Query(default=None,ge=1,le=65535),jobId: str | None=None,fromTime: str | None=None,toTime: str | None=None):
+    return job_store().history_page(nodeId,kind,page,pageSize,ip=ip,port=port,job_id=jobId,from_time=fromTime,to_time=toTime)
+
+
 @router.delete("/history/{kind}")
 def clear_history(kind: str, user: Annotated[str, Depends(require_auth)], nodeId: str="console"):
     if kind not in {"connectivity", "speed"}:
@@ -885,6 +890,7 @@ class JobCreate(BaseModel):
     mode: Literal['discover','route','connectivity','speed','full']
     nodeIds: list[str]
     ips: list[str] | None = None
+    targetScope: Literal['explicit','all'] | None = None
     targets: str | list[str] | None = None
     sourceUrl: str = ""
     exclude: str | list[str] | None = None
@@ -937,6 +943,10 @@ def nodes_delete(node_id: str):
 
 @router.post('/jobs')
 def jobs_create(payload: JobCreate):
+    if payload.mode != 'discover' and payload.targetScope == 'explicit' and not payload.ips:
+        raise HTTPException(400, '明确目标不能为空')
+    if payload.mode != 'discover' and payload.targetScope == 'all' and (payload.ips or payload.targets):
+        raise HTTPException(400, '全库目标不能同时指定端点')
     if payload.mode=='discover' and payload.sourceUrl.strip():
         manual=payload.targets if isinstance(payload.targets,str) else ','.join(payload.targets or [])
         payload.targets=_fetch_targets_from_url(payload.sourceUrl)+'\n'+manual
@@ -949,12 +959,14 @@ def jobs_create(payload: JobCreate):
 
 
 @router.get('/jobs')
-def jobs_list():return {'items':job_store().list_jobs()}
+def jobs_list(page: int | None = Query(default=None,ge=1),pageSize: int=Query(default=20,ge=1,le=100),mode: str | None=None,state: str | None=None,nodeId: str | None=None,target: str | None=None,fromTime: str | None=None,toTime: str | None=None):
+    if page is None:return {'items':job_store().list_jobs()}
+    return job_store().query_jobs(page,pageSize,mode=mode,state=state,node_id=nodeId,target=target,from_time=fromTime,to_time=toTime)
 
 
 @router.get('/jobs/{job_id}')
-def jobs_detail(job_id: str,page: int=Query(default=1,ge=1),pageSize: int=Query(default=200,ge=1,le=500)):
-    try:return job_store().get_job(job_id,page,pageSize)
+def jobs_detail(job_id: str,page: int=Query(default=1,ge=1),pageSize: int=Query(default=200,ge=1,le=500),nodeId: str | None=None,stage: str | None=None,state: str | None=None,target: str | None=None):
+    try:return job_store().get_job(job_id,page,pageSize,node_id=nodeId,stage=stage,state=state,target=target)
     except KeyError as exc:raise HTTPException(404,'任务不存在') from exc
 
 

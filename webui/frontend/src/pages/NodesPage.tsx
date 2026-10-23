@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   KeyRound, Plus, RefreshCw, Terminal, Trash2, UploadCloud, XCircle,
 } from 'lucide-react';
@@ -20,6 +21,8 @@ import type { Node, NodeInstall, SystemInfo } from '../lib/types';
 type ConfirmState = { action: NodeConfirmAction; node: Node };
 
 export function NodesPage() {
+  const [params]=useSearchParams();
+  const focusId=Number(params.get('focus'));
   const { nodeHealthById, nodeSystems, refreshAll } = useConsole();
   const [nodes, setNodes] = useState<Node[]>([]);
   const [name, setName] = useState('');
@@ -37,6 +40,7 @@ export function NodesPage() {
   };
 
   useEffect(() => { loadNodes(); const t = setInterval(loadNodes, 10000); return () => clearInterval(t); }, []);
+  useEffect(() => { if(!focusId || !nodes.some((n)=>n.id===focusId))return;const id=`deployment-node-${focusId}-${window.innerWidth>=1536 ? 'desktop' : 'mobile'}`;document.getElementById(id)?.scrollIntoView({block:'center'}); },[focusId,nodes]);
 
   const formError = useMemo(() => (!name.trim() ? '请填写节点名称' : ''), [name]);
   const offlineCount = nodes.filter((n) => !(n.online || n.status === 'online')).length;
@@ -96,7 +100,7 @@ export function NodesPage() {
   return (
     <div className="mx-auto max-w-[1600px] px-6 py-6">
       <div className="mb-6 flex items-center gap-3">
-        <h2 className="text-lg font-semibold">节点</h2>
+        <h2 className="text-lg font-semibold">部署节点</h2>
         <Badge tone="muted">{nodes.length} 个</Badge>
         <Button className="ml-auto" size="sm" variant="outline" onClick={loadNodes} disabled={loading}><RefreshCw size={13} />刷新</Button>
       </div>
@@ -107,7 +111,7 @@ export function NodesPage() {
           <CardContent className="p-0">
             <div className="grid gap-3 p-3 2xl:hidden">
               {nodes.map((node) => (
-                <div key={node.id} className="min-w-0 rounded-lg border border-border bg-card p-3">
+                <div key={node.id} id={`deployment-node-${node.id}-mobile`} className={`min-w-0 rounded-lg border border-border bg-card p-3 ${focusId===node.id ? 'ring-2 ring-primary' : ''}`}>
                   <div className="flex min-w-0 items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="truncate text-[13px] font-semibold text-foreground">{node.name}</div>
@@ -145,7 +149,7 @@ export function NodesPage() {
                 <thead><tr className="border-b bg-muted/50"><Th>名称</Th><Th>状态</Th><Th>实例健康</Th><Th>系统摘要</Th><Th>UUID</Th><Th>最近在线</Th><Th align="right">操作</Th></tr></thead>
                 <tbody>
                   {nodes.map((node) => (
-                    <tr key={node.id} className="border-b last:border-b-0 hover:bg-muted/50 transition-colors">
+                    <tr key={node.id} id={`deployment-node-${node.id}-desktop`} className={`border-b last:border-b-0 hover:bg-muted/50 transition-colors ${focusId===node.id ? 'bg-primary/10' : ''}`}>
                       <Td><span className="text-[13px] font-medium">{node.name}</span><OfflineHint node={node} /></Td>
                       <Td><StatusBadge node={node} /></Td>
                       <Td><NodeHealthSummary health={nodeHealthById[node.id]} /></Td>

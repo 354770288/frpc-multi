@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "baselineRefs": [
+    "docs/aegis/baseline/2026-10-21-probe-workers.md"
+  ],
+  "impactStatement": "docs/aegis/work/2026-10-22-frontend-workflow/impact-statement-draft.json",
+  "compatPlan": "旧链接保留跳转；测试执行与DNS算法保持现有行为",
+  "retirementPlan": "旧路由适配暂留；手写弹窗封装已迁至shadcn原语",
+  "evidenceBundle": [
+    "docs/aegis/work/2026-10-22-frontend-workflow/evidence-bundle-draft-local-verification.json"
+  ]
+}

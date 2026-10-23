@@ -89,3 +89,21 @@ class AuditStore:
             return [_record_from_row(row) for row in rows]
 
         return self._with_connection(read)
+
+    def query_logs(self, *, page: int=1, page_size: int=50, from_time: str | None=None,
+                   to_time: str | None=None, action: str | None=None, success: bool | None=None,
+                   node_id: int | None=None, local: bool=False, instance_name: str | None=None, keyword: str | None=None) -> dict:
+        filters=['1=1']; args=[]
+        for column,value in (('action',action),('success',int(success) if success is not None else None),
+                             ('node_id',node_id),('instance_name',instance_name)):
+            if value is not None:filters.append(column+'=?');args.append(value)
+        if from_time:filters.append('created_at>=?');args.append(from_time)
+        if to_time:filters.append('created_at<=?');args.append(to_time)
+        if local:filters.append('(node_id IS NULL OR node_id=0)')
+        if keyword:filters.append('(message LIKE ? OR username LIKE ? OR instance_name LIKE ?)');args.extend(['%'+keyword+'%']*3)
+        where=' AND '.join(filters)
+        def read(connection):
+            total=connection.execute('SELECT COUNT(*) FROM audit_logs WHERE '+where,args).fetchone()[0]
+            rows=connection.execute('SELECT * FROM audit_logs WHERE '+where+' ORDER BY id DESC LIMIT ? OFFSET ?',(*args,page_size,(page-1)*page_size)).fetchall()
+            return {'items':[_record_from_row(row) for row in rows],'page':page,'pageSize':page_size,'total':total}
+        return self._with_connection(read)

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "affectedLayers": [],
+  "owners": [],
+  "invariants": [],
+  "compatBoundary": "旧链接保留跳转；测试执行与DNS算法保持现有行为",
+  "nonGoals": [
+    "修改worker调度算法"
+  ]
+}

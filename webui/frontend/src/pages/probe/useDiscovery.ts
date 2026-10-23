@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { probeApi } from '../../lib/api';
 import type {
   DiscoverFacets,
@@ -17,22 +18,45 @@ const EMPTY_FACETS: DiscoverFacets = { labels: [], groups: [], imported: 0, new:
 type PageRefreshOptions = { recoverOutOfRange?: boolean };
 
 export function useDiscovery(active: boolean, nodeId = 'console') {
-  const [query, setQuery] = useState<DiscoverQuery>({
-    page: 1,
-    pageSize: 50,
-    library: 'all',
-    sort: 'discoveredAt',
-    order: 'desc',
+  const [,setUrl] = useSearchParams();
+  const [query, setQuery] = useState<DiscoverQuery>(() => {
+    const p=new URLSearchParams(window.location.search);const pageSize=Number(p.get('pageSize'));
+    const sort=p.get('sort'),order=p.get('order'),library=p.get('library');
+    return {page:Math.max(1,Number(p.get('page'))||1),pageSize:[25,50,100,200].includes(pageSize)?pageSize:50,
+      library:library==='imported'||library==='new'?library:'all',sort:sort==='ip'||sort==='latency'?sort:'discoveredAt',order:order==='asc'?'asc':'desc',
+      ...(p.has('q')?{q:p.get('q')||''}:{}),...(p.has('group')?{group:p.get('group')||''}:{}),...(p.has('label')?{label:p.get('label')||''}:{})};
   });
+  useEffect(()=>{
+    if(!active)return;
+    setUrl((current)=>{const next=new URLSearchParams(current);
+      for(const key of ['page','pageSize','library','sort','order','q','group','label'])next.delete(key);
+      next.set('page',String(query.page));next.set('pageSize',String(query.pageSize));next.set('library',query.library);next.set('sort',query.sort);next.set('order',query.order);
+      if(query.q!==undefined)next.set('q',query.q);if(query.group!==undefined)next.set('group',query.group);if(query.label!==undefined)next.set('label',query.label);
+      return next.toString()===current.toString()?current:next;
+    },{replace:true});
+  },[active,query,setUrl]);
   const queryRef = useRef(query);
   queryRef.current = query;
 
   const [page, setPage] = useState<DiscoverPage>(EMPTY_PAGE);
   const [facets, setFacets] = useState<DiscoverFacets>(EMPTY_FACETS);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [selectedTargets, setSelectedTargets] = useState<Map<number, string>>(new Map());
-
+  const [selected, setSelected] = useState<Set<number>>(() => {
+    try { return new Set(JSON.parse(sessionStorage.getItem('probe_selected_discovery') || '[]') as number[]); }
+    catch { return new Set(); }
+  });
+  const [selectedTargets, setSelectedTargets] = useState<Map<number, string>>(() => {
+    try { return new Map(JSON.parse(sessionStorage.getItem('probe_discovery_targets') || '[]') as [number,string][]); }
+    catch { return new Map(); }
+  });
   useEffect(() => {
+    sessionStorage.setItem('probe_selected_discovery', JSON.stringify([...selected]));
+    sessionStorage.setItem('probe_discovery_targets', JSON.stringify([...selectedTargets].filter(([id])=>selected.has(id))));
+  }, [selected, selectedTargets]);
+
+  const lastNode=useRef(nodeId);
+  useEffect(() => {
+    if(lastNode.current===nodeId)return;
+    lastNode.current=nodeId;
     pageController.current?.abort(); facetController.current?.abort();
     pageGeneration.current++; facetGeneration.current++;
     setPage(EMPTY_PAGE);

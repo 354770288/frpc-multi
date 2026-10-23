@@ -348,7 +348,7 @@ class ProbeJobStore:
             self._refresh(c)
             return {'ok':True,'changed':changed}
 
-    def _job(self,c,row,detail=False,page=1,page_size=200):
+    def _job(self,c,row,detail=False,page=1,page_size=200,*,node_id=None,stage=None,state=None,target=None):
         d=dict(row);d['options']=json.loads(d['options']);d['createdAt']=d.pop('created_at')
         d['counts']={r['state']:r['n'] for r in c.execute('SELECT state,COUNT(*) n FROM probe_tasks WHERE job_id=? GROUP BY state',(d['id'],))}
         d['nodeIds']=[r[0] for r in c.execute('SELECT DISTINCT node_id FROM probe_tasks WHERE job_id=?',(d['id'],))]
@@ -359,8 +359,16 @@ class ProbeJobStore:
         d['progress']={'scanned':aggregate[0],'foundCount':aggregate[1]}
         if detail:
             d['page']=page;d['pageSize']=page_size
+            filters=['job_id=?']; args=[d['id']]
+            for column,value in (('node_id',node_id),('stage',stage),('state',state)):
+                if value:
+                    filters.append(column+'=?'); args.append(value)
+            if target:
+                filters.append('ip LIKE ?'); args.append('%'+target.strip()+'%')
+            where=' AND '.join(filters)
+            d['filteredTaskTotal']=c.execute('SELECT COUNT(*) FROM probe_tasks WHERE '+where,args).fetchone()[0]
             tasks=[]
-            for r in c.execute('SELECT * FROM probe_tasks WHERE job_id=? ORDER BY created_at DESC,rowid DESC LIMIT ? OFFSET ?',(d['id'],page_size,(page-1)*page_size)):
+            for r in c.execute('SELECT * FROM probe_tasks WHERE '+where+' ORDER BY created_at DESC,rowid DESC LIMIT ? OFFSET ?',(*args,page_size,(page-1)*page_size)):
                 task=dict(r)
                 for a,b in [('id','taskId'),('job_id','jobId'),('node_id','nodeId'),('attempt_id','attemptId'),('lease_until','leaseUntil'),('created_at','createdAt')]:task[b]=task.pop(a)
                 task['payload']=json.loads(task['payload']);task['progress']=json.loads(task['progress'])
@@ -375,17 +383,47 @@ class ProbeJobStore:
             self._expire(c)
             return [self._job(c,r) for r in c.execute('SELECT * FROM probe_jobs ORDER BY created_at DESC LIMIT ?',(min(1000,max(1,limit)),))]
 
-    def get_job(self,job_id,page=1,page_size=200):
+    def query_jobs(self,page=1,page_size=20,*,mode=None,state=None,node_id=None,target=None,from_time=None,to_time=None):
+        with self._db() as c:
+            self._expire(c)
+            filters=['1=1']; args=[]
+            for column,value in (('mode',mode),('state',state)):
+                if value:filters.append('j.'+column+'=?');args.append(value)
+            if from_time:filters.append('j.created_at>=?');args.append(from_time)
+            if to_time:filters.append('j.created_at<=?');args.append(to_time)
+            if node_id or target:
+                sub=['t.job_id=j.id'];subargs=[]
+                if node_id:sub.append('t.node_id=?');subargs.append(node_id)
+                if target:sub.append('t.ip LIKE ?');subargs.append('%'+target.strip()+'%')
+                filters.append('EXISTS(SELECT 1 FROM probe_tasks t WHERE '+' AND '.join(sub)+')');args.extend(subargs)
+            where=' AND '.join(filters)
+            total=c.execute('SELECT COUNT(*) FROM probe_jobs j WHERE '+where,args).fetchone()[0]
+            rows=c.execute('SELECT j.* FROM probe_jobs j WHERE '+where+' ORDER BY j.created_at DESC,j.id DESC LIMIT ? OFFSET ?',(*args,page_size,(page-1)*page_size)).fetchall()
+            return {'items':[self._job(c,r) for r in rows],'page':page,'pageSize':page_size,'total':total}
+
+    def get_job(self,job_id,page=1,page_size=200,*,node_id=None,stage=None,state=None,target=None):
         with self._db() as c:
             self._expire(c)
             row=c.execute('SELECT * FROM probe_jobs WHERE id=?',(job_id,)).fetchone()
             if row is None:raise KeyError(job_id)
-            return self._job(c,row,True,max(1,page),min(500,max(1,page_size)))
+            return self._job(c,row,True,max(1,page),min(500,max(1,page_size)),node_id=node_id,stage=stage,state=state,target=target)
 
     def history(self,node_id,kind,ip=None,limit=200):
         with self._db() as c:
             rows=c.execute('SELECT * FROM probe_results WHERE node_id=? AND kind=?'+(' AND server_ip=?' if ip else '')+' ORDER BY id DESC LIMIT ?', (node_id,kind,*([ip] if ip else []),min(1000,max(1,limit))))
             return [self._flatten(r) for r in rows]
+
+    def history_page(self,node_id,kind,page=1,page_size=50,*,ip=None,port=None,job_id=None,from_time=None,to_time=None):
+        with self._db() as c:
+            filters=['node_id=?','kind=?'];args=[node_id,kind]
+            for column,value in (('server_ip',ip),('port',port),('job_id',job_id)):
+                if value is not None:filters.append(column+'=?');args.append(value)
+            if from_time:filters.append('test_time>=?');args.append(from_time)
+            if to_time:filters.append('test_time<=?');args.append(to_time)
+            where=' AND '.join(filters)
+            total=c.execute('SELECT COUNT(*) FROM probe_results WHERE '+where,args).fetchone()[0]
+            rows=c.execute('SELECT * FROM probe_results WHERE '+where+' ORDER BY id DESC LIMIT ? OFFSET ?',(*args,page_size,(page-1)*page_size)).fetchall()
+            return {'items':[self._flatten(r) for r in rows],'page':page,'pageSize':page_size,'total':total}
 
     @staticmethod
     def _flatten(row):

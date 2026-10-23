@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowDown, ArrowUp, ArrowUpDown, Download, FolderCog, Gauge, ListPlus,
   Network, Pencil, Play, Plus, Radar, RefreshCw, Rocket, Route, Tag,
@@ -24,15 +24,14 @@ import { useServers } from './probe/useServers';
 import { TestNodesDialog } from './probe/TestNodesDialog';
 import { ProbeJobsPanel } from './probe/ProbeJobsPanel';
 import { ProbeComparisonDialog } from './probe/ProbeComparisonDialog';
-import { ProbeLaunchPanel } from './probe/ProbeLaunchPanel';
 import { ScanDialog } from './probe/ScanDialog';
 import { ProbeRouteHistory } from './probe/ProbeRouteHistory';
-import { SourceSelect, supports } from './probe/NodeControls';
+import { SourceSelect } from './probe/NodeControls';
 import { ConfirmOverlay, Overlay } from '../components/Overlay';
 import { cn } from '../lib/utils';
 import { probeEndpointHost } from '../lib/probeEndpoint';
 import type {
-  ProbeMode, TestNode, ProbeJobDetail, GroupColor, GroupInfo, LabelCount, ServerConn,
+  TestNode, ProbeJobDetail, GroupColor, GroupInfo, LabelCount, ServerConn,
   ProbeConnectivityHistory, ProbeDashboard, ProbeServer,
   ProbeSpeedHistory, ProbeTestConfig,
 } from '../lib/types';
@@ -49,6 +48,12 @@ function labelVariant(label: string): 'destructive' | 'success' | 'muted' {
 
 function isRouteLabel(label: string): boolean {
   return label === 'CN2' || label === '非CN2' || label === '未路由测试';
+}
+
+function latestServerObservationTime(item: ProbeServer): string | null {
+  const times=[item.latestRoute?.test_time,item.latestConnectivity?.testTime,item.latestSpeed?.testTime]
+    .filter((value):value is string=>!!value);
+  return times.sort((a,b)=>Date.parse(b)-Date.parse(a))[0] || null;
 }
 
 type GroupBadgeVariant = 'destructive' | 'warning' | 'info' | 'success' | 'muted';
@@ -82,16 +87,17 @@ function GroupDotClass(color: GroupColor | undefined): string {
   return color ? dot[color] : 'bg-muted-foreground/40';
 }
 
-export function Probe() {
+export function Probe({ section = 'discover' }: { section?: 'discover' | 'servers' | 'test' | 'history' }) {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const { jobId: routeJobId } = useParams<{ jobId: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [nodeId, setNodeId] = useState(searchParams.get('nodeId') || 'console');
+  useEffect(() => { setNodeId(searchParams.get('nodeId') || 'console'); }, [searchParams]);
+  const changeNodeId = (id: string) => { setNodeId(id); setSearchParams((current) => { const next=new URLSearchParams(current); next.set('nodeId',id); return next; }); };
   const sourceRef = useRef(nodeId); sourceRef.current = nodeId;
   const historyRequestRef = useRef(0);
   const [nodes, setNodes] = useState<TestNode[]>([]);
   const [nodeError, setNodeError] = useState('');
-  const [launchMode, setLaunchMode] = useState<Exclude<ProbeMode, 'discover'>>('full');
-  const [launchScope, setLaunchScope] = useState(searchParams.get('group') || 'all');
   const [selectedNodes, setSelectedNodes] = useState<string[]>([searchParams.get('nodeId') || 'console']);
   const [focusJobId, setFocusJobId] = useState('');
   const [jobRevision, setJobRevision] = useState(0);
@@ -103,10 +109,18 @@ export function Probe() {
   useEffect(() => { void loadNodes(); const timer = setInterval(() => { if (document.visibilityState === 'visible') void loadNodes(); }, 10000); return () => clearInterval(timer); }, [loadNodes]);
   const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [stats, setStats] = useState<ProbeDashboard | null>(null);
+  const [dashboardError,setDashboardError] = useState('');
   const [loading, setLoading] = useState(true);
+  useEffect(()=>{setStats(null);setLoading(true);setDashboardError('');},[nodeId]);
 
   // 页面主 Tab（受控：勾选快速测试后自动切到「穿透测试」）；网段发现为第一子页
-  const [tab, setTab] = useState(searchParams.get('tab') === 'test' ? 'test' : 'discover');
+  const [tab, setTabState] = useState(section);
+  useEffect(() => { setTabState(section); }, [section]);
+  const setTab = (value: string) => {
+    setTabState(value as typeof section);
+    const path: Record<string,string> = { discover:'/discovery',servers:'/servers',test:'/tests',history:'/results' };
+    navigate(`${path[value] || '/discovery'}?nodeId=${encodeURIComponent(nodeId)}`);
+  };
   const discovery = useDiscovery(tab === 'discover', nodeId);
   // 服务器库同样走服务端分页（数据/轮询/跨页勾选由 hook 统一持有）
   const servers = useServers(tab === 'servers', nodeId);
@@ -146,7 +160,7 @@ export function Probe() {
   const [routeNodesOpen, setRouteNodesOpen] = useState(false);
 
   // 测试
-  const [starting, setStarting] = useState(false);
+  const starting = false;
 
   // 历史
   const [connHistory, setConnHistory] = useState<ProbeConnectivityHistory[]>([]);
@@ -162,18 +176,18 @@ export function Probe() {
   }, []);
 
   useEffect(() => {
-    loadConfig();
-  }, [loadConfig]);
+    if(section==='discover' || section==='test')void loadConfig();
+  }, [loadConfig,section]);
 
   // 仪表盘（轻量，所有 Tab 头部都在用）：首屏 + 仅页面可见时 10s 一拍
   const loadDashboard = useCallback(async () => {
     try {
       const value = await probeApi.dashboard(nodeId);
-      if (sourceRef.current === nodeId) setStats(value);
-    } catch {
-      /* 仪表盘加载失败不阻塞页面 */
+      if (sourceRef.current === nodeId) {setStats(value);setDashboardError('');}
+    } catch (err) {
+      if (sourceRef.current === nodeId) setDashboardError(err instanceof Error ? err.message : '统计加载失败');
     } finally {
-      setLoading(false);
+      if (sourceRef.current === nodeId)setLoading(false);
     }
   }, [nodeId]);
   const loadGroups = useCallback(async () => {
@@ -185,31 +199,24 @@ export function Probe() {
   }, []);
 
   useEffect(() => {
-    loadDashboard();
-    loadGroups();
+    if(section==='test')return;
+    void loadDashboard();
+    void loadGroups();
     const timer = setInterval(() => {
       if (document.visibilityState === 'visible') void loadDashboard();
     }, 10000);
     return () => clearInterval(timer);
-  }, [loadDashboard, loadGroups]);
+  }, [loadDashboard, loadGroups,section]);
 
   const jobStarted = (job: ProbeJobDetail) => {
-    setFocusJobId(job.id); setJobRevision((value) => value + 1); setTab('test');
+    setFocusJobId(job.id); setJobRevision((value) => value + 1); navigate(`/tests/${job.id}`);
   };
-  const startRouteTest = async () => {
+  const startRouteTest = () => {
     if (!dSelected.size) return;
-    setLaunchMode('route'); setLaunchScope('discover-selected'); setTab('test');
-    if (!selectedNodes.length || selectedNodes.some((id) => !nodes.some((node) => node.id === id && supports(node, 'route')))) {
-      toast.error('请到测试执行页选择支持路由的执行节点'); setTab('test'); return;
-    }
-    setStarting(true);
-    try {
-      const targets = [...discovery.selectedTargets.entries()].filter(([id]) => dSelected.has(id)).map(([, endpoint]) => endpoint);
-      if (!targets.length) { toast.error('没有勾选目标'); return; }
-      jobStarted(await probeApi.createJob({ mode: 'route', nodeIds: selectedNodes, ips: targets }));
-      toast.success(`路由任务已提交：${selectedNodes.length} 个节点分别测试 ${targets.length} 个目标`);
-    } catch (err) { toast.error(err instanceof Error ? err.message : '路由任务提交失败'); }
-    finally { setStarting(false); }
+    const targets=[...discovery.selectedTargets.entries()].filter(([id])=>dSelected.has(id)).map(([,endpoint])=>endpoint);
+    if (!targets.length) { toast.error('没有勾选目标'); return; }
+    sessionStorage.setItem('probe_selected_endpoints',JSON.stringify(targets));
+    navigate('/tests/new?selected=1&mode=route');
   };
 
   const loadHistory = useCallback(async (ip: string) => {
@@ -281,34 +288,10 @@ export function Probe() {
     [servers.selected],
   );
 
-  async function startTest(mode: Exclude<ProbeMode, 'discover'>, scope = 'all', ipsOverride?: string[]): Promise<boolean> {
-    if (!selectedNodes.length || selectedNodes.some((id) => !nodes.some((node) => node.id === id && supports(node, mode)))) {
-      toast.error('请先选择具备当前测试全部能力的执行节点'); setTab('test'); return false;
-    }
-    setStarting(true);
-    try {
-      let ips = ipsOverride || (scope === 'selected' ? selectedIps : scope === 'discover-selected' ? [...discovery.selectedTargets.entries()].filter(([id]) => dSelected.has(id)).map(([, endpoint]) => endpoint) : undefined);
-      if (!ips && scope !== 'all') {
-        ips = [];
-        let page = 1;
-        while (true) {
-          const result = await probeApi.servers({ page, pageSize: 200, conn: 'all', sort: 'ip', order: 'asc', group: scope }, undefined, nodeId);
-          ips.push(...result.items.map((row) => row.ip));
-          if (page * result.pageSize >= result.total) break;
-          page++;
-        }
-      }
-      if (ips && !ips.length) { toast.error('目标列表为空'); return false; }
-      jobStarted(await probeApi.createJob({ mode, nodeIds: selectedNodes, ips }));
-      toast.success('批次已提交，各节点分别运行完整目标');
-      return true;
-    } catch (err) { toast.error(err instanceof Error ? err.message : '测试提交失败'); return false; }
-    finally { setStarting(false); }
-  }
-  async function quickTest(mode: 'connectivity' | 'speed' | 'full') {
+  function quickTest(mode: 'connectivity' | 'speed' | 'full') {
     if (!selectedIps.length) return;
-    setLaunchMode(mode); setLaunchScope('selected'); setTab('test');
-    await startTest(mode, 'selected', selectedIps);
+    sessionStorage.setItem('probe_selected_endpoints',JSON.stringify(selectedIps));
+    navigate(`/tests/new?selected=1&mode=${mode}`);
   }
 
   async function deleteServer() {
@@ -330,14 +313,16 @@ export function Probe() {
     const targets = [...servers.selected.entries()];
     setDeletingSelected(false);
     let failed = 0;
+    const removed: number[] = [];
     for (const [id] of targets) {
       try {
         await probeApi.deleteServer(id);
+        removed.push(id);
       } catch {
         failed += 1;
       }
     }
-    servers.removeSelected(targets.map(([id]) => id));
+    servers.removeSelected(removed);
     if (failed) toast.warning(`已删除 ${targets.length - failed} 台，${failed} 台失败`);
     else toast.success(`已删除 ${targets.length} 台`);
     servers.refreshAll({ recoverOutOfRange: true }).catch(() => {});
@@ -362,23 +347,24 @@ export function Probe() {
   return (
     <div className="mx-auto max-w-[1600px] px-6 py-6">
       <div className="mb-5 flex flex-wrap items-center gap-3">
-        <h2 className="text-lg font-semibold">服务器库</h2>
+        <h2 className="text-lg font-semibold">{{discover:'网段发现',servers:'服务器库',test:'测试任务',history:'测试结果'}[section]}</h2>
         <Badge tone="muted">frps 验收</Badge>
         <div className="ml-auto flex items-center gap-3">
-          <SourceSelect nodes={nodes} value={nodeId} onChange={setNodeId} />
-          <Button size="sm" variant="outline" onClick={() => setRouteNodesOpen(true)}>测试节点</Button>
-          <ProbeStatCards stats={stats} />
-          <Button size="sm" variant="outline"
+          {section !== 'test' && <SourceSelect nodes={nodes} value={nodeId} onChange={changeNodeId} />}
+          <Button size="sm" variant="outline" onClick={() => navigate('/test-nodes')}>测试节点</Button>
+          {section !== 'test' && <ProbeStatCards stats={stats} />}
+          {section !== 'test' && <Button size="sm" variant="outline"
             onClick={() => { loadDashboard(); servers.refreshAll().catch(() => {}); }} disabled={loading}>
             <RefreshCw size={13} />刷新
-          </Button>
+          </Button>}
         </div>
       </div>
 
       {nodeError && <p role="alert" className="mb-3 text-xs text-destructive">{nodeError}</p>}
-      <p className="mb-3 text-xs text-muted-foreground">当前观测来源：{nodes.find((node) => node.id === nodeId)?.name || nodeId}。表格、统计、排序与历史均来自该节点；跨页勾选目标保留，执行节点在测试页单独选择。</p>
+      {dashboardError && <p role="alert" className="mb-3 text-sm text-destructive">{dashboardError}；统计不可用，请重试。</p>}
+      {section !== 'test' && <p className="mb-3 text-sm text-muted-foreground">结果来源：{nodes.find((node) => node.id === nodeId)?.name || nodeId}。切换来源只改变显示，测试执行节点在提交界面选择。</p>}
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList>
+        <TabsList className="sr-only">
           <TabsTrigger value="discover">网段发现</TabsTrigger>
           <TabsTrigger value="servers">服务器库</TabsTrigger>
           <TabsTrigger value="test">测试执行</TabsTrigger>
@@ -666,13 +652,13 @@ export function Probe() {
                         <Td><SpeedText latest={item.latestSpeed} /></Td>
                         <Td>
                           <span className="whitespace-nowrap text-xs text-muted-foreground">
-                            {item.latestSpeed ? formatLastSeen(item.latestSpeed.testTime) : '—'}
+                            {latestServerObservationTime(item) ? formatLastSeen(latestServerObservationTime(item)!) : '—'}
                           </span>
                         </Td>
                         <Td align="right">
                           <div className="flex items-center justify-end gap-1">
                             <Button size="sm" variant="outline" onClick={() => setComparing({ ip: probeEndpointHost(item.ip), port: item.port })}>对比</Button>
-                            <Button size="sm" variant="outline" onClick={() => navigate(`/create?server=${encodeURIComponent(item.ip)}`)} title="用此服务器创建 frpc 实例">
+                            <Button size="sm" variant="outline" onClick={() => navigate(`/instances/new?${new URLSearchParams({server:probeEndpointHost(item.ip),port:String(item.port)})}`)} title="用此服务器创建 frpc 实例">
                               <Rocket size={13} />创建实例
                             </Button>
                             <Button size="icon-sm" variant="secondary" onClick={() => setEditing(item)} aria-label="编辑"><Pencil size={13} /></Button>
@@ -716,9 +702,9 @@ export function Probe() {
 
         {/* ---- 测试执行 ---- */}
         {tab === 'test' && <TabsContent value="test" className="mt-4">
-          <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
-            <ProbeJobsPanel nodes={nodes} focusJobId={focusJobId} revision={jobRevision} onChanged={refreshObservations} />
-            <ProbeLaunchPanel nodes={nodes} selectedNodes={selectedNodes} onNodes={setSelectedNodes} selectedIps={selectedIps} groups={groups} busy={starting} onStart={startTest} onSettings={() => { void loadConfig(); setConfigOpen(true); }} mode={launchMode} onMode={setLaunchMode} scope={launchScope} onScope={setLaunchScope} discoveryCount={dSelected.size} />
+          <div className="space-y-4">
+            <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => {void loadConfig();setConfigOpen(true);}}>测试设置</Button><Button onClick={() => navigate('/tests/new')}>新建测试</Button></div>
+            <ProbeJobsPanel nodes={nodes} focusJobId={routeJobId || focusJobId} revision={jobRevision} onChanged={refreshObservations} />
           </div>
         </TabsContent>}
 
@@ -1536,7 +1522,7 @@ function ImportSelectedDialog({ ids, count, groups, defaultGroup, onClose, onDon
       const result = await probeApi.discoverImport(ids, group || undefined);
       toast.success(`导入完成：新增 ${result.inserted} 台，跳过已在库 ${result.skipped} 台`, {
         duration: 6000,
-        action: { label: '去跑穿透测试', onClick: () => navigate('/probe') },
+        action: { label: '查看服务器库', onClick: () => navigate('/servers') },
       });
       onDone();
     } catch (err) {
@@ -1563,7 +1549,7 @@ function ImportSelectedDialog({ ids, count, groups, defaultGroup, onClose, onDon
           </Select>
         </div>
         <p className="text-[11px] leading-4 text-muted-foreground">
-          只导入未入库的记录；记录上的标签会一并带入。导入后可到「穿透测试」子页直接开测。
+          只导入未入库的记录；记录上的标签会一并带入。导入后可在服务器库勾选目标并新建测试。
         </p>
       </div>
       <div className="mt-5 flex justify-end gap-2">

@@ -25,7 +25,7 @@ import { formatLastSeen } from '../../lib/format';
 export const SELECTION_REASONS: Record<LbSelection['reason'], string> = {
   console_observation: '按主控已有穿透与速率观测选优',
   no_healthy_candidates: '没有健康候选，等待健康检查恢复',
-  keep_healthy_current: '当前 IP 健康，但其指定来源观测缺失或过期，保留当前指向',
+  keep_healthy_current: '当前 IP 尚未判为故障；指定来源观测缺失或过期，保留当前指向',
   node_observation: '按指定节点有效观测选优',
   healthy_ip_order: '指定来源观测缺失或过期，按健康 IP 顺序选择',
 };

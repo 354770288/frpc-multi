@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     message TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_audit_logs_time ON audit_logs(created_at DESC,id DESC);
 
 CREATE TABLE IF NOT EXISTS probe_servers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,6 +109,7 @@ CREATE TABLE IF NOT EXISTS probe_jobs (
     id TEXT PRIMARY KEY, mode TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'running',
     options TEXT NOT NULL, created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_probe_jobs_time ON probe_jobs(created_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS probe_tasks (
     id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES probe_jobs(id),
     node_id TEXT NOT NULL, stage TEXT NOT NULL, ip TEXT NOT NULL DEFAULT '',
@@ -126,6 +128,7 @@ CREATE TABLE IF NOT EXISTS probe_results (
     data TEXT NOT NULL, UNIQUE(task_id,attempt_id)
 );
 CREATE INDEX IF NOT EXISTS idx_probe_results_source ON probe_results(node_id,kind,server_ip,port,id);
+CREATE INDEX IF NOT EXISTS idx_probe_results_history ON probe_results(node_id,kind,id DESC);
 CREATE TABLE IF NOT EXISTS probe_discover_observations (
     node_id TEXT NOT NULL, ip TEXT NOT NULL, port INTEGER NOT NULL,
     latency_ms REAL NOT NULL, discovered_at TEXT NOT NULL,

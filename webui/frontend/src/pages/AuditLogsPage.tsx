@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   CheckCircle2, ChevronDown, ChevronRight, ExternalLink, Filter,
   RefreshCw, RotateCcw, XCircle,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { auditLogsApi } from '../lib/api';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -32,59 +32,57 @@ const AL: Record<string, string> = {
 };
 
 export function AuditLogsPage() {
-  const { nodes, auditLogs, setAuditLogs } = useConsole();
+  const { nodes } = useConsole();
   const navigate = useNavigate();
-  const [logs, setLogs] = useState<AuditLog[]>(auditLogs);
+  const [params,setParams] = useSearchParams();
+  const page = Math.max(1,Number(params.get('page') || 1) || 1);
+  const tf=params.get('time') || 'all', nf=params.get('node') || 'all', af=params.get('action') || 'all', rf=params.get('result') || 'all';
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [total,setTotal] = useState<number | null>(null);
+  const [error,setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [tf, setTf] = useState<string>('all');
-  const [nf, setNf] = useState<string>('all');
-  const [af, setAf] = useState<string>('all');
-  const [rf, setRf] = useState<string>('all');
-  const [iq, setIq] = useState('');
+  const [iq, setIq] = useState(params.get('q') || '');
   const [em, setEm] = useState<Record<number, boolean>>({});
+  const generation=useRef(0);
 
   const nodeNameById = useMemo(() => new Map(nodes.map((n) => [n.id, n.name])), [nodes]);
-  const actions = useMemo(() => [...new Set(logs.map((l) => l.action))].sort(), [logs]);
-  const hasLocal = logs.some((l) => isLocal(l.nodeId));
-
-  const filtered = useMemo(() => {
-    const kw = iq.trim().toLowerCase();
-    return logs.filter((l) => {
-      if (!matchTime(l.createdAt, tf)) return false;
-      if (nf !== 'all' && nodeVal(l.nodeId) !== nf) return false;
-      if (af !== 'all' && l.action !== af) return false;
-      if (rf === 'success' && !l.success) return false;
-      if (rf === 'failed' && l.success) return false;
-      if (kw && !(l.instanceName || '').toLowerCase().includes(kw)) return false;
-      return true;
-    });
-  }, [logs, tf, nf, af, rf, iq]);
+  const actions = useMemo(() => [...new Set([...Object.keys(AL),...logs.map((l) => l.action)])].sort(), [logs]);
+  const filtered=logs;
+  const change=(key:string,value:string)=>setParams((current)=>{const next=new URLSearchParams(current);if(value && value!=='all')next.set(key,value);else next.delete(key);next.delete('page');return next;});
+  useEffect(()=>{const timer=window.setTimeout(()=>{if(iq!==(params.get('q') || ''))change('q',iq.trim());},300);return()=>window.clearTimeout(timer);},[iq,params]);
 
   const failedCount = logs.filter((l) => !l.success).length;
 
   const load = useCallback(async () => {
+    const id=++generation.current;
     setLoading(true);
-    try { const d = await auditLogsApi.list(200); setLogs(d); setAuditLogs(d); }
-    catch (e) { toast.error(e instanceof Error ? e.message : '审计日志加载失败'); }
-    finally { setLoading(false); }
-  }, [setAuditLogs]);
+    const query:Record<string,string|number|boolean>={page,pageSize:50};
+    if(tf!=='all') {const start=new Date();if(tf==='today')start.setHours(0,0,0,0);else start.setDate(start.getDate()-(tf==='7d' ? 7 : 30));query.fromTime=start.toISOString().replace('Z','+00:00');}
+    if(nf==='local')query.local=true;else if(nf.startsWith('node:'))query.nodeId=Number(nf.slice(5));
+    if(af!=='all')query.action=af;
+    if(rf!=='all')query.success=rf==='success';
+    if(params.get('q'))query.q=params.get('q')!;
+    try {const data=await auditLogsApi.page(query);if(id===generation.current){setLogs(data.items);setTotal(data.total);setError('');}}
+    catch (e) {if(id===generation.current){const message=e instanceof Error ? e.message : '操作记录加载失败';setError(message);toast.error(message);}}
+    finally {if(id===generation.current)setLoading(false);}
+  }, [page,tf,nf,af,rf,params]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {void load();return()=>{generation.current++;};}, [load]);
 
   return (
     <div className="mx-auto max-w-[1600px] px-6 py-6">
       <div className="mb-6 flex items-center gap-3">
-        <h2 className="text-lg font-semibold">审计日志</h2>
-        <Badge tone="muted">{logs.length} 条</Badge>
-        {failedCount > 0 && <Badge tone="danger">{failedCount} 条失败</Badge>}
+        <h2 className="text-lg font-semibold">操作记录</h2>
+        <Badge tone="muted">{total ?? '—'} 条匹配</Badge>
+        {failedCount > 0 && <Badge tone="danger">本页 {failedCount} 条失败</Badge>}
         <Button className="ml-auto" size="sm" variant="outline" onClick={load} disabled={loading}><RefreshCw size={13} />刷新</Button>
       </div>
 
       <Card className="mb-4">
         <CardHeader className="pb-2">
-          <CardTitle className="inline-flex items-center gap-2 text-sm"><Filter size={14} />客户端筛选</CardTitle>
+          <CardTitle className="inline-flex items-center gap-2 text-sm"><Filter size={14} />服务端筛选</CardTitle>
           <CardAction>
-            <Button size="sm" variant="ghost" onClick={() => { setTf('all'); setNf('all'); setAf('all'); setRf('all'); setIq(''); }}>
+            <Button size="sm" variant="ghost" onClick={() => {setParams(new URLSearchParams());setIq('');}}>
               <RotateCcw size={13} />重置
             </Button>
           </CardAction>
@@ -92,23 +90,25 @@ export function AuditLogsPage() {
         <CardContent>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
             <div className="space-y-1.5"><Label className="text-[11px]">时间范围</Label>
-              <S value={tf} onChange={setTf} label="时间范围" options={[{ value: 'all', label: '全部时间' }, { value: 'today', label: '今天' }, { value: '7d', label: '最近 7 天' }, { value: '30d', label: '最近 30 天' }]} /></div>
+              <S value={tf} onChange={(v)=>change('time',v)} label="时间范围" options={[{ value: 'all', label: '全部时间' }, { value: 'today', label: '今天' }, { value: '7d', label: '最近 7 天' }, { value: '30d', label: '最近 30 天' }]} /></div>
             <div className="space-y-1.5"><Label className="text-[11px]">节点</Label>
-              <S value={nf} onChange={setNf} label="节点" options={[{ value: 'all', label: '全部节点' }, ...(hasLocal ? [{ value: 'local', label: '本机' }] : []), ...nodes.map((n) => ({ value: `node:${n.id}`, label: n.name }))]} /></div>
+              <S value={nf} onChange={(v)=>change('node',v)} label="部署节点" options={[{ value: 'all', label: '全部节点' }, { value: 'local', label: '主控本机' }, ...nodes.map((n) => ({ value: `node:${n.id}`, label: n.name }))]} /></div>
             <div className="space-y-1.5"><Label className="text-[11px]">动作</Label>
-              <S value={af} onChange={setAf} label="动作" options={[{ value: 'all', label: '全部动作' }, ...actions.map((a) => ({ value: a, label: AL[a] || a }))]} /></div>
+              <S value={af} onChange={(v)=>change('action',v)} label="动作" options={[{ value: 'all', label: '全部动作' }, ...actions.map((a) => ({ value: a, label: AL[a] || a }))]} /></div>
             <div className="space-y-1.5"><Label className="text-[11px]">结果</Label>
-              <S value={rf} onChange={setRf} label="结果" options={[{ value: 'all', label: '全部结果' }, { value: 'success', label: '成功' }, { value: 'failed', label: '失败' }]} /></div>
+              <S value={rf} onChange={(v)=>change('result',v)} label="结果" options={[{ value: 'all', label: '全部结果' }, { value: 'success', label: '成功' }, { value: 'failed', label: '失败' }]} /></div>
             <div className="space-y-1.5"><Label className="text-[11px]">实例</Label><Input value={iq} onChange={(e) => setIq(e.target.value)} placeholder="按实例名筛选" /></div>
           </div>
         </CardContent>
       </Card>
 
+      {error && <p role="alert" className="mb-4 rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{error}；当前列表可能是上一次加载的数据。</p>}
+
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">最近操作</CardTitle>
           <CardAction>
-            <span className="text-[11px] text-muted-foreground">显示 {filtered.length} / {logs.length}</span>
+            <span className="text-sm text-muted-foreground">本页 {filtered.length} / 共 {total ?? '—'}</span>
           </CardAction>
         </CardHeader>
         <CardContent className="p-0">
@@ -157,6 +157,7 @@ export function AuditLogsPage() {
           </div>
         </CardContent>
       </Card>
+      <div className="mt-4 flex items-center justify-end gap-2 text-sm"><span>第 {page} 页 / 共 {total ?? '—'} 条</span><Button variant="outline" size="sm" disabled={page<=1} onClick={()=>setParams((current)=>{const next=new URLSearchParams(current);next.set('page',String(page-1));return next;})}>上一页</Button><Button variant="outline" size="sm" disabled={total===null || page*50>=total} onClick={()=>setParams((current)=>{const next=new URLSearchParams(current);next.set('page',String(page+1));return next;})}>下一页</Button></div>
     </div>
   );
 }
@@ -164,10 +165,7 @@ export function AuditLogsPage() {
 function S({ value, onChange, label, options }: { value: string; onChange: (v: string) => void; label: string; options: { value: string; label: string }[] }) { return <Select value={value} onValueChange={onChange}><SelectTrigger aria-label={label} className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{options.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectGroup></SelectContent></Select>; }
 function Msg({ l, ex, onT }: { l: AuditLog; ex: boolean; onT: () => void }) { const m = l.message || '—'; const lo = m.length > 96; return <div className="max-w-[420px]"><span className={`whitespace-pre-wrap break-words text-xs ${l.success ? 'text-muted-foreground' : 'font-medium text-destructive'}`}>{lo && !ex ? `${m.slice(0, 96)}...` : m}</span>{lo && <Button variant="link" size="xs" onClick={onT} className="ml-2 h-auto p-0">{ex ? <ChevronDown /> : <ChevronRight />}{ex ? '收起' : '展开'}</Button>}</div>; }
 function MobileFact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="min-w-0 rounded-md bg-muted px-2.5 py-2"><div className="text-[10px] text-muted-foreground">{label}</div><div className={`mt-0.5 truncate text-[12px] text-foreground ${mono ? 'font-mono tabular-nums text-muted-foreground' : ''}`} title={value}>{value}</div></div>; }
-function nodeVal(id: number | null) { return isLocal(id) ? 'local' : `node:${id}`; }
-function matchTime(v: string, f: string) { if (f === 'all') return true; const t = new Date(v).getTime(); if (Number.isNaN(t)) return false; if (f === 'today') { const s = new Date(); s.setHours(0, 0, 0, 0); return t >= s.getTime(); } return t >= Date.now() - (f === '7d' ? 7 : 30) * 86400000; }
 function nl(id: number | null, m: Map<number, string>) { return id === null || id === 0 ? '本机' : m.get(id) || `节点 #${id}`; }
-function isLocal(id: number | null) { return id === null || id === 0; }
 function isRem(id: number | null) { return typeof id === 'number' && id > 0; }
 function fmt(v: string) { if (!v) return '—'; const d = new Date(v); if (Number.isNaN(d.getTime())) return v; const p = (n: number) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
 function Th({ children, align = 'left' }: { children: ReactNode; align?: 'left' | 'right' }) { return <th className={`px-4 py-2.5 text-[11px] font-medium text-muted-foreground ${align === 'right' ? 'text-right' : 'text-left'}`}>{children}</th>; }

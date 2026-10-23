@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-10-22-frontend-workflow",
+  "currentTodo": "CI镜像构建、备份与生产验收",
+  "completedTodos": [
+    "兼容分页和显式目标、导航重组、三步新建、草稿保护、域名状态、历史与审计服务端分页已实现",
+    "后端250项、Vitest3项、Playwright11项与前端构建全部通过；真实备份索引迁移和分页性能通过"
+  ],
+  "activeSlice": "rollout",
+  "evidenceRefs": [
+    "docs/aegis/work/2026-10-22-frontend-workflow/evidence-bundle-draft-local-verification.json"
+  ],
+  "blockedOn": null,
+  "nextStep": "提交推送后等待CI成功，生产备份与镜像回滚准备，然后更新主控并只读验收",
+  "updatedAt": "2026-10-22"
+}

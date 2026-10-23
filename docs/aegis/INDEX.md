@@ -43,3 +43,18 @@
 | 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-rollout-query-repair.json | 2026-10-20-probe-workers evidence rollout-query-repair |
 | 2026-10-21 | adr | docs/aegis/adr/ADR-0001-durable-probe-workers.md | ADR-0001 - 统一持久化测试任务与独立观测来源 |
 | 2026-10-21 | artifact | docs/aegis/work/2026-10-20-probe-workers/evidence-bundle-draft-deployment-final.json | 全功能测试节点最终部署验收 |
+| 2026-10-22 | work | docs/aegis/work/2026-10-22-frontend-workflow/10-intent.md | 前端流程重组 intent |
+| 2026-10-22 | plan | docs/aegis/plans/2026-10-22-frontend-workflow.md | 前端流程重组实施计划 |
+| 2026-10-22 | work | docs/aegis/work/2026-10-22-frontend-workflow/20-checkpoint.md | 前端流程重组 checkpoint |
+| 2026-10-22 | work | docs/aegis/work/2026-10-22-frontend-workflow/90-evidence.md | 前端流程重组 evidence |
+| 2026-10-22 | work | docs/aegis/work/2026-10-22-frontend-workflow/99-reflection.md | 前端流程重组 reflection |
+| 2026-10-22 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/task-intent-draft.json | 前端流程重组 task intent draft |
+| 2026-10-22 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/baseline-read-set-hint.json | 前端流程重组 baseline read-set hint |
+| 2026-10-22 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/baseline-usage-draft.json | 前端流程重组 baseline usage draft |
+| 2026-10-22 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/impact-statement-draft.json | 前端流程重组 impact statement draft |
+| 2026-10-22 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/todo-checkpoint-draft.json | 前端流程重组 todo checkpoint draft |
+| 2026-10-22 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/drift-check-draft.json | 前端流程重组 drift check draft |
+| 2026-10-22 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/resume-state-hint.json | 2026-10-22-frontend-workflow resume state hint |
+| 2026-10-22 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/evidence-bundle-draft-local-verification.json | 2026-10-22-frontend-workflow evidence local-verification |
+| 2026-10-22 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/gate-input-pack.json | 2026-10-22-frontend-workflow gate input pack |
+| 2026-10-22 | work | docs/aegis/work/2026-10-22-frontend-workflow/proof-bundle.md | 2026-10-22-frontend-workflow proof bundle |

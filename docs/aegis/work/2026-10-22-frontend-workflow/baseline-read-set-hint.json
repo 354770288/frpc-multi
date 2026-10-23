@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "candidateDocs": [
+    "docs/aegis/baseline/2026-10-21-probe-workers.md"
+  ],
+  "whyRelevant": "保留测试任务和来源隔离边界",
+  "missingAuthority": []
+}

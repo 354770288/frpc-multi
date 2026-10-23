@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "local-verification",
+  "type": "test",
+  "source": "frontend Vitest and Playwright; backend unittest; isolated production backup",
+  "summary": "250项后端回归、3项Vitest、11项Playwright、前端构建通过；真实备份2319资产2392连通历史19555审计；分页耗时14ms与小于1ms、integrity ok；副本已清理",
+  "verifier": "coordinator"
+}

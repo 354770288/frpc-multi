@@ -82,7 +82,7 @@ export function Detail() {
   } = useConsole();
   const navigate = useNavigate();
   const params = useParams<{ nodeId: string; name: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams,setSearchParams] = useSearchParams();
   const routeNodeId = Number(params.nodeId);
   const routeName = params.name ? decodeURIComponent(params.name) : '';
   const instance = useMemo(
@@ -364,7 +364,7 @@ export function Detail() {
         </div>
       </section>
 
-      <Tabs value={tab} onValueChange={(value) => setTab(value as DetailTab)} className="mb-4">
+      <Tabs value={tab} onValueChange={(value) => {setTab(value as DetailTab);setSearchParams((current)=>{const next=new URLSearchParams(current);next.set('tab',value);return next;});}} className="mb-4">
         <TabsList>
           <TabsTrigger value="logs">
             <TerminalSquare />

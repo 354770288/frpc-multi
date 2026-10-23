@@ -11,7 +11,7 @@ import {
   Settings2,
   XCircle
 } from 'lucide-react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useBlocker, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { api, nodesApi } from '../lib/api';
 import { shortNodeUuid } from '../lib/format';
@@ -38,10 +38,12 @@ import {
 import { lbApi } from '../lib/api';
 import type { LbDomain } from '../lib/types';
 import { EmptyState } from '../components/EmptyState';
+import { ConfirmOverlay } from '../components/Overlay';
 import { ProxyList } from '../components/ProxyList';
 import { useConsole } from '../context/ConsoleContext';
 import {
   emptyFrpcConfig,
+  canEditFullConfigStructurally,
   parseFrpcConfig,
   serializeFrpcConfig,
   validateFrpcDraft,
@@ -82,12 +84,21 @@ export function CreateInstance() {
   const [displayName, setDisplayName] = useState('');
   const [description, setDescription] = useState('');
   const [enabled, setEnabled] = useState(true);
-  const [startAfterCreate, setStartAfterCreate] = useState(true);
   const [configText, setConfigText] = useState(initialConfigText);
+  const [step,setStep] = useState(1);
   const [mode, setMode] = useState<EditorMode>('structured');
   const [submitting, setSubmitting] = useState(false);
   const [nodeId, setNodeId] = useState<number>(resolvedInitialNodeId);
   const [nodeDirty, setNodeDirty] = useState(false);
+  const draftDirty=nameDirty || nodeDirty || !!displayName || !!description || configText!==initialConfigText || !enabled;
+  const blocker=useBlocker(draftDirty && !submitting);
+  useEffect(()=>{
+    const beforeUnload=(event:BeforeUnloadEvent)=>{if(!draftDirty)return;event.preventDefault();event.returnValue='';};
+    window.addEventListener('beforeunload',beforeUnload);
+    return()=>window.removeEventListener('beforeunload',beforeUnload);
+  },[draftDirty]);
+  const structuredSafe=canEditFullConfigStructurally(configText);
+  useEffect(()=>{if(!structuredSafe && mode==='structured')setMode('raw');},[structuredSafe,mode]);
 
   // 负载均衡候选域名（地址来源切换）
   const [addrSource, setAddrSource] = useState<'manual' | 'lb'>('manual');
@@ -131,6 +142,7 @@ export function CreateInstance() {
   }, [structured.proxies]);
 
   function updateStructured(patch: Partial<FrpcConfigDraft>) {
+    if(!structuredSafe){setMode('raw');toast.error('当前 TOML 含有无法由结构化表单保留的内容，请使用原始文本编辑');return;}
     const next = { ...structured, ...patch };
     setConfigText(serializeFrpcConfig(next));
   }
@@ -161,7 +173,7 @@ export function CreateInstance() {
           className="mb-4 -ml-3 text-muted-foreground"
         >
           <ArrowLeft data-icon="inline-start" />
-          返回节点工作台
+          返回实例列表
         </Button>
 
         <EmptyState
@@ -172,7 +184,7 @@ export function CreateInstance() {
                 <Plus size={13} />
                 添加节点
               </Button>
-              <Button variant="outline" onClick={() => navigate('/workspace')}>返回节点工作台</Button>
+              <Button variant="outline" onClick={() => navigate('/instances')}>返回实例列表</Button>
             </div>
           }
         />
@@ -180,7 +192,7 @@ export function CreateInstance() {
     );
   }
 
-  async function create() {
+  async function create(startImmediately:boolean) {
     if (nameError) {
       toast.error(nameError);
       return;
@@ -201,7 +213,7 @@ export function CreateInstance() {
         description,
         configText,
         enabled,
-        startAfterCreate: enabled && startAfterCreate
+        startAfterCreate: enabled && startImmediately
       };
       if (nodeId > 0) {
         await nodesApi.instances.create(nodeId, payload);
@@ -226,11 +238,11 @@ export function CreateInstance() {
       <Button
         variant="ghost"
         size="sm"
-        onClick={() => navigate('/workspace')}
+        onClick={() => navigate('/instances')}
         className="mb-4 -ml-3 text-muted-foreground"
       >
         <ArrowLeft data-icon="inline-start" />
-        返回节点工作台
+        返回实例列表
       </Button>
 
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -247,18 +259,21 @@ export function CreateInstance() {
           </Badge>
         )}
       </div>
+      <p className="mb-4 text-sm text-muted-foreground">第 {step} 步 / 3 步 · {['基本信息与 frps 连接','代理配置','核对并提交'][step-1]}</p>
 
-      <Tabs value={mode} onValueChange={(value) => setMode(value as EditorMode)} className="mb-4">
+      {step===2 && <Tabs value={mode} onValueChange={(value) => setMode(value as EditorMode)} className="mb-4">
         <TabsList>
-          <TabsTrigger value="structured">结构化</TabsTrigger>
+          <TabsTrigger value="structured" disabled={!structuredSafe}>结构化</TabsTrigger>
           <TabsTrigger value="raw">原始 TOML</TabsTrigger>
         </TabsList>
-      </Tabs>
+      </Tabs>}
+      {!structuredSafe && <p role="status" className="mb-4 rounded-md border border-warning/40 p-3 text-sm text-warning">配置含有结构化编辑无法保留的内容，已切换为原始 TOML 编辑。</p>}
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex flex-col gap-4">
-          {mode === 'structured' ? (
+          {mode === 'structured' || step===1 ? (
             <>
+              <div className={step===1 ? 'flex flex-col gap-4' : 'hidden'}>
               <FormSection title={<SectionTitle icon={<Server size={14} />} title="1. 基本信息" />}>
                 <div className="flex flex-col gap-4">
                   <Field label="节点">
@@ -303,6 +318,7 @@ export function CreateInstance() {
                   <Field label="实例名">
                     <Input
                       value={name}
+                      aria-label="实例名"
                       onChange={(event) => {
                         setName(event.target.value);
                         setNameDirty(true);
@@ -318,6 +334,7 @@ export function CreateInstance() {
                     <Field label="显示名称">
                       <Input
                         value={displayName}
+                        aria-label="显示名称"
                         onChange={(event) => setDisplayName(event.target.value)}
                         placeholder="家里 NAS"
                       />
@@ -325,6 +342,7 @@ export function CreateInstance() {
                     <Field label="备注描述">
                       <Input
                         value={description}
+                        aria-label="备注描述"
                         onChange={(event) => setDescription(event.target.value)}
                         placeholder="家中 NAS，SSH + 文件下载"
                       />
@@ -345,11 +363,11 @@ export function CreateInstance() {
                   >
                     <ToggleGroupItem value="manual" className="text-xs">手动输入</ToggleGroupItem>
                     <ToggleGroupItem value="lb" className="text-xs" disabled={!lbDomains.length}
-                      title={lbDomains.length ? undefined : '暂无负载均衡域名'}>负载均衡域名</ToggleGroupItem>
+                      title={lbDomains.length ? undefined : '暂无候选域名'}>候选域名</ToggleGroupItem>
                   </ToggleGroup>
                   {!lbDomains.length && (
                     <span className="text-[11px] text-muted-foreground">
-                      还没有候选域名，<Link to="/lb" className="text-primary underline underline-offset-2">去负载均衡创建 →</Link>
+                      还没有候选域名，<Link to="/lb" className="text-primary underline underline-offset-2">去域名选优创建 →</Link>
                     </span>
                   )}
                   {addrSource === 'lb' && selectedLbDomain && (
@@ -359,7 +377,7 @@ export function CreateInstance() {
                       </Badge>
                     ) : (
                       <Badge tone="warning">
-                        {selectedLbDomain.name} · 空池，<Link to="/probe" className="underline underline-offset-2">去服务器库入组 →</Link>
+                        {selectedLbDomain.name} · 空池，<Link to="/servers" className="underline underline-offset-2">去服务器库入组 →</Link>
                       </Badge>
                     )
                   )}
@@ -369,6 +387,7 @@ export function CreateInstance() {
                     <Field label="服务器地址">
                       <Input
                         value={structured.serverAddr}
+                        aria-label="服务器地址"
                         onChange={(event) => updateStructured({ serverAddr: event.target.value })}
                         placeholder="frps.example.com"
                         aria-invalid={!structured.serverAddr.trim()}
@@ -398,6 +417,7 @@ export function CreateInstance() {
                   <Field label="端口">
                     <Input
                       value={structured.serverPort}
+                      aria-label="端口"
                       onChange={(event) => updateStructured({ serverPort: event.target.value })}
                       placeholder="7000"
                       inputMode="numeric"
@@ -411,6 +431,7 @@ export function CreateInstance() {
                     <Input
                       type="password"
                       value={structured.authToken}
+                      aria-label="认证密钥"
                       onChange={(event) => updateStructured({ authToken: event.target.value })}
                       placeholder="留空表示 frps 端未启用 token 认证"
                       autoComplete="off"
@@ -418,17 +439,19 @@ export function CreateInstance() {
                   </Field>
                 </div>
               </FormSection>
+              </div>
 
+              {step===2 &&
               <FormSection title={<SectionTitle icon={<FileCode2 size={14} />} title="3. 代理规则" />}>
                   <ProxyList
                     proxies={structured.proxies}
                     onChange={updateProxies}
                     emptyHint="还没有代理。点击「新增代理」开始配置内网穿透。"
                   />
-              </FormSection>
+              </FormSection>}
             </>
           ) : (
-            <FormSection
+            step===2 && <FormSection
               title={<SectionTitle icon={<FileCode2 size={14} />} title="原始 TOML" />}
             >
               <Textarea
@@ -440,24 +463,19 @@ export function CreateInstance() {
             </FormSection>
           )}
 
-          <FormSection title={<SectionTitle icon={<Settings2 size={14} />} title="4. 启动选项" />}>
+          {step===3 && <FormSection title={<SectionTitle icon={<Settings2 size={14} />} title="4. 启动选项" />}>
             <div className="flex flex-col gap-2">
               <Toggle
                 checked={enabled}
                 onChange={setEnabled}
                 label="启用该实例"
               />
-              <Toggle
-                checked={enabled && startAfterCreate}
-                disabled={!enabled}
-                onChange={setStartAfterCreate}
-                label="创建后立即启动"
-              />
+              <p className="text-sm text-muted-foreground">提交时明确选择仅创建或创建并启动。</p>
             </div>
-          </FormSection>
+          </FormSection>}
         </div>
 
-        <aside className="flex flex-col gap-4 lg:sticky lg:top-20 lg:self-start">
+        {step===3 && <aside className="flex flex-col gap-4 lg:sticky lg:top-20 lg:self-start">
           <FormSection title={<SectionTitle icon={<Rocket size={14} />} title="创建摘要" />}>
             <div className="flex flex-col gap-3 text-[12px]">
               <SummaryRow label="目标节点">
@@ -485,11 +503,7 @@ export function CreateInstance() {
               </SummaryRow>
               <SummaryRow label="将执行">
                 <span className="text-right text-foreground">
-                  {enabled
-                    ? startAfterCreate
-                      ? '写入配置并启动实例'
-                      : '写入配置，暂不启动'
-                    : '仅保存配置，不启用实例'}
+                  {enabled ? '由提交按钮明确选择是否启动' : '仅保存配置，不启用实例'}
                 </span>
               </SummaryRow>
             </div>
@@ -530,12 +544,11 @@ export function CreateInstance() {
             </div>
           </FormSection>
 
-          <Button variant="default" onClick={create} disabled={!canSubmit || submitting} className="w-full">
-            <Plus size={13} />
-            {submitting ? '创建中…' : '创建实例'}
-          </Button>
-        </aside>
+          <div className="grid gap-2"><Button variant="outline" onClick={()=>void create(false)} disabled={!canSubmit || submitting}>仅创建</Button><Button onClick={()=>void create(true)} disabled={!canSubmit || submitting || !enabled}><Plus size={13} />{submitting ? '创建中…' : '创建并启动'}</Button></div>
+        </aside>}
       </section>
+      <div className="mt-5 flex justify-between"><Button variant="outline" disabled={step===1 || submitting} onClick={()=>setStep(step-1)}>上一步</Button>{step<3 && <Button onClick={()=>{if(step===1 && (nameError || nodeError || !structured.serverAddr.trim())){toast.error('请先完成实例名、部署节点和 frps 地址');return;}setStep(step+1);}}>下一步</Button>}</div>
+      {blocker.state==='blocked' && <ConfirmOverlay title="离开未保存的实例配置" description="当前实例草稿尚未保存，离开后填写内容会丢失。" confirmLabel="放弃草稿并离开" variant="destructive" onCancel={()=>blocker.reset()} onConfirm={()=>blocker.proceed()} />}
     </main>
   );
 }

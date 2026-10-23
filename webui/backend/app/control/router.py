@@ -183,6 +183,19 @@ def list_audit_logs(
     return [_public_audit_log(record) for record in store.list_logs(limit=limit)]
 
 
+@audit_router.get('/page')
+def page_audit_logs(
+    _: Annotated[str, Depends(require_auth)],
+    store: Annotated[AuditStore, Depends(audit_store)],
+    page: int=Query(default=1,ge=1),pageSize: int=Query(default=50,ge=1,le=200),
+    fromTime: str | None=None,toTime: str | None=None,action: str | None=None,
+    success: bool | None=None,nodeId: int | None=None,local: bool=False,instanceName: str | None=None,q: str | None=None,
+):
+    result=store.query_logs(page=page,page_size=pageSize,from_time=fromTime,to_time=toTime,
+                            action=action,success=success,node_id=nodeId,local=local,instance_name=instanceName,keyword=q)
+    return {**result,'items':[_public_audit_log(row) for row in result['items']]}
+
+
 # ---------------------------------------------------------------------------
 # 节点 CRUD
 # ---------------------------------------------------------------------------
