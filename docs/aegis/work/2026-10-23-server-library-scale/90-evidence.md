@@ -290,6 +290,14 @@ Plan coverage limit: this run includes 7,000 current rows, not 9 historical rows
 - At initial job creation, task IP/error fields were empty and `probe_results`, `probe_discover_results`, and `probe_discover_observations` each remained at 0 rows.
 - No network scan ran. This validates compact target planning and first-chunk persistence only; worker throughput, queue/RSS during a full synthetic scan, successful-hit growth, and cancellation/restart recovery remain open.
 
+## Slice: 10M bounded discovery worker smoke
+
+- Ran a full 10,000,000-target `DiscoverRunner` interval through the real producer, bounded `asyncio.Queue`, worker pool, and progress counters. `asyncio.open_connection` was replaced with an immediate `OSError` coroutine; no network connection was attempted.
+- Runtime: 39.728 s wall / 38.720 s CPU (about 251,713 targets/s) with 2,000 workers; queue capacity and observed peak were both exactly 2,000.
+- All 10,000,000 targets were counted as scanned; `found=0`, error empty. `discover_results`, `discover_observations`, `probe_results`, and recent hit buffers remained at 0 entries.
+- Peak RSS was 37.7 MiB (raw `ru_maxrss` 39,550,976 bytes). Runner thread exited; `reset()` cleared state and left no scanner thread. Temporary database was removed.
+- This isolates worker/queue/progress overhead for immediate failures. It does not emulate destination-network latency distributions, successful-hit result growth, concurrent SQLite readers/writers, or production host hardware.
+
 ## Slice: asynchronous import and bulk mutation acceptance
 
 - Import contract retains the old synchronous API limit. New authenticated import jobs cap raw text at 16 MiB, request body at 17 MiB, endpoints at 100,000, and each default/row group at 128 Unicode characters and 512 UTF-8 bytes. A single shared bulk-worker lease stages at most 1,000 parsed rows per pass and writes assets in 250-row transactions.
