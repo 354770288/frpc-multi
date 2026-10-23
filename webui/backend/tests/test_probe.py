@@ -1061,6 +1061,39 @@ class ProbeApiTests(unittest.TestCase):
         self.assertEqual(response.json()["deleted"], 0)
         self.assertEqual(client.get("/api/probe/history/connectivity", headers=headers).json(), [])
 
+    def test_failover_history_api_filters_pages_and_orders_ties_stably(self):
+        client, headers = self.make_client(PROBE_FRPC_BIN="/bin/echo")
+        primary = client.post('/api/probe/nodes', json={'name': 'failover-primary'}, headers=headers).json()
+        backup = client.post('/api/probe/nodes', json={'name': 'failover-backup'}, headers=headers).json()
+        self.assertEqual(client.put('/api/probe/nodes/execution-policy', json={
+            'primaryNodeId': primary['id'], 'backupNodeIds': [backup['id']],
+        }, headers=headers).status_code, 200)
+
+        from app.probe.jobs import ProbeJobStore
+        store = ProbeJobStore(self.db_path)
+        job = store.create_primary_job('connectivity', ips=['192.0.2.41', '192.0.2.42'])
+        with store._db() as c:
+            c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (primary['id'],))
+        store.heartbeat(backup['id'], 'test', ['discover', 'route', 'connectivity', 'speed'], [], ['task-generation-v1'])
+        self.assertIsNotNone(store.claim(backup['id']))
+        self.assertIsNotNone(store.claim(backup['id']))
+
+        all_rows = client.get('/api/probe/nodes/failovers?page=1&pageSize=10', headers=headers)
+        self.assertEqual(all_rows.status_code, 200)
+        items = all_rows.json()['items']
+        self.assertEqual(len(items), 2)
+        self.assertEqual([item['id'] for item in items], sorted([item['id'] for item in items], reverse=True))
+        self.assertTrue(all(item['jobId'] == job['id'] for item in items))
+        from urllib.parse import urlencode
+        filtered = client.get('/api/probe/nodes/failovers?' + urlencode({
+            'nodeId': backup['id'], 'fromTime': items[-1]['transferredAt'], 'toTime': items[0]['transferredAt'],
+        }), headers=headers).json()
+        self.assertEqual(filtered['total'], 2)
+        first_page = client.get('/api/probe/nodes/failovers?page=1&pageSize=1', headers=headers).json()
+        second_page = client.get('/api/probe/nodes/failovers?page=2&pageSize=1', headers=headers).json()
+        self.assertEqual(first_page['items'][0]['id'], items[0]['id'])
+        self.assertEqual(second_page['items'][0]['id'], items[1]['id'])
+
     def test_server_update_delete_and_not_found(self):
         client, headers = self.make_client()
         created = client.post("/api/probe/servers", json={"ip": "10.2.2.2"}, headers=headers).json()
@@ -1794,12 +1827,14 @@ class RouteApiTests(unittest.TestCase):
         worker_headers = {"X-Probe-Token": self.primary["token"]}
         client.post("/api/probe/worker/heartbeat", json={
             "version": "test", "capabilities": ["discover", "route", "connectivity", "speed"],
-            "attempts": [],
+            "protocolFeatures": ["task-generation-v1"], "attempts": [],
         }, headers=worker_headers)
         self.assertEqual(client.post("/api/probe/worker/claim", headers=worker_headers).json(),
                          {"task": None})
         self.assertTrue(next(node for node in client.get("/api/probe/route/nodes", headers=headers).json()
                              if node["id"] == self.primary["id"])["online"])
+        self.assertEqual(next(node for node in client.get("/api/probe/nodes", headers=headers).json()["items"]
+                              if node["id"] == self.primary["id"])["protocolFeatures"], ["task-generation-v1"])
 
         # 面板启动：勾选发现行入队
         started = client.post("/api/probe/route/start", json={"ids": [row_id]}, headers=headers).json()
@@ -1851,6 +1886,7 @@ class RouteApiTests(unittest.TestCase):
         self.assertEqual(started.status_code, 200)
         from app.probe.jobs import ProbeJobStore
         jobs = ProbeJobStore(self.db_path)
+        jobs.heartbeat(self.primary['id'], 'test', ['discover', 'route', 'connectivity', 'speed'], [])
         task = jobs.claim(self.primary["id"])
         self.assertEqual(task["stage"], "discover")
         jobs.progress(self.primary["id"], task["taskId"], task["attemptId"], 1,

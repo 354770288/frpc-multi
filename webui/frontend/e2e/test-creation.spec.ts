@@ -7,10 +7,14 @@ test.beforeEach(async ({ page }) => {
     const json=(value:unknown)=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(value)});
     if(url.pathname==='/api/probe/nodes')return json({items:[
       {id:'console',name:'Console',kind:'console',version:'qa',capabilities:['discover','route','connectivity','speed'],online:true},
-      {id:'remote',name:'国内测试节点',kind:'worker',version:'qa',capabilities:['discover','route','connectivity','speed'],online:true},
+      {id:'remote',name:'国内测试节点',kind:'worker',version:'qa',capabilities:['discover','route','connectivity','speed'],protocolFeatures:['task-generation-v1'],online:true},
       {id:'backup',name:'备用测试节点',kind:'worker',version:'qa',capabilities:['discover','route','connectivity','speed'],online:true},
     ]});
     if(url.pathname==='/api/probe/nodes/execution-policy')return json({configured:true,primaryNodeId:'remote',backupNodeIds:['backup'],suggestedPrimaryNodeId:'remote'});
+    if(url.pathname==='/api/probe/nodes/failovers'){
+      const page=Number(url.searchParams.get('page') || 1);
+      return json({items:[{id:page,taskId:`task-${page}`,jobId:'job-qa',fromNodeId:'remote',toNodeId:'backup',generation:page,reason:'primary_offline',transferredAt:'2026-10-23T10:00:00+00:00'}],page,pageSize:20,total:21});
+    }
     if(url.pathname==='/api/probe/servers/groups')return json([{name:'QA',color:''}]);
     if(url.pathname==='/api/probe/servers/facets')return json({labels:[],groups:[]});
     if(url.pathname==='/api/probe/discover/results')return json({items:[],page:1,pageSize:50,total:0,sort:'discoveredAt',order:'desc'});
@@ -214,6 +218,47 @@ test('dialog focus and Escape use the shared overlay behavior',async ({page})=>{
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog',{name:'测试节点'})).toBeHidden();
   await expect(button).toBeFocused();
+});
+
+test('configured backup without task-generation-v1 is waiting for upgrade and failover history paginates',async ({page})=>{
+  await page.goto('/test-nodes');
+  await expect(page.getByText('需升级 · 等待协议能力').first()).toBeVisible();
+  await expect(page.getByText('task-1')).toBeVisible();
+  await page.getByRole('button',{name:'下一页'}).click();
+  await expect(page.getByText('task-2')).toBeVisible();
+  await expect(page.getByText('第 2 页 / 共 2 页')).toBeVisible();
+});
+
+test('waiting status follows pending failover markers and task messages are translated',async ({page})=>{
+  await page.route('**/api/probe/nodes',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[
+    {id:'console',name:'Console',kind:'console',version:'qa',capabilities:['discover','route','connectivity','speed'],online:true},
+    {id:'remote',name:'原主用节点',kind:'worker',version:'qa',capabilities:['discover','route','connectivity','speed'],protocolFeatures:['task-generation-v1'],online:false},
+    {id:'backup',name:'当前备用节点',kind:'worker',version:'qa',capabilities:['discover','route','connectivity','speed'],protocolFeatures:['task-generation-v1'],online:true},
+  ]})}));
+  const detail=(id:string,nodeId:string,waiting:boolean,failoverWaitingCount=waiting?1:0,taskState='pending')=>({
+    id,mode:'route',state:'running',options:{},counts:{pending:1,done:taskState==='done'?1:0},nodeIds:['remote','backup'],taskTotal:taskState==='done'?2:1,
+    stageCounts:[{nodeId,stage:'route',state:taskState,count:1}],progress:{scanned:0,foundCount:0},
+    failoverWaitingCount,createdAt:'2026-10-23T10:00:00+00:00',tasks:[{
+      taskId:`task-${id}`,attemptId:null,jobId:id,nodeId,stage:'route',ip:'192.0.2.20',port:7000,
+      state:taskState,attempts:0,seq:0,progress:{},error:waiting?'waiting for an online backup':'',
+      failover_waiting:waiting?1:0,payload:{},createdAt:'2026-10-23T10:00:00+00:00',result:null,
+    }],page:1,pageSize:200,filteredTaskTotal:1,
+  });
+  await page.route('**/api/probe/jobs/qa-former-owner**',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(detail('qa-former-owner','backup',false))}));
+  await page.route('**/api/probe/jobs/qa-waiting**',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(detail('qa-waiting','remote',true))}));
+  await page.route('**/api/probe/jobs/qa-filtered-waiting**',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(detail('qa-filtered-waiting','backup',false,1,'done'))}));
+
+  await page.goto('/tests/qa-former-owner');
+  await expect(page.getByText('等待备用节点 · 排队中')).toHaveCount(0);
+
+  await page.goto('/tests/qa-waiting');
+  await expect(page.getByText('等待备用节点 · 排队中')).toBeVisible();
+  await expect(page.getByText('等待在线备用节点接管')).toBeVisible();
+  await expect(page.getByText('waiting for an online backup',{exact:true})).toHaveCount(0);
+
+  await page.goto('/tests/qa-filtered-waiting?taskState=done');
+  await expect(page.getByText('等待备用节点 · 排队中')).toBeVisible();
+  await expect(page.getByText('等待在线备用节点接管')).toHaveCount(0);
 });
 
 test('primary pages fit a narrow viewport',async ({page})=>{

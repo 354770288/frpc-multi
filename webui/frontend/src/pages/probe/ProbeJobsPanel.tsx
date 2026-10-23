@@ -57,6 +57,7 @@ function resultText(task: ProbeTask) {
 }
 const ERROR_NAMES: Record<string, string> = {
   dependency: '等待连通性通过后恢复速率阶段',
+  'waiting for an online backup': '等待在线备用节点接管',
   skipped: '已按指令跳过',
   stopped: '已按指令停止',
   'lease expired': '节点连接超时，等待重新领取',
@@ -240,11 +241,9 @@ export function ProbeJobsPanel({
   }, [detail]);
   const tasks = detail?.tasks || [];
   const selectedTasks = tasks.filter((task) => selected.has(task.taskId));
-  const waitingOffline =
+  const waitingForBackup =
     detail?.state === 'running' &&
-    !(detail.counts.running || detail.counts.cancelling) &&
-    !!detail.counts.pending &&
-    detail.nodeIds.some((id) => nodes.some((node) => node.id === id && !node.online));
+    (detail.failoverWaitingCount ?? 0) > 0;
   const total = detail?.taskTotal || 0;
   const filteredTotal = detail?.filteredTaskTotal ?? total;
   const done = detail
@@ -291,7 +290,7 @@ export function ProbeJobsPanel({
           <>
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={detail.state === 'failed' ? 'danger' : 'muted'}>
-                {waitingOffline ? '等待节点上线 · 排队中' : STATES[detail.state] || detail.state}
+                {waitingForBackup ? '等待备用节点 · 排队中' : STATES[detail.state] || detail.state}
               </Badge>
               <span className="text-xs">
                 阶段任务 {done}/{total}

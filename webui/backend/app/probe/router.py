@@ -924,6 +924,11 @@ def nodes_execution_policy_get():
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.get('/nodes/failovers')
+def nodes_failovers(page: int = Query(default=1, ge=1), pageSize: int = Query(default=50, ge=1, le=200), nodeId: str | None = None, fromTime: str | None = None, toTime: str | None = None):
+    return job_store().list_failovers(page, pageSize, node_id=nodeId, from_time=fromTime, to_time=toTime)
+
+
 @router.put('/nodes/execution-policy')
 def nodes_execution_policy_put(payload: dict[str, object]):
     try:
@@ -1015,12 +1020,14 @@ def _worker_node(token):
 class WorkerHeartbeat(BaseModel):
     version: str = ''
     capabilities: list[str] = []
-    attempts: list[dict[str,str]] = []
+    protocolFeatures: list[str] = []
+    attempts: list[dict] = []
 
 
 class WorkerProgress(BaseModel):
     taskId: str
     attemptId: str
+    generation: int | None = None
     seq: int
     hits: list[dict] = []
     progress: dict = {}
@@ -1029,6 +1036,7 @@ class WorkerProgress(BaseModel):
 class WorkerReport(BaseModel):
     taskId: str
     attemptId: str
+    generation: int | None = None
     result: dict | None = None
     infraError: str | None = None
 
@@ -1036,7 +1044,7 @@ class WorkerReport(BaseModel):
 @node_router.post('/worker/heartbeat')
 def worker_heartbeat(payload: WorkerHeartbeat,x_probe_token: str=Header(default='')):
     node=_worker_node(x_probe_token)
-    return job_store().heartbeat(node['id'],payload.version,payload.capabilities,payload.attempts)
+    return job_store().heartbeat(node['id'],payload.version,payload.capabilities,payload.attempts,payload.protocolFeatures)
 
 
 @node_router.post('/worker/claim')
@@ -1048,14 +1056,14 @@ def worker_claim(x_probe_token: str=Header(default='')):
 @node_router.post('/worker/progress')
 def worker_progress(payload: WorkerProgress,x_probe_token: str=Header(default='')):
     node=_worker_node(x_probe_token)
-    try:return job_store().progress(node['id'],payload.taskId,payload.attemptId,payload.seq,hits=payload.hits,progress=payload.progress)
+    try:return job_store().progress(node['id'],payload.taskId,payload.attemptId,payload.seq,generation=payload.generation,hits=payload.hits,progress=payload.progress)
     except (ValueError,KeyError,TypeError) as exc:raise HTTPException(400,str(exc)) from exc
 
 
 @node_router.post('/worker/report')
 def worker_report(payload: WorkerReport,x_probe_token: str=Header(default='')):
     node=_worker_node(x_probe_token)
-    return job_store().report(node['id'],payload.taskId,payload.attemptId,result=payload.result,infra_error=payload.infraError)
+    return job_store().report(node['id'],payload.taskId,payload.attemptId,generation=payload.generation,result=payload.result,infra_error=payload.infraError)
 
 
 @node_router.get('/worker/bundle.tar.gz')

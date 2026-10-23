@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { probeApi } from '../lib/api';
-import type { TestNode, TestNodeExecutionPolicy } from '../lib/types';
+import type { ProbeFailover, TestNode, TestNodeExecutionPolicy } from '../lib/types';
 import { formatLastSeen } from '../lib/format';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -19,6 +19,11 @@ function isEligibleRoleNode(node: TestNode) {
 
 export function TestNodesPage() {
   const [nodes, setNodes] = useState<TestNode[]>([]);
+  const [failovers, setFailovers] = useState<ProbeFailover[]>([]);
+  const [failoverPage, setFailoverPage] = useState(1);
+  const [failoverTotal, setFailoverTotal] = useState(0);
+  const [failoverError, setFailoverError] = useState('');
+  const [failoverLoading, setFailoverLoading] = useState(true);
   const [error, setError] = useState('');
   const [policyError, setPolicyError] = useState('');
   const [open, setOpen] = useState(false);
@@ -33,6 +38,7 @@ export function TestNodesPage() {
   const dirty = useRef(false);
   const savingRef = useRef(false);
   const policyRequestRevision = useRef(0);
+  const failoverRequestRevision = useRef(0);
   const close = () => { setOpen(false); requestAnimationFrame(() => manageButton.current?.focus()); };
 
   const load = useCallback(async () => {
@@ -67,6 +73,23 @@ export function TestNodesPage() {
     }
   }, [applyPolicy]);
 
+  const loadFailovers = useCallback(async () => {
+    const revision = ++failoverRequestRevision.current;
+    setFailoverLoading(true);
+    try {
+      const result = await probeApi.failoversPage({ page: failoverPage, pageSize: 20 });
+      if (revision !== failoverRequestRevision.current) return;
+      setFailovers(result.items);
+      setFailoverTotal(result.total);
+      setFailoverError('');
+    } catch (err) {
+      if (revision !== failoverRequestRevision.current) return;
+      setFailoverError(err instanceof Error ? err.message : '任务转移历史加载失败');
+    } finally {
+      if (revision === failoverRequestRevision.current) setFailoverLoading(false);
+    }
+  }, [failoverPage]);
+
   useEffect(() => {
     void load();
     void loadPolicy(true);
@@ -75,6 +98,11 @@ export function TestNodesPage() {
     }, 10000);
     return () => window.clearInterval(timer);
   }, [load, loadPolicy]);
+
+  useEffect(() => {
+    void loadFailovers();
+    return () => { failoverRequestRevision.current += 1; };
+  }, [loadFailovers]);
 
   const eligibleNodes = useMemo(() => nodes.filter(isEligibleRoleNode), [nodes]);
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
@@ -133,6 +161,12 @@ export function TestNodesPage() {
     const backupIndex = backupNodeIds.indexOf(nodeId);
     return backupIndex >= 0 ? `备用 ${backupIndex + 1}` : '';
   };
+  const supportsTaskGeneration = (node: TestNode) => node.protocolFeatures?.includes('task-generation-v1') === true;
+  const failoverReason = (reason: string) => ({
+    lease_expired_owner_offline: '主用节点离线且任务租约到期',
+    owner_protocol_feature_lost: '主用节点未声明所需协议能力',
+    pending_owner_offline: '主用节点离线时转移待处理任务',
+  }[reason] ?? reason);
 
   return <main className="mx-auto max-w-[1300px] px-4 py-6 sm:px-6">
     <div className="mb-5 flex items-center gap-3">
@@ -182,6 +216,7 @@ export function TestNodesPage() {
               <FieldGroup className="grid gap-2 sm:grid-cols-2">
                 {eligibleNodes.filter((node) => node.id !== primaryNodeId).map((node) => {
                   const checkboxId = `backup-node-${node.id}`;
+                  const selectedAsBackup = backupNodeIds.includes(node.id);
                   return <Field key={node.id} orientation="horizontal" className="items-center rounded-md border p-3">
                     <input
                       id={checkboxId}
@@ -193,6 +228,7 @@ export function TestNodesPage() {
                     />
                     <FieldLabel htmlFor={checkboxId} className="min-w-0 flex-1 truncate">{node.name}</FieldLabel>
                     <Badge tone={node.online ? 'success' : 'muted'}>{node.online ? '在线' : '离线'}</Badge>
+                    {selectedAsBackup && !supportsTaskGeneration(node) && <Badge tone="warning">需升级 · 等待协议能力</Badge>}
                   </Field>;
                 })}
                 {eligibleNodes.length === (primaryNodeId ? 1 : 0) && <FieldDescription>没有其他可选的备用测试节点。</FieldDescription>}
@@ -209,6 +245,7 @@ export function TestNodesPage() {
                   <span className="w-6 text-center font-semibold">{index + 1}</span>
                   <span className="min-w-0 flex-1 truncate">{node?.name ?? nodeId}</span>
                   <Badge tone={node?.online ? 'success' : 'muted'}>{node ? node.online ? '在线' : '离线' : '节点不可用'}</Badge>
+                  {node && !supportsTaskGeneration(node) && <Badge tone="warning">需升级 · 等待协议能力</Badge>}
                   <Button variant="outline" size="sm" disabled={saving || index === 0} aria-label={`上移备用节点 ${node?.name ?? nodeId}`} onClick={() => moveBackup(index, -1)}>上移</Button>
                   <Button variant="outline" size="sm" disabled={saving || index === backupNodeIds.length - 1} aria-label={`下移备用节点 ${node?.name ?? nodeId}`} onClick={() => moveBackup(index, 1)}>下移</Button>
                 </li>;
@@ -224,6 +261,34 @@ export function TestNodesPage() {
             {!policyError && !notice && policyLoaded && !policyConfigured && primaryNodeId && <p role="status" className="text-sm text-muted-foreground">当前选择尚未保存，请点击“保存主备策略”。</p>}
           </div>
         </>}
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center gap-2">
+          <CardTitle>任务转移历史</CardTitle>
+          <Badge tone="muted">共 {failoverTotal} 条</Badge>
+          <Button variant="outline" size="sm" className="ml-auto" onClick={() => void loadFailovers()} disabled={failoverLoading}>刷新</Button>
+        </div>
+        <p className="text-sm text-muted-foreground">这里只记录已转移到备用节点的任务。未声明 task-generation-v1 的备用节点会显示为等待升级；这不表示旧版主用节点上的所有任务都已阻塞。</p>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {failoverError && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">任务转移历史加载失败：{failoverError} <Button variant="link" onClick={() => void loadFailovers()}>重试</Button></p>}
+        {failoverLoading && <p role="status" className="text-sm text-muted-foreground">正在加载任务转移历史…</p>}
+        {failovers.map((item) => <div key={item.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border p-3 text-sm">
+          <span className="font-mono text-xs text-muted-foreground">{item.taskId}</span>
+          <span>{nodeById.get(item.fromNodeId)?.name ?? item.fromNodeId} → {nodeById.get(item.toNodeId)?.name ?? item.toNodeId}</span>
+          <Badge tone="muted">第 {item.generation} 代</Badge>
+          <span className="text-muted-foreground">{failoverReason(item.reason)}</span>
+          <span className="ml-auto text-muted-foreground" title={item.transferredAt}>{formatLastSeen(item.transferredAt)}</span>
+        </div>)}
+        {!failoverLoading && !failoverError && failovers.length === 0 && <p className="py-6 text-center text-sm text-muted-foreground">暂无任务转移记录</p>}
+        <div className="flex items-center justify-end gap-2 text-sm">
+          <span>第 {failoverPage} 页 / 共 {Math.max(1, Math.ceil(failoverTotal / 20))} 页</span>
+          <Button variant="outline" size="sm" disabled={failoverPage <= 1 || failoverLoading} onClick={() => setFailoverPage((page) => Math.max(1, page - 1))}>上一页</Button>
+          <Button variant="outline" size="sm" disabled={failoverLoading || failoverPage * 20 >= failoverTotal} onClick={() => setFailoverPage((page) => page + 1)}>下一页</Button>
+        </div>
       </CardContent>
     </Card>
 

@@ -8,7 +8,8 @@
 - [x] Desktop test-node management for explicit primary/backup ordering.
 - [x] New task creation automatically assigns only to configured primary.
 - [x] Remove execution-node and port selectors from task creation UI; summarize saved primary/backup policy.
-- [ ] Durable scan recovery, fenced failover, bounded retries, and unified current results.
+- [x] Lease-based backup transfer, generation fencing, bounded failover work, transfer history, and waiting-state UI.
+- [ ] Unified current results.
 - [ ] Domestic primary/backup scheduler and unified result projection.
 - [ ] Classification schema, scalable query APIs, and reversible migration.
 - [ ] Desktop server-library UI, saved views, and server-side bulk snapshots.
@@ -16,10 +17,11 @@
 
 ## ResumeStateHint
 
-- Current status: fixed-port, node-policy API/UI, atomic primary assignment, and primary-only task-creation frontend slices verified; broader plan remains active.
-- Active slice: implement lease-based transfer of unfinished tasks to ordered backups, with generation fencing for late progress/report and same-primary stage continuation.
+- Current status: fixed-port, node-policy API/UI, atomic primary assignment, primary-only task creation, and durable lease failover slices verified; broader plan remains active.
+- Active slice: unify current-result projection and its consumers, then implement classification/query and large-library UI work.
 - Completed: fixed target port 7000 across task creation paths; server result projection matches fixed port regardless of frps_port setting; HTTP validation maps to 400 including compatibility and route-start paths; historical alternate-port record remains retrievable; persisted policy validates stable worker IDs, preserves backup order, permits offline nodes, fails closed on corrupt state, protects referenced-node deletion; desktop test-node page explicitly saves primary and ordered backups; public task creation resolves the saved primary and checks policy plus inserts tasks atomically; task creation/discovery UI shows the saved role policy, distinguishes policy/node-list errors, submits no nodeIds and fixes port 7000.
-- Next: implement fenced lease failover, unified current result projection and source migration; then complete classification/filter/query UI and capacity acceptance.
+- Completed failover: jobs snapshot the ordered node chain; expired/unclaimed tasks transfer only to the next online generation-capable backup; pipeline child tasks preserve generation; old attempts are fenced; no-backup tasks remain pending and recover on owner heartbeat; transfer history is paged; batch waiting count is independent of task filters/pages.
+- Next: unify current result projection and source migration; then complete classification/filter/query UI and capacity acceptance.
 
 ## Execution Readiness View
 
@@ -37,4 +39,4 @@
 - Decision: continue after source-of-truth audit.
 - Scope/compatibility: aligned with revised plan; old plan remains a historical baseline pending comparison with current code.
 - Open unknowns: current production domestic primary must be explicitly selected; result consumers that assume multi-node results; feasibility of 1M target data under existing SQLite deployment.
-- Slice result: 10万/100万 capacity and performance remain unverified; backup lease transfer, unified result projection and migration remain; no production writes or deployment occurred.
+- Slice result: backup lease transfer is implemented and regression-tested; 10万/100万 capacity, scan throughput/memory, unified result projection and migration remain unverified; no production writes or deployment occurred.

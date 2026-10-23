@@ -1,7 +1,7 @@
 import { getAuthToken, notifyUnauthorized, AuthError } from './auth';
 import type {
   AuditLog,
-  TestNode, TestNodeExecutionPolicy, ProbeJobInput, ProbeJob, ProbeJobDetail, ProbeComparison, LbSelectionConfig,
+  TestNode, TestNodeExecutionPolicy, ProbeFailover, ProbeJobInput, ProbeJob, ProbeJobDetail, ProbeComparison, LbSelectionConfig,
   CloudflareInfo,
   CloudflareZone,
   DiscoverFacets,
@@ -158,6 +158,7 @@ export type ProbeServerPayload = {
 
 export const probeApi = {
   testNodes: () => api<{ items: TestNode[] }>('/api/probe/nodes'),
+  failoversPage: (query: Record<string, string | number>) => api<{ items: ProbeFailover[]; page: number; pageSize: number; total: number }>(`/api/probe/nodes/failovers?${new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]))}`),
   executionPolicy: () => api<TestNodeExecutionPolicy>('/api/probe/nodes/execution-policy'),
   saveExecutionPolicy: (primaryNodeId: string, backupNodeIds: string[]) =>
     api<TestNodeExecutionPolicy>('/api/probe/nodes/execution-policy', {

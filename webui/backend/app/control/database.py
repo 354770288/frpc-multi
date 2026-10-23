@@ -103,11 +103,13 @@ CREATE TABLE IF NOT EXISTS probe_nodes (
     id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, token TEXT NOT NULL UNIQUE,
     kind TEXT NOT NULL DEFAULT 'worker', version TEXT NOT NULL DEFAULT '',
     capabilities TEXT NOT NULL DEFAULT '[]', last_seen REAL NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL, protocol_features TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS probe_jobs (
     id TEXT PRIMARY KEY, mode TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'running',
-    options TEXT NOT NULL, created_at TEXT NOT NULL
+    options TEXT NOT NULL, created_at TEXT NOT NULL,
+    primary_managed INTEGER NOT NULL DEFAULT 0,
+    execution_policy TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_probe_jobs_time ON probe_jobs(created_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS probe_tasks (
@@ -116,7 +118,8 @@ CREATE TABLE IF NOT EXISTS probe_tasks (
     port INTEGER NOT NULL, payload TEXT NOT NULL DEFAULT '{}',
     state TEXT NOT NULL DEFAULT 'pending', attempt_id TEXT, attempts INTEGER NOT NULL DEFAULT 0,
     lease_until REAL NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0,
-    progress TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+    progress TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 0, failover_waiting INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_probe_tasks_claim ON probe_tasks(node_id,state,created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_probe_task_pipeline ON probe_tasks(job_id,node_id,stage,ip,port) WHERE stage != 'discover';
@@ -125,7 +128,7 @@ CREATE TABLE IF NOT EXISTS probe_results (
     id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL DEFAULT '',
     job_id TEXT NOT NULL, node_id TEXT NOT NULL, kind TEXT NOT NULL,
     server_ip TEXT NOT NULL, port INTEGER NOT NULL, test_time TEXT NOT NULL,
-    data TEXT NOT NULL, UNIQUE(task_id,attempt_id)
+    data TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0, UNIQUE(task_id,attempt_id)
 );
 CREATE INDEX IF NOT EXISTS idx_probe_results_source ON probe_results(node_id,kind,server_ip,port,id);
 CREATE INDEX IF NOT EXISTS idx_probe_results_history ON probe_results(node_id,kind,id DESC);
@@ -133,6 +136,17 @@ CREATE TABLE IF NOT EXISTS probe_discover_observations (
     node_id TEXT NOT NULL, ip TEXT NOT NULL, port INTEGER NOT NULL,
     latency_ms REAL NOT NULL, discovered_at TEXT NOT NULL,
     PRIMARY KEY(node_id,ip,port)
+);
+
+CREATE TABLE IF NOT EXISTS probe_task_transfers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, job_id TEXT NOT NULL,
+    from_node_id TEXT NOT NULL, to_node_id TEXT NOT NULL, generation INTEGER NOT NULL,
+    reason TEXT NOT NULL, transferred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_probe_task_transfers_time ON probe_task_transfers(transferred_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_probe_task_transfers_node ON probe_task_transfers(from_node_id,to_node_id,transferred_at DESC,id DESC);
+CREATE TABLE IF NOT EXISTS probe_failover_scan_cursor (
+    id INTEGER PRIMARY KEY CHECK(id=1), job_id TEXT NOT NULL DEFAULT '', owner_index INTEGER NOT NULL DEFAULT -1
 );
 
 CREATE TABLE IF NOT EXISTS lb_settings (
@@ -439,6 +453,7 @@ def initialize_database(path: Path) -> None:
                     f"failed to enable SQLite WAL mode for {resolved_path}: {journal_mode}"
                 )
             connection.executescript(SCHEMA)
+            _migrate_probe_failover(connection)
             _migrate_nodes(connection)
             _migrate_lb_domains(connection)
             _migrate_probe_groups(connection)
@@ -452,6 +467,35 @@ def initialize_database(path: Path) -> None:
             connection.close()
 
         _initialized_paths.add(resolved_path)
+
+
+def _migrate_probe_failover(connection: sqlite3.Connection) -> None:
+    """Add durable primary failover metadata to existing probe databases."""
+    additions = {
+        "probe_nodes": [("protocol_features", "TEXT NOT NULL DEFAULT '[]'")],
+        "probe_jobs": [
+            ("primary_managed", "INTEGER NOT NULL DEFAULT 0"),
+            ("execution_policy", "TEXT NOT NULL DEFAULT '{}'"),
+        ],
+        "probe_tasks": [
+            ("generation", "INTEGER NOT NULL DEFAULT 0"),
+            ("failover_waiting", "INTEGER NOT NULL DEFAULT 0"),
+        ],
+        "probe_results": [("generation", "INTEGER NOT NULL DEFAULT 0")],
+    }
+    added_failover_waiting = False
+    for table, columns in additions.items():
+        existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        for name, declaration in columns:
+            if name not in existing:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+                if table == 'probe_tasks' and name == 'failover_waiting':
+                    added_failover_waiting = True
+    if added_failover_waiting:
+        connection.execute("UPDATE probe_tasks SET failover_waiting=1 WHERE state='pending' AND error='waiting for an online backup'")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_probe_tasks_failover_wait ON probe_tasks(job_id,node_id,state,failover_waiting,created_at)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_probe_tasks_failover_batch ON probe_tasks(node_id,state,job_id,created_at)")
+    connection.execute("INSERT OR IGNORE INTO probe_failover_scan_cursor(id,job_id,owner_index) VALUES(1,'',-1)")
 
 
 def connect_database(path: Path) -> sqlite3.Connection:

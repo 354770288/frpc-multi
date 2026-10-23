@@ -29,6 +29,12 @@
 - 初始策略不按名称猜测；旧选优配置中的外部完整能力节点可作为 UI 建议项，需在测试节点页明确保存主备顺序。角色变更只影响之后分配的任务，不重绑运行中任务。
 - 备用节点用于故障接替，不对同一目标同时执行多来源测量。取消日常任务创建中的多节点分发、服务器库结果来源切换与跨节点比较入口。
 - 使用现有租约机制判断失联；失联任务在租约到期后才可转交备用节点。每次接替增加执行代次，旧代次回报不覆盖当前任务状态或正式结果。
+- 任务执行代次 `generation` 从 0 开始，仅在执行节点转移时递增；每次领取仍另发 `attemptId`。新 worker 在心跳、进度和报告中回传 generation；为旧 worker 保留 generation=0 的兼容默认，generation 大于 0 时必须精确匹配。
+- Worker 心跳额外声明 `task-generation-v1` 协议能力。旧 worker 可继续执行未转移的 generation=0 主用任务，但调度器只把任务转交给已声明该能力的备用 worker；备用尚未升级时保持排队，并在测试节点管理页标明待升级。
+- 新任务创建时把当时已保存的主备 ID 顺序快照进 job；任务后续接替只沿该快照向后移动，不因全局策略修改而换链或回切。节点最后在线时间只由 heartbeat 更新，claim 轮询不延长在线状态；generation>0 的任务在 claim 发放时再次校验 worker 当前声明 `task-generation-v1`。
+- 运行中任务仅在租约过期且当前 owner 心跳超过 30 秒未更新时转交；尚未领取的 pending 任务在 owner 离线时可转交。按主用之后的备用顺序选择首个在线且能力合适的节点。无在线备用时保持 pending 并显示等待原因，不消耗领取重试次数；一旦转到备用节点，本批次剩余阶段不抢回主用节点。
+- generation、owner、attemptId 校验与每次结果/进度写入在同一事务内完成；旧 owner/attempt/generation 的进度、报告、阶段推进和发现命中一律拒绝。基础设施错误在节点在线时按现有最多三次领取策略重试；目标测试失败仍是正式结果。
+- 每次实际 owner 转移在同一事务插入 `probe_task_transfers` 记录，包含 task/job、原节点、新节点、generation、原因和时间；这些不可变记录用于测试节点接替历史。
 - 已完成任务保持完成；只重派未完成任务，并遵守路由、穿透、速率阶段依赖。旧节点恢复后保持待命，不抢占正在执行的备用任务；恢复主用只影响后续新任务。
 - 无可用备用节点时任务保持等待并说明原因。节点失联记为执行异常，不写成目标 IP 测试失败。
 
@@ -99,6 +105,7 @@
 ### 接口变化
 
 - 主备策略存于现有 `probe_settings` 的单一 JSON key `probe_execution_policy`，不以节点名作身份。`GET /api/probe/nodes/execution-policy` 返回 `configured`、`primaryNodeId`、有序 `backupNodeIds` 和仅供 UI 提示的 `suggestedPrimaryNodeId`；`PUT` 接受主节点及备用 ID 顺序。建议值只从旧域名选优来源推导，不自动保存。
+- 新增分页只读接口 `GET /api/probe/nodes/failovers`，支持节点、时间筛选，返回 job/task、原节点、新节点、generation、原因和发生时间；删除节点不清除转移记录。
 - 策略写入要求一个有效主节点；主备均须是外部 worker 且具备 discover/route/connectivity/speed 能力，备用唯一且不得包含主节点。离线状态不阻止保存。被策略引用的节点删除前须先从策略移除；保存策略不重绑在途任务。
 - 服务器查询新增多分组、标签包含/排除、测量条件和游标；返回 items、nextCursor、hasMore，匹配总数可独立查询。
 - 保留旧 page/pageSize 接口，兼容原 items、page、pageSize、total 格式；新旧接口共用筛选解释器。

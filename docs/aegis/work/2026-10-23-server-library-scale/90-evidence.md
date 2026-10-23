@@ -64,3 +64,16 @@ Evidence covers primary/backup summary display, omitted nodeIds, fixed scan port
 - Code-quality review: no blocking or correctness findings; optional future HTTP claim/report coverage noted.
 
 Policy validation, node eligibility, job creation, and task insertion run in one immediate write transaction. Compatibility entry points reject multiple, duplicate, or non-primary node IDs before busy-state responses and revalidate in the creation transaction. Backup failover and unified result projection remain unimplemented.
+
+## Slice: lease failover and transfer history
+
+- `./.venv/bin/python -m unittest tests.test_probe_jobs tests.test_probe` — exit 0; 135 tests passed after the final unfiltered batch waiting count addition.
+- `npm run build` — exit 0.
+- `npm test` — 2 files, 3 tests passed.
+- `npm run test:e2e -- e2e/test-creation.spec.ts` — 17 Playwright tests passed, including protocol-gated backup status, paginated transfer history, and batch waiting state independent of task filters/pages.
+- `git diff --check` — exit 0 before the final documentation update.
+- Spec and quality reviews found generation loss on pipeline child tasks, stale wait marking, unbounded policy scans, missing protocol status, and batch waiting UI inaccuracies; each finding was fixed and covered by regression tests before final re-review.
+
+Failover now snapshots the ordered policy into each job, transfers unfinished tasks only after lease/owner failure, increments and validates execution generation, preserves generation across pipeline stages, and requires the protocol feature on backup claim. Sweep work is bounded to at most 500 job/owner pairs and 500 task IDs per poll, with persistent cursor progress. Task transfer audit rows are available through a paginated endpoint. Legacy workers remain compatible for generation-zero primary tasks; backups without the new feature remain on standby.
+
+The full scale target, unified current-result projection and source migration, classification/filter/query redesign, 100k acceptance data, 1M stress, 10M scan throughput/memory, and production deployment remain unverified.

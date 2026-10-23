@@ -13,6 +13,7 @@ from pathlib import Path
 from .executor import execute_task
 
 CAPABILITIES=['discover','route','connectivity','speed']
+PROTOCOL_FEATURES=['task-generation-v1']
 
 
 def runtime_capabilities(frpc_bin):
@@ -32,9 +33,9 @@ class Worker:
     def _heartbeat(self):
         while not self.stop_event.is_set():
             with self.lock:
-                attempts=[{'taskId':v['task']['taskId'],'attemptId':v['task']['attemptId']} for v in self.active.values()]
+                attempts=[{'taskId':v['task']['taskId'],'attemptId':v['task']['attemptId'],'generation':v['task'].get('generation',0)} for v in self.active.values()]
             try:
-                response=self.transport('heartbeat',{'version':self.version,'capabilities':runtime_capabilities(self.frpc_bin),'attempts':attempts})
+                response=self.transport('heartbeat',{'version':self.version,'capabilities':runtime_capabilities(self.frpc_bin),'protocolFeatures':PROTOCOL_FEATURES,'attempts':attempts})
                 cancelled={(a['taskId'],a['attemptId']) for a in response.get('cancelled',[])}
                 with self.lock:
                     for task_id,entry in self.active.items():
@@ -49,7 +50,7 @@ class Worker:
         def cancelled():
             return self.stop_event.is_set() or entry['cancel'].is_set() or time.monotonic()-entry['renewed']>=90
         def post(name,body):
-            payload={'taskId':task['taskId'],'attemptId':task['attemptId'],**body}
+            payload={'taskId':task['taskId'],'attemptId':task['attemptId'],'generation':task.get('generation',0),**body}
             while not cancelled():
                 try:return self.transport(name,payload)
                 except Exception:
@@ -64,7 +65,7 @@ class Worker:
             if not cancelled():post('report',body)
             else:
                 # Acknowledge only after the engine has cleaned processes/listeners.
-                try:self.transport('report',{'taskId':task['taskId'],'attemptId':task['attemptId'],'infraError':'worker stopped or lease lost'})
+                try:self.transport('report',{'taskId':task['taskId'],'attemptId':task['attemptId'],'generation':task.get('generation',0),'infraError':'worker stopped or lease lost'})
                 except Exception:pass
         finally:
             with self.lock:self.active.pop(entry['key'],None)

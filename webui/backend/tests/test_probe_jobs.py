@@ -26,6 +26,8 @@ class ProbeJobsTests(unittest.TestCase):
         return self.store.set_execution_policy(node or self.a, [])
     def expire(self,task):
         with self.store._db() as c:c.execute('UPDATE probe_tasks SET lease_until=0 WHERE id=?',(task['taskId'],))
+    def online_generation_worker(self, node_id):
+        self.store.heartbeat(node_id, 'test', ['discover', 'route', 'connectivity', 'speed'], [], ['task-generation-v1'])
     def test_multi_node_every_target_isolated_and_port(self):
         self.job(nodes=[self.a,self.b],ips=['192.0.2.1','192.0.2.2'])
         first=self.store.claim(self.a)
@@ -156,12 +158,12 @@ class ProbeJobsTests(unittest.TestCase):
 
     def test_primary_assignment_reads_policy_and_inserts_tasks_in_same_write_transaction(self):
         self.set_primary(self.a)
-        seen = {}
+        seen = {'policy_connections': []}
         original_policy = self.store._stored_execution_policy
         original_task = self.store._task
 
         def policy_spy(connection):
-            seen['policy_connection'] = connection
+            seen['policy_connections'].append(connection)
             seen['policy_in_transaction'] = connection.in_transaction
             return original_policy(connection)
 
@@ -180,7 +182,7 @@ class ProbeJobsTests(unittest.TestCase):
         self.assertEqual({task['nodeId'] for task in job['tasks']}, {self.a})
         self.assertTrue(seen['policy_in_transaction'])
         self.assertTrue(seen['task_in_transaction'])
-        self.assertIs(seen['policy_connection'], seen['task_connection'])
+        self.assertTrue(any(connection is seen['task_connection'] for connection in seen['policy_connections']))
 
     def test_primary_discovery_route_and_legacy_adapters_stay_single_node(self):
         from app.probe.adapters import LegacyDiscoverAdapter, LegacyProbeAdapter
@@ -192,6 +194,7 @@ class ProbeJobsTests(unittest.TestCase):
         discover.start(DiscoverParams(['192.0.2.0/30'], [], 7000, 4, 1.0), auto_route=True)
         djob = self.store.get_job(discover.job_id)
         self.assertEqual({t['nodeId'] for t in djob['tasks']}, {self.a})
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
         first = self.store.claim(self.a)
         self.store.progress(self.a, first['taskId'], first['attemptId'], 1,
                             hits=[{'ip': '192.0.2.1', 'port': 7000, 'latencyMs': 1.0}],
@@ -367,6 +370,9 @@ class ProbeJobsTests(unittest.TestCase):
         with tarfile.open(fileobj=io.BytesIO(worker_bundle())) as archive:
             self.assertEqual(archive.extractfile('app/probe/engine.py').read(),Path('app/probe/engine.py').read_bytes())
             self.assertEqual(archive.extractfile('app/probe/discover.py').read(),Path('app/probe/discover.py').read_bytes())
+            worker_source = archive.extractfile('app/probe/worker.py').read()
+            self.assertEqual(worker_source, Path('app/probe/worker.py').read_bytes())
+            self.assertIn(b'task-generation-v1', worker_source)
 
 
     def test_retry_preserves_gate_and_successful_downstream(self):
@@ -449,6 +455,21 @@ class ProbeJobsTests(unittest.TestCase):
         self.assertEqual(sum(row['count'] for row in counts if row['nodeId'] == self.b), 3)
         self.assertEqual(sum(row['count'] for row in counts if row['state'] == 'running'), 1)
         self.assertTrue(all(row['stage'] == 'connectivity' for row in counts))
+
+    def test_job_detail_waiting_failover_count_is_unfiltered_and_unpaged(self):
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b])
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.61', '192.0.2.62', '192.0.2.63'])
+        with self.store._db() as c:
+            task_ids = [row['id'] for row in c.execute('SELECT id FROM probe_tasks WHERE job_id=? ORDER BY ip', (job['id'],))]
+            c.execute("UPDATE probe_tasks SET state='done' WHERE id=?", (task_ids[0],))
+            # Exercise the legacy error marker fallback alongside the new flag.
+            c.execute("UPDATE probe_tasks SET failover_waiting=0 WHERE id=?", (task_ids[1],))
+
+        detail = self.store.get_job(job['id'], page=1, page_size=1, state='done', target='192.0.2.61')
+        self.assertEqual(len(detail['tasks']), 1)
+        self.assertEqual(detail['filteredTaskTotal'], 1)
+        self.assertEqual(detail['failoverWaitingCount'], 2)
 
 
     def test_runtime_capabilities_require_dependencies(self):
@@ -642,3 +663,367 @@ class ProbeJobsTests(unittest.TestCase):
 
         self.assertEqual(rejected.exception.status_code,400)
         self.assertEqual(len(self.store.list_jobs()),before)
+
+    def test_primary_managed_pending_task_waits_then_fails_over_to_first_online_backup(self):
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b])
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.31'])
+        task_id = job['tasks'][0]['taskId']
+        with self.store._db() as c:
+            before = c.execute('SELECT attempts,generation,node_id,error FROM probe_tasks WHERE id=?', (task_id,)).fetchone()
+            self.assertEqual(before['node_id'], self.a)
+            self.assertEqual(before['generation'], 0)
+            self.assertEqual(before['error'], 'waiting for an online backup')
+        self.online_generation_worker(self.b)
+        claimed = self.store.claim(self.b)
+        self.assertEqual(claimed['taskId'], task_id)
+        self.assertEqual(claimed['generation'], 1)
+        with self.store._db() as c:
+            after = c.execute('SELECT attempts,generation,node_id FROM probe_tasks WHERE id=?', (task_id,)).fetchone()
+            transfer = c.execute('SELECT from_node_id,to_node_id,generation,reason FROM probe_task_transfers WHERE task_id=?', (task_id,)).fetchone()
+        self.assertEqual(after['attempts'], before['attempts'] + 1)
+        self.assertEqual(after['node_id'], self.b)
+        self.assertEqual(tuple(transfer), (self.a, self.b, 1, 'pending_owner_offline'))
+
+    def test_failover_skips_online_old_backup_until_heartbeat_advertises_feature(self):
+        cnode = self.store.create_node('generation-worker')['id']
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b, cnode])
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.35'])
+        # A legacy backup stays valid configuration and online, but cannot take over.
+        self.store.heartbeat(self.b, 'old', ['discover', 'route', 'connectivity', 'speed'], [])
+        self.assertEqual(self.store.get_node(self.b)['protocolFeatures'], [])
+        # Advertising support through the normal heartbeat makes the later backup eligible.
+        self.store.heartbeat(cnode, 'new', ['discover', 'route', 'connectivity', 'speed'], [], ['task-generation-v1'])
+        self.assertEqual(self.store.get_node(cnode)['protocolFeatures'], ['task-generation-v1'])
+        claimed = self.store.claim(cnode)
+        self.assertEqual(claimed['taskId'], job['tasks'][0]['taskId'])
+        self.assertEqual(claimed['nodeId'], cnode)
+        self.assertEqual(claimed['generation'], 1)
+
+    def test_claim_rechecks_generation_protocol_after_backup_downgrade(self):
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b])
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.36'])
+        task_id = job['tasks'][0]['taskId']
+        self.store.heartbeat(self.b, 'new', ['discover', 'route', 'connectivity', 'speed'], [], ['task-generation-v1'])
+        with self.store._db() as c:
+            transferred = c.execute('SELECT node_id,generation,state FROM probe_tasks WHERE id=?', (task_id,)).fetchone()
+        self.assertEqual(tuple(transferred), (self.b, 1, 'pending'))
+
+        # A legacy/downgraded heartbeat clears the feature before claim.
+        self.store.heartbeat(self.b, 'old', ['discover', 'route', 'connectivity', 'speed'], [])
+        self.assertIsNone(self.store.claim(self.b))
+        with self.store._db() as c:
+            waiting = c.execute('SELECT node_id,generation,state FROM probe_tasks WHERE id=?', (task_id,)).fetchone()
+        self.assertEqual(tuple(waiting), (self.b, 1, 'pending'))
+
+        self.store.heartbeat(self.b, 'new', ['discover', 'route', 'connectivity', 'speed'], [], ['task-generation-v1'])
+        claimed = self.store.claim(self.b)
+        self.assertEqual(claimed['taskId'], task_id)
+        self.assertEqual(claimed['generation'], 1)
+
+    def test_online_downgraded_generation_owner_fails_over_to_later_capable_backup(self):
+        cnode = self.store.create_node('later-generation-worker')['id']
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b, cnode])
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.39'])
+        task_id = job['tasks'][0]['taskId']
+        self.online_generation_worker(self.b)
+        with self.store._db() as c:
+            first = c.execute('SELECT node_id,generation FROM probe_tasks WHERE id=?', (task_id,)).fetchone()
+            c.execute('UPDATE probe_nodes SET protocol_features=? WHERE id=?', ('[]', self.b))
+        self.assertEqual(tuple(first), (self.b, 1))
+
+        # B is still heartbeat-online, but has lost the generation protocol.
+        self.online_generation_worker(cnode)
+        with self.store._db() as c:
+            task = c.execute('SELECT node_id,generation,state FROM probe_tasks WHERE id=?', (task_id,)).fetchone()
+            transfers = c.execute('SELECT from_node_id,to_node_id,generation FROM probe_task_transfers WHERE task_id=? ORDER BY id', (task_id,)).fetchall()
+        self.assertEqual(tuple(task), (cnode, 2, 'pending'))
+        self.assertEqual([tuple(row) for row in transfers], [(self.a, self.b, 1), (self.b, cnode, 2)])
+
+    def test_reported_pipeline_child_inherits_generation_and_backup_protocol_fence(self):
+        cnode = self.store.create_node('pipeline-later-worker')['id']
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b, cnode])
+        job = self.store.create_primary_job('full', ips=['192.0.2.40'])
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        route = self.store.claim(self.a)
+        self.expire(route)
+        with self.store._db() as c:
+            c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (self.a,))
+        self.online_generation_worker(self.b)
+        # The heartbeat rehomes the pending expired route; B then claims it.
+        takeover = self.store.claim(self.b)
+        self.assertEqual(takeover['generation'], 1)
+        self.assertTrue(self.store.report(self.b, takeover['taskId'], takeover['attemptId'], generation=1, result={'ok': True})['applied'])
+        with self.store._db() as c:
+            child = c.execute("SELECT id,node_id,generation,state FROM probe_tasks WHERE job_id=? AND stage='connectivity'", (job['id'],)).fetchone()
+        self.assertEqual(tuple(child)[1:], (self.b, 1, 'pending'))
+
+        # B remains heartbeat-online, but a downgraded version loses ownership.
+        self.store.heartbeat(self.b, 'old', ['discover', 'route', 'connectivity', 'speed'], [])
+        self.online_generation_worker(cnode)
+        with self.store._db() as c:
+            child_after = c.execute('SELECT node_id,generation,state FROM probe_tasks WHERE id=?', (child['id'],)).fetchone()
+        self.assertEqual(tuple(child_after), (cnode, 2, 'pending'))
+        self.assertIsNone(self.store.claim(self.b))
+
+    def test_managed_generation_zero_task_on_backup_requires_protocol_feature(self):
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b])
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.41'])
+        task_id = job['tasks'][0]['taskId']
+        # Recreate the legacy child-task shape: managed job, backup owner, generation zero.
+        with self.store._db() as c:
+            c.execute('UPDATE probe_tasks SET node_id=? WHERE id=?', (self.b, task_id))
+        self.store.heartbeat(self.b, 'old', ['discover', 'route', 'connectivity', 'speed'], [])
+        self.assertIsNone(self.store.claim(self.b))
+        with self.store._db() as c:
+            waiting = c.execute('SELECT node_id,generation,state FROM probe_tasks WHERE id=?', (task_id,)).fetchone()
+        self.assertEqual(tuple(waiting), (self.b, 0, 'pending'))
+        self.store.heartbeat(self.b, 'new', ['discover', 'route', 'connectivity', 'speed'], [], ['task-generation-v1'])
+        claimed = self.store.claim(self.b)
+        self.assertEqual(claimed['generation'], 0)
+
+    def test_expired_wait_flag_clears_when_primary_heartbeat_recovers(self):
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b])
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.42'])
+        task_id = job['tasks'][0]['taskId']
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        task = self.store.claim(self.a)
+        self.expire(task)
+        with self.store._db() as c:
+            c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (self.a,))
+        self.assertIsNone(self.store.claim(self.a))
+        with self.store._db() as c:
+            row = c.execute('SELECT state,error,failover_waiting FROM probe_tasks WHERE id=?', (task_id,)).fetchone()
+        self.assertEqual(tuple(row), ('pending', 'waiting for an online backup', 1))
+
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        claimed = self.store.claim(self.a)
+        self.assertEqual(claimed['taskId'], task_id)
+        self.assertEqual(claimed['generation'], 0)
+
+    def test_pending_failover_processing_is_bounded_to_500_ids_per_expire(self):
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b])
+        ips = [f'192.0.2.{address}' for address in range(1, 256)] + [f'192.0.3.{address}' for address in range(1, 256)]
+        original_update = self.store._update_pending_error_batch
+        updates = []
+        def tracked_update(connection, job_id, owner_id, old_error, new_error, limit, **kwargs):
+            changed = original_update(connection, job_id, owner_id, old_error, new_error, limit, **kwargs)
+            updates.append((limit, changed))
+            return changed
+        self.store._update_pending_error_batch = tracked_update
+        job = self.store.create_primary_job('connectivity', ips=ips)
+        with self.store._db() as c:
+            plan = [row['detail'] for row in c.execute(
+                "EXPLAIN QUERY PLAN SELECT id FROM probe_tasks WHERE node_id=? AND state='pending' AND job_id=? ORDER BY created_at,rowid LIMIT 500",
+                (self.a, job['id']),
+            )]
+            waiting = c.execute("SELECT COUNT(*) FROM probe_tasks WHERE job_id=? AND error='waiting for an online backup'", (job['id'],)).fetchone()[0]
+        self.assertTrue(any('idx_probe_tasks_failover_batch' in detail for detail in plan), plan)
+        self.assertEqual(waiting, 500)
+        self.assertEqual(updates[-1], (500, 500))
+        self.assertIsNone(self.store.claim(self.a))
+        self.assertIn((500, 10), updates)
+        self.assertIsNone(self.store.claim(self.a))
+        self.assertTrue(all(limit <= 500 and changed <= 500 for limit, changed in updates))
+
+        original_batch = self.store._pending_failover_batch
+        examined = []
+        def tracked_batch(connection, job_id, owner_id, limit, **kwargs):
+            rows = original_batch(connection, job_id, owner_id, limit, **kwargs)
+            examined.append((limit, len(rows)))
+            return rows
+        self.store._pending_failover_batch = tracked_batch
+        self.online_generation_worker(self.b)
+        self.assertEqual(sum(count for _, count in examined), 500)
+        self.assertTrue(all(limit <= 500 and count <= 500 for limit, count in examined))
+        with self.store._db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM probe_task_transfers WHERE job_id=?', (job['id'],)).fetchone()[0], 500)
+
+        self.online_generation_worker(self.b)
+        with self.store._db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM probe_task_transfers WHERE job_id=?', (job['id'],)).fetchone()[0], 510)
+
+    def test_job_policy_snapshot_survives_reorder_without_returning_to_former_primary(self):
+        cnode = self.store.create_node('snapshot-later-backup')['id']
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b, cnode])
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.37'])
+        with self.store._db() as c:
+            snapshot = json.loads(c.execute('SELECT execution_policy FROM probe_jobs WHERE id=?', (job['id'],)).fetchone()[0])
+        self.assertEqual(snapshot, {'primaryNodeId': self.a, 'backupNodeIds': [self.b, cnode]})
+
+        # Heartbeat B to transfer from A without claiming the task.
+        self.online_generation_worker(self.b)
+        with self.store._db() as c:
+            first_transfer = c.execute('SELECT node_id,generation,state FROM probe_tasks WHERE id=?', (job['tasks'][0]['taskId'],)).fetchone()
+        self.assertEqual(tuple(first_transfer), (self.b, 1, 'pending'))
+
+        # The global policy now puts A before C, but this in-flight job keeps A -> B -> C.
+        self.store.set_execution_policy(self.b, [self.a, cnode])
+        with self.store._db() as c:
+            c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (self.b,))
+        self.online_generation_worker(self.a)
+        self.online_generation_worker(cnode)
+        self.store.heartbeat(cnode, 'new', ['discover', 'route', 'connectivity', 'speed'], [], ['task-generation-v1'])
+        with self.store._db() as c:
+            task = c.execute('SELECT node_id,generation,state FROM probe_tasks WHERE id=?', (job['tasks'][0]['taskId'],)).fetchone()
+            transfers = c.execute('SELECT from_node_id,to_node_id,generation FROM probe_task_transfers WHERE job_id=? ORDER BY id', (job['id'],)).fetchall()
+        self.assertEqual(tuple(task), (cnode, 2, 'pending'))
+        self.assertEqual([tuple(row) for row in transfers], [(self.a, self.b, 1), (self.b, cnode, 2)])
+        claimed = self.store.claim(cnode)
+        self.assertEqual(claimed['generation'], 2)
+
+    def test_claim_polling_does_not_refresh_node_heartbeat_or_bypass_wait_state(self):
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b])
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.38'])
+        task_id = job['tasks'][0]['taskId']
+        with self.store._db() as c:
+            self.assertEqual(c.execute('SELECT last_seen FROM probe_nodes WHERE id=?', (self.a,)).fetchone()[0], 0)
+        self.assertIsNone(self.store.claim(self.a))
+        self.assertIsNone(self.store.claim(self.b))
+        with self.store._db() as c:
+            owner_seen = c.execute('SELECT last_seen FROM probe_nodes WHERE id=?', (self.a,)).fetchone()[0]
+            backup_seen = c.execute('SELECT last_seen FROM probe_nodes WHERE id=?', (self.b,)).fetchone()[0]
+            task = c.execute('SELECT attempts,state,error FROM probe_tasks WHERE id=?', (task_id,)).fetchone()
+        self.assertEqual(owner_seen, 0)
+        self.assertEqual(backup_seen, 0)
+        self.assertEqual(tuple(task), (0, 'pending', 'waiting for an online backup'))
+
+        # A real heartbeat makes the current owner online and releases the wait.
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        claimed = self.store.claim(self.a)
+        self.assertEqual(claimed['generation'], 0)
+
+    def test_expired_running_primary_task_fails_over_and_stale_generation_is_fenced(self):
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b])
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.32'])
+        task_id = job['tasks'][0]['taskId']
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        first = self.store.claim(self.a)
+        self.assertEqual(first['generation'], 0)
+        self.expire(first)
+        with self.store._db() as c:
+            c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (self.a,))
+        self.online_generation_worker(self.b)
+        second = self.store.claim(self.b)
+        self.assertEqual(second['taskId'], task_id)
+        self.assertEqual(second['generation'], 1)
+        stale_heartbeat = self.store.heartbeat(self.b, 'test', ['connectivity'], [
+            {'taskId': task_id, 'attemptId': second['attemptId'], 'generation': 0},
+        ])
+        self.assertEqual(stale_heartbeat['cancelled'], [
+            {'taskId': task_id, 'attemptId': second['attemptId'], 'generation': 0},
+        ])
+        stale_progress = self.store.progress(self.a, task_id, first['attemptId'], 1, generation=0)
+        self.assertFalse(stale_progress['accepted'])
+        stale_report = self.store.report(self.a, task_id, first['attemptId'], generation=0,
+                                         result={'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True})
+        self.assertFalse(stale_report['applied'])
+        self.assertEqual(self.store.report(self.b, task_id, second['attemptId'], generation=1,
+                                           result={'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True})['applied'], True)
+        history = self.store.latest_results(self.b, 'connectivity')
+        self.assertEqual(history[0]['generation'], 1)
+        with self.store._db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM probe_results WHERE task_id=?', (task_id,)).fetchone()[0], 1)
+
+    def test_ordered_backup_transfer_never_returns_to_primary_and_children_keep_backup_owner(self):
+        cnode = self.store.create_node('c')['id']
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b, cnode])
+        job = self.store.create_primary_job('full', ips=['192.0.2.33'])
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        route = self.store.claim(self.a)
+        self.expire(route)
+        with self.store._db() as c:
+            c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (self.a,))
+        self.online_generation_worker(self.b)
+        takeover = self.store.claim(self.b)
+        self.assertEqual(takeover['generation'], 1)
+        self.assertTrue(self.store.report(self.b, takeover['taskId'], takeover['attemptId'], generation=1, result={'ok': True})['applied'])
+        with self.store._db() as c:
+            child = c.execute("SELECT node_id,stage FROM probe_tasks WHERE job_id=? AND stage='connectivity'", (job['id'],)).fetchone()
+            c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (self.b,))
+        self.online_generation_worker(cnode)
+        self.assertEqual(tuple(child), (self.b, 'connectivity'))
+        second_takeover = self.store.claim(cnode)
+        self.assertEqual(second_takeover['generation'], 2)
+        with self.store._db() as c:
+            self.assertEqual(c.execute('SELECT node_id FROM probe_tasks WHERE id=?', (second_takeover['taskId'],)).fetchone()[0], cnode)
+            transfers = c.execute('SELECT from_node_id,to_node_id,generation FROM probe_task_transfers WHERE job_id=? ORDER BY id', (job['id'],)).fetchall()
+        self.assertEqual([tuple(row) for row in transfers], [(self.a, self.b, 1), (self.b, cnode, 2)])
+        self.assertEqual(self.store.report(self.a, route['taskId'], route['attemptId'], result={'ok': True})['applied'], False)
+
+    def test_unmanaged_low_level_job_keeps_its_explicit_owner(self):
+        import time
+        job = self.store.create_job('connectivity', [self.a], ips=['192.0.2.34'])
+        with self.store._db() as c:
+            c.execute('UPDATE probe_nodes SET last_seen=? WHERE id=?', (time.time(), self.b))
+            c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (self.a,))
+            self.assertEqual(c.execute('SELECT primary_managed FROM probe_jobs WHERE id=?', (job['id'],)).fetchone()[0], 0)
+        self.assertIsNone(self.store.claim(self.b))
+        with self.store._db() as c:
+            row = c.execute('SELECT node_id,generation FROM probe_tasks WHERE job_id=?', (job['id'],)).fetchone()
+            self.assertEqual(tuple(row), (self.a, 0))
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM probe_task_transfers WHERE job_id=?', (job['id'],)).fetchone()[0], 0)
+
+    def test_existing_sqlite_probe_schema_gets_additive_failover_columns(self):
+        import sqlite3
+        from app.control.database import initialize_database
+        old_path = Path(self.tmp.name) / 'pre-failover.db'
+        connection = sqlite3.connect(old_path)
+        connection.executescript('''
+            CREATE TABLE probe_jobs (
+                id TEXT PRIMARY KEY, mode TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'running',
+                options TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE TABLE probe_nodes (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, token TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL DEFAULT 'worker', version TEXT NOT NULL DEFAULT '',
+                capabilities TEXT NOT NULL DEFAULT '[]', last_seen REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO probe_nodes(id,name,token,created_at) VALUES('old-node','Old node','old-token','2026-10-22T00:00:00+00:00');
+            CREATE TABLE probe_tasks (
+                id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES probe_jobs(id),
+                node_id TEXT NOT NULL, stage TEXT NOT NULL, ip TEXT NOT NULL DEFAULT '',
+                port INTEGER NOT NULL, payload TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL DEFAULT 'pending',
+                attempt_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, lease_until REAL NOT NULL DEFAULT 0,
+                seq INTEGER NOT NULL DEFAULT 0, progress TEXT NOT NULL DEFAULT '{}',
+                error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+            );
+            CREATE TABLE probe_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL DEFAULT '',
+                job_id TEXT NOT NULL, node_id TEXT NOT NULL, kind TEXT NOT NULL,
+                server_ip TEXT NOT NULL, port INTEGER NOT NULL, test_time TEXT NOT NULL, data TEXT NOT NULL,
+                UNIQUE(task_id,attempt_id)
+            );
+            INSERT INTO probe_jobs(id,mode,options,created_at) VALUES('old-job','connectivity','{}','2026-10-22T00:00:00+00:00');
+            INSERT INTO probe_tasks(id,job_id,node_id,stage,ip,port,created_at) VALUES('old-task','old-job','old-node','connectivity','192.0.2.50',7000,'2026-10-22T00:00:00+00:00');
+            INSERT INTO probe_results(task_id,attempt_id,job_id,node_id,kind,server_ip,port,test_time,data)
+                VALUES('old-task','old-attempt','old-job','old-node','connectivity','192.0.2.50',7000,'2026-10-22T00:00:00+00:00','{}');
+        ''')
+        connection.close()
+        initialize_database(old_path)
+        connection = sqlite3.connect(old_path)
+        try:
+            for table, expected in (('probe_nodes', 'protocol_features'), ('probe_jobs', 'primary_managed'), ('probe_jobs', 'execution_policy'), ('probe_tasks', 'generation'), ('probe_tasks', 'failover_waiting'), ('probe_results', 'generation')):
+                columns = {row[1] for row in connection.execute(f'PRAGMA table_info({table})')}
+                self.assertIn(expected, columns)
+            self.assertEqual(connection.execute('SELECT primary_managed FROM probe_jobs WHERE id=?', ('old-job',)).fetchone()[0], 0)
+            self.assertEqual(connection.execute('SELECT execution_policy FROM probe_jobs WHERE id=?', ('old-job',)).fetchone()[0], '{}')
+            self.assertEqual(connection.execute('SELECT protocol_features FROM probe_nodes').fetchone()[0], '[]')
+            self.assertEqual(connection.execute('SELECT generation FROM probe_tasks WHERE id=?', ('old-task',)).fetchone()[0], 0)
+            self.assertEqual(connection.execute('SELECT failover_waiting FROM probe_tasks WHERE id=?', ('old-task',)).fetchone()[0], 0)
+            self.assertEqual(connection.execute('SELECT generation FROM probe_results WHERE task_id=?', ('old-task',)).fetchone()[0], 0)
+            self.assertIsNotNone(connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='probe_task_transfers'").fetchone())
+        finally:
+            connection.close()
