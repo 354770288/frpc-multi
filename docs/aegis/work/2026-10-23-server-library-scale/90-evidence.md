@@ -32,4 +32,14 @@ Confidence for this slice: A for fixed-port behavior and directly affected probe
 - Code-quality review: one concurrent-delete status inconsistency was fixed and independently rechecked; no remaining findings.
 - Regression coverage: eligible/ineligible and offline nodes, order and uniqueness, non-persisted suggestion, corrupt policy repair, fail-closed deletion, unchanged in-flight jobs, and concurrent legacy deletion mapping.
 
-The UI does not yet consume this endpoint and task creation does not yet assign by this policy. Capacity, lease failover, unified results, and production node selection remain unverified.
+The UI now consumes this endpoint, but task creation does not yet assign by the saved policy. Capacity, lease failover, unified results, and production node selection remain unverified.
+
+## Slice: desktop test-node policy UI
+
+- `npm run build` — exit 0; TypeScript and Vite production bundle passed.
+- `npm test` — exit 0; 2 files and 3 Vitest tests passed.
+- `git diff --check` — exit 0.
+- Spec review: no remaining findings after unsaved-suggestion and in-flight-save handling fixes.
+- Code-quality review: no actionable findings.
+
+The UI now edits policy without assigning tasks; task creation and lease failover remain subsequent slices.

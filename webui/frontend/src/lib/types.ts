@@ -504,6 +504,12 @@ export type LbSyncLog = {
 // Persistent source-aware probe jobs.
 export type ProbeMode = 'discover' | 'route' | 'connectivity' | 'speed' | 'full';
 export type TestNode = { id: string; name: string; kind: 'console' | 'worker' | 'legacy'; version: string; capabilities: string[]; online: boolean; lastSeen: string | null; createdAt: string; tokenMasked: string; installCommand: string };
+export type TestNodeExecutionPolicy = {
+  configured: boolean;
+  primaryNodeId: string | null;
+  backupNodeIds: string[];
+  suggestedPrimaryNodeId: string | null;
+};
 export type ProbeJobInput = { mode: ProbeMode; nodeIds: string[]; ips?: string[]; targetScope?: 'explicit' | 'all'; targets?: string | string[]; sourceUrl?: string; exclude?: string | string[]; port?: number; autoRoute?: boolean; autoFull?: boolean; concurrency?: number; timeout?: number };
 export type ProbeTaskState = 'pending' | 'running' | 'cancelling' | 'done' | 'failed' | 'skipped' | 'stopped';
 export type ProbeTask = { taskId: string; attemptId: string | null; jobId: string; nodeId: string; stage: string; ip: string; port: number; state: ProbeTaskState; attempts: number; seq: number; progress: Record<string, unknown>; error: string; payload: Record<string, unknown>; createdAt: string; result: Record<string, unknown> | null };

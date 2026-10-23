@@ -1,7 +1,7 @@
 import { getAuthToken, notifyUnauthorized, AuthError } from './auth';
 import type {
   AuditLog,
-  TestNode, ProbeJobInput, ProbeJob, ProbeJobDetail, ProbeComparison, LbSelectionConfig,
+  TestNode, TestNodeExecutionPolicy, ProbeJobInput, ProbeJob, ProbeJobDetail, ProbeComparison, LbSelectionConfig,
   CloudflareInfo,
   CloudflareZone,
   DiscoverFacets,
@@ -158,6 +158,12 @@ export type ProbeServerPayload = {
 
 export const probeApi = {
   testNodes: () => api<{ items: TestNode[] }>('/api/probe/nodes'),
+  executionPolicy: () => api<TestNodeExecutionPolicy>('/api/probe/nodes/execution-policy'),
+  saveExecutionPolicy: (primaryNodeId: string, backupNodeIds: string[]) =>
+    api<TestNodeExecutionPolicy>('/api/probe/nodes/execution-policy', {
+      method: 'PUT',
+      body: JSON.stringify({ primaryNodeId, backupNodeIds })
+    }),
   createTestNode: (name: string) => api<TestNode & { token: string }>('/api/probe/nodes', { method: 'POST', body: JSON.stringify({ name }) }),
   deleteTestNode: (id: string) => api<{ ok: boolean }>(`/api/probe/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   jobs: () => api<{ items: ProbeJob[] }>('/api/probe/jobs'),

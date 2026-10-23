@@ -5,7 +5,7 @@
 - [x] Baseline and execution contract: inspect discovery, task leasing, result ownership, schema, API, and UI; record current evidence and lock first implementation slice.
 - [x] Fixed IP:7000 task semantics and current-result lookup; legacy non-7000 history remains readable.
 - [x] Persisted primary/backup policy API with validation and deletion guard.
-- [ ] Desktop test-node management for explicit primary/backup ordering.
+- [x] Desktop test-node management for explicit primary/backup ordering.
 - [ ] New task creation automatically assigns only to configured primary.
 - [ ] Durable scan recovery, fenced failover, bounded retries, and unified current results.
 - [ ] Domestic primary/backup scheduler and unified result projection.
@@ -15,10 +15,10 @@
 
 ## ResumeStateHint
 
-- Current status: fixed-port slice committed; node-policy backend API verified; broader plan remains active.
-- Active slice: add desktop controls for selecting one primary and ordered eligible backups, using the persisted policy API and suggestion only as an unsaved draft.
-- Completed: fixed target port 7000 across task creation paths; server result projection matches fixed port regardless of frps_port setting; HTTP validation maps to 400 including compatibility and route-start paths; historical alternate-port record remains retrievable; persisted policy validates stable worker IDs, preserves backup order, permits offline nodes, fails closed on corrupt state, and protects referenced-node deletion.
-- Next: complete the test-node policy UI, then update task creation to use only the saved primary before implementing lease failover.
+- Current status: fixed-port and persisted node-policy API/UI slices verified and committed; broader plan remains active.
+- Active slice: make new task creation resolve exactly one configured primary; reject unsafe multi-node fan-out while retaining the old worker protocol for already assigned jobs.
+- Completed: fixed target port 7000 across task creation paths; server result projection matches fixed port regardless of frps_port setting; HTTP validation maps to 400 including compatibility and route-start paths; historical alternate-port record remains retrievable; persisted policy validates stable worker IDs, preserves backup order, permits offline nodes, fails closed on corrupt state, protects referenced-node deletion; desktop test-node page explicitly saves primary and ordered backups, marks suggestions unsaved, preserves offline choices, and prevents stale-response/during-save draft loss.
+- Next: implement primary-only task assignment and preserve legacy compatibility for in-flight jobs; then add lease-based failover and unified current results.
 
 ## Execution Readiness View
 
