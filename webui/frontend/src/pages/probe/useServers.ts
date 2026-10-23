@@ -17,7 +17,7 @@ const EMPTY_FACETS: ServerFacets = { labels: [], groups: [] };
 
 type PageRefreshOptions = { recoverOutOfRange?: boolean };
 
-export function useServers(active: boolean, nodeId = 'console') {
+export function useServers(active: boolean) {
   const [,setUrl] = useSearchParams();
   const [query, setQuery] = useState<ServerQuery>(() => {
     const p=new URLSearchParams(window.location.search);
@@ -52,17 +52,6 @@ export function useServers(active: boolean, nodeId = 'console') {
     sessionStorage.setItem('probe_selected_endpoints', JSON.stringify([...selected.values()]));
   }, [selected]);
 
-  const lastNode=useRef(nodeId);
-  useEffect(() => {
-    if(lastNode.current===nodeId)return;
-    lastNode.current=nodeId;
-    pageController.current?.abort(); facetController.current?.abort();
-    pageGeneration.current++; facetGeneration.current++;
-    setPage(EMPTY_PAGE);
-    setFacets(EMPTY_FACETS);
-    setQuery((current) => ({ ...current, page: 1 }));
-  }, [nodeId]);
-
   const pageController = useRef<AbortController | null>(null);
   const facetController = useRef<AbortController | null>(null);
   const pageGeneration = useRef(0);
@@ -81,7 +70,7 @@ export function useServers(active: boolean, nodeId = 'console') {
     const generation = ++pageGeneration.current;
     const requested = queryRef.current;
     try {
-      const next = await probeApi.servers(requested, controller.signal, nodeId);
+      const next = await probeApi.servers(requested, controller.signal);
       if (controller.signal.aborted || generation !== pageGeneration.current) return;
       const lastPage = Math.max(1, Math.ceil(next.total / next.pageSize));
       if (options.recoverOutOfRange && requested.page > lastPage) {
@@ -94,7 +83,7 @@ export function useServers(active: boolean, nodeId = 'console') {
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) throw error;
     }
-  }, [isVisible, nodeId]);
+  }, [isVisible]);
 
   const refreshFacets = useCallback(async () => {
     if (!isVisible()) return;
@@ -103,12 +92,12 @@ export function useServers(active: boolean, nodeId = 'console') {
     facetController.current = controller;
     const generation = ++facetGeneration.current;
     try {
-      const next = await probeApi.serverFacets(controller.signal, nodeId);
+      const next = await probeApi.serverFacets(controller.signal);
       if (!controller.signal.aborted && generation === facetGeneration.current) setFacets(next);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) throw error;
     }
-  }, [isVisible, nodeId]);
+  }, [isVisible]);
 
   const refreshAll = useCallback(async (options: PageRefreshOptions = {}) => {
     await Promise.all([refreshPage(options), refreshFacets()]);

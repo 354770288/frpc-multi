@@ -274,34 +274,32 @@ class ProbeStore:
             connection.close()
 
     def _source_views(self, connection):
-        """Index one latest result per asset, keeping history in the canonical store."""
-        node = "'" + self.node_id.replace("'", "''") + "'"
-        default_port=PROBE_TEST_PORT
-        connection.create_function('probe_endpoint_host',1,lambda value:split_probe_endpoint(value,default_port)[0])
-        connection.create_function('probe_endpoint_port',1,lambda value:split_probe_endpoint(value,default_port)[1])
-        # Normalize each asset once. Parsing addresses inside a historical-result
-        # JOIN prevents index seeks and multiplies work by assets × history.
-        connection.execute('CREATE TEMP TABLE _probe_endpoint_assets AS SELECT ip, probe_endpoint_host(ip) AS host, probe_endpoint_port(ip) AS port FROM main.probe_servers')
+        """Expose unified current results to server views; discovery stays node-scoped."""
+        default_port = PROBE_TEST_PORT
+        connection.create_function('probe_endpoint_host', 1, lambda value: split_probe_endpoint(value, default_port)[0])
+        connection.create_function('probe_endpoint_port', 1, lambda value: split_probe_endpoint(value, default_port)[1])
+        connection.execute('CREATE TEMP TABLE _probe_endpoint_assets AS '
+                           'SELECT ip, probe_endpoint_host(ip) AS host, probe_endpoint_port(ip) AS port '
+                           'FROM main.probe_servers')
         for kind, table, fields in [
             ('connectivity', 'probe_connectivity_results', ['frps_reachable','tunnel_established','firewall_open','detail']),
             ('speed', 'probe_speed_results', ['frps_reachable','tunnel_ok','dl_ok','dl_bytes','dl_sec','ul_ok','ul_bytes','ul_sec','detail']),
         ]:
-            columns = ["r.id+1000000000 AS id", 'a.ip AS server_ip', 'test_time']
-            columns.extend("COALESCE(json_extract(data,'$."+f+"'),"+("''" if f=='detail' else '0')+") AS "+f for f in fields)
+            columns = ['r.source_result_id AS id', 'a.ip AS server_ip', 'r.test_time']
+            columns.extend(
+                "COALESCE(json_extract(r.data,'$." + field + "')," + ("''" if field in {'detail','error','hops'} else '0') + ") AS " + field
+                for field in fields
+            )
             if kind == 'speed':
                 for prefix in ('dl','ul'):
-                    columns.extend([f"COALESCE(json_extract(data,'$.{prefix}_speed_bps'),0)*8.0/1048576 AS {prefix}_speed_mbps", f"COALESCE(json_extract(data,'$.{prefix}_speed_bps'),0)/1048576.0 AS {prefix}_speed_mbs"])
+                    columns.extend([
+                        f"COALESCE(json_extract(r.data,'$.{prefix}_speed_bps'),0)*8.0/1048576 AS {prefix}_speed_mbps",
+                        f"COALESCE(json_extract(r.data,'$.{prefix}_speed_bps'),0)/1048576.0 AS {prefix}_speed_mbs",
+                    ])
             projection = ','.join(columns)
-            latest = (f"SELECT {projection} FROM _probe_endpoint_assets a JOIN main.probe_results r ON r.id=("
-                      f"SELECT id FROM main.probe_results latest WHERE latest.node_id={node} AND latest.kind='{kind}' "
-                      "AND latest.server_ip=a.host AND latest.port=a.port ORDER BY latest.id DESC LIMIT 1)")
-            if self.node_id == 'console':
-                # Preserve unsnapshotted legacy writes until initialization imports
-                # them, without copying the entire historical table per request.
-                latest += (" UNION ALL SELECT id,server_ip,test_time," +
-                           ",".join(fields + ([p+suffix for p in ('dl','ul') for suffix in ('_speed_mbps','_speed_mbs')] if kind=='speed' else [])) +
-                           f" FROM main.{table} legacy WHERE NOT EXISTS(SELECT 1 FROM main.probe_results snapshot WHERE snapshot.task_id='legacy-{kind}-'||legacy.id) "
-                           f"AND legacy.id=(SELECT MAX(id) FROM main.{table} older WHERE older.server_ip=legacy.server_ip)")
+            latest = (f"SELECT {projection} FROM _probe_endpoint_assets a "
+                      "JOIN main.probe_current_results r ON r.server_ip=a.host AND r.port=a.port "
+                      f"WHERE r.kind='{kind}' AND r.port={PROBE_TEST_PORT}")
             indexed_table = '_source_' + table
             connection.execute(f'CREATE TEMP TABLE {indexed_table} AS ' + latest)
             connection.execute(f'CREATE INDEX source_{kind}_latest ON {indexed_table}(server_ip,id)')
@@ -318,11 +316,13 @@ class ProbeStore:
                 label='路由来源未知' if legacy else ROUTE_LABEL_UNTESTED
             return _pack_labels([*labels,label])
         connection.create_function('probe_source_labels',2,source_labels)
-        connection.execute(f"""CREATE TEMP VIEW probe_discover_results AS
-            SELECT d.id,d.ip,d.ip_sort,d.port,o.latency_ms,d.server_group,
-            probe_source_labels(d.label,(SELECT data FROM main.probe_results r WHERE r.node_id={node} AND r.kind='route' AND r.server_ip=d.ip AND r.port=d.port ORDER BY r.id DESC LIMIT 1)) AS label,o.discovered_at
-            FROM main.probe_discover_results d JOIN main.probe_discover_observations o
-            ON o.ip=d.ip AND o.port=d.port WHERE o.node_id={node}""")
+        if self.node_id is not None:
+            node = "'" + self.node_id.replace("'", "''") + "'"
+            connection.execute(f"""CREATE TEMP VIEW probe_discover_results AS
+                SELECT d.id,d.ip,d.ip_sort,d.port,o.latency_ms,d.server_group,
+                probe_source_labels(d.label,(SELECT data FROM main.probe_current_results r WHERE r.kind='route' AND r.server_ip=probe_endpoint_host(d.ip) AND r.port=d.port LIMIT 1)) AS label,o.discovered_at
+                FROM main.probe_discover_results d JOIN main.probe_discover_observations o
+                ON o.ip=d.ip AND o.port=d.port WHERE o.node_id={node}""")
 
     # ---- 服务器清单 ----
 
@@ -945,12 +945,11 @@ class ProbeStore:
 
 
     def list_servers_with_status(self) -> list[dict]:
-        """服务器清单 + 每 IP 最新的连通性/速率结果（相关子查询取最新一条）。"""
-
-        if self.node_id is None:
-            return ProbeStore(self.database_path, node_id='console').list_servers_with_status()
+        """服务器清单 + unified current connectivity/speed projection."""
 
         def read(connection):
+            if self.node_id is None:
+                self._source_views(connection)
             rows = connection.execute(
                 """
                 SELECT s.*,
@@ -995,6 +994,8 @@ class ProbeStore:
         """Return one globally filtered/sorted server page and its metadata."""
 
         def read(connection):
+            if self.node_id is None:
+                self._source_views(connection)
             where = []
             params: list[object] = []
             q = query.q.strip()
@@ -1270,6 +1271,8 @@ class ProbeStore:
 
     def dashboard(self) -> dict:
         def read(connection):
+            if self.node_id is None:
+                self._source_views(connection)
             servers = connection.execute(
                 "SELECT COUNT(*) AS total FROM probe_servers"
             ).fetchone()["total"]

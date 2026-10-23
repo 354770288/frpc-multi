@@ -23,7 +23,6 @@ import { useDiscovery } from './probe/useDiscovery';
 import { useServers } from './probe/useServers';
 import { TestNodesDialog } from './probe/TestNodesDialog';
 import { ProbeJobsPanel } from './probe/ProbeJobsPanel';
-import { ProbeComparisonDialog } from './probe/ProbeComparisonDialog';
 import { ScanDialog } from './probe/ScanDialog';
 import { ProbeRouteHistory } from './probe/ProbeRouteHistory';
 import { SourceSelect } from './probe/NodeControls';
@@ -104,7 +103,6 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
   const [executionPolicyError, setExecutionPolicyError] = useState('');
   const [focusJobId, setFocusJobId] = useState('');
   const [jobRevision, setJobRevision] = useState(0);
-  const [comparing, setComparing] = useState<{ ip: string; port: number } | null>(null);
   const loadNodes = useCallback(async () => {
     const request = ++nodeRequestRef.current;
     setExecutionPolicyLoading(true);
@@ -137,7 +135,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
   };
   const discovery = useDiscovery(tab === 'discover', nodeId);
   // 服务器库同样走服务端分页（数据/轮询/跨页勾选由 hook 统一持有）
-  const servers = useServers(tab === 'servers', nodeId);
+  const servers = useServers(tab === 'servers');
   const serverRows = servers.page.items;
   // 服务器表搜索框：本地受控 + 300ms 防抖
   const [serverSearch, setServerSearch] = useState('');
@@ -364,7 +362,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
         <h2 className="text-lg font-semibold">{{discover:'网段发现',servers:'服务器库',test:'测试任务',history:'测试结果'}[section]}</h2>
         <Badge tone="muted">frps 验收</Badge>
         <div className="ml-auto flex items-center gap-3">
-          {section !== 'test' && <SourceSelect nodes={nodes} value={nodeId} onChange={changeNodeId} />}
+          {section !== 'test' && section !== 'servers' && <SourceSelect nodes={nodes} value={nodeId} onChange={changeNodeId} />}
           <Button size="sm" variant="outline" onClick={() => navigate('/test-nodes')}>测试节点</Button>
           {section !== 'test' && <ProbeStatCards stats={stats} />}
           {section !== 'test' && <Button size="sm" variant="outline"
@@ -376,7 +374,8 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
 
       {nodeError && <p role="alert" className="mb-3 text-xs text-destructive">{nodeError}</p>}
       {dashboardError && <p role="alert" className="mb-3 text-sm text-destructive">{dashboardError}；统计不可用，请重试。</p>}
-      {section !== 'test' && <p className="mb-3 text-sm text-muted-foreground">结果来源：{nodes.find((node) => node.id === nodeId)?.name || nodeId}。切换来源只改变显示；新任务使用测试节点设置中的主节点策略。</p>}
+      {section === 'servers' && <p className="mb-3 text-sm text-muted-foreground">当前结果反映最近一次被接受的主用或备用测量；执行来源与任务进度请查看测试任务和历史记录。</p>}
+      {section !== 'test' && section !== 'servers' && <p className="mb-3 text-sm text-muted-foreground">结果来源：{nodes.find((node) => node.id === nodeId)?.name || nodeId}。切换来源只改变显示；新任务使用测试节点设置中的主节点策略。</p>}
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="sr-only">
           <TabsTrigger value="discover">网段发现</TabsTrigger>
@@ -499,7 +498,6 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                         <Td>{row.inLibrary ? <Badge tone="muted">已入库</Badge> : <Badge tone="success">未入库</Badge>}</Td>
                         <Td><span className="whitespace-nowrap text-[11px] text-muted-foreground">{formatLastSeen(row.discoveredAt)}</span></Td>
                         <Td align="right">
-                          <Button size="sm" variant="outline" onClick={() => setComparing({ ip: row.ip, port: row.port })}>来源对比</Button>
                           {row.inLibrary ? (
                             <span className="text-[11px] text-muted-foreground">—</span>
                           ) : (
@@ -658,7 +656,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                           />
                         </Td>
                         <Td>
-                          <div className="font-mono text-[12px] font-medium">{item.ip}</div><div className="mt-1 text-[11px] text-muted-foreground">{item.nodeName} · {item.latestRoute ? item.latestRoute.ok ? item.latestRoute.isCn2 ? 'CN2' : '非 CN2' : '路由失败' : '未测路由'}</div>
+                          <div className="font-mono text-[12px] font-medium">{item.ip}</div><div className="mt-1 text-[11px] text-muted-foreground">{item.latestRoute ? item.latestRoute.ok ? item.latestRoute.isCn2 ? 'CN2' : '非 CN2' : '路由失败' : '未测路由'}</div>
                           {item.labels.length > 0 && <div className="truncate text-[11px] text-muted-foreground">{item.labels.join(' · ')}</div>}
                         </Td>
                         <Td>{item.group ? <Badge variant={groupVariant(groupColorMap.get(item.group))} dot>{item.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
@@ -671,7 +669,6 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                         </Td>
                         <Td align="right">
                           <div className="flex items-center justify-end gap-1">
-                            <Button size="sm" variant="outline" onClick={() => setComparing({ ip: probeEndpointHost(item.ip), port: item.port })}>对比</Button>
                             <Button size="sm" variant="outline" onClick={() => navigate(`/instances/new?${new URLSearchParams({server:probeEndpointHost(item.ip),port:String(item.port)})}`)} title="用此服务器创建 frpc 实例">
                               <Rocket size={13} />创建实例
                             </Button>
@@ -794,7 +791,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
               </CardContent>
             </Card>
           </div>
-          <div className="mt-4"><ProbeRouteHistory nodeId={nodeId} ip={historyIp} onCompare={(ip, port) => setComparing({ ip, port })} /></div>
+          <div className="mt-4"><ProbeRouteHistory nodeId={nodeId} ip={historyIp} /></div>
         </TabsContent>}
       </Tabs>
 
@@ -889,7 +886,6 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
           }}
         />
       )}
-      {comparing && <ProbeComparisonDialog {...comparing} onClose={() => setComparing(null)} />}
       {routeNodesOpen && (
         <TestNodesDialog nodes={nodes} onChanged={loadNodes} onClose={() => setRouteNodesOpen(false)} />
       )}

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import urllib.error
 import urllib.request
 from dataclasses import replace
@@ -42,12 +43,30 @@ def _enrich_source(items, node_id):
     store=job_store()
     try:name=store.get_node(node_id)['name']
     except KeyError:name=node_id
-    routes=store.latest_results(node_id,'route')
     from .jobs import split_endpoint
-    default_port=PROBE_TEST_PORT
-    lookup={(r['server_ip'],r['port']):r for r in routes}
-    fallback={r['server_ip']:r for r in routes}
-    return [{**item,'nodeId':node_id,'nodeName':name,'port':item.get('port',split_endpoint(item['ip'],default_port)[1]),'latestRoute':lookup.get((item['ip'],item['port'])) if 'port' in item else lookup.get(split_endpoint(item['ip'],default_port))} for item in items]
+    def route_key(address, port=None):
+        host, address_port = split_endpoint(address, PROBE_TEST_PORT)
+        effective_port = address_port if port is None else int(port)
+        if effective_port != PROBE_TEST_PORT:
+            return None
+        try:
+            return str(ipaddress.IPv4Address(host)), PROBE_TEST_PORT
+        except (ipaddress.AddressValueError, ValueError):
+            return None
+
+    ip_keys = list(dict.fromkeys(key for item in items
+                                if (key := route_key(item['ip'], item.get('port'))) is not None))
+    routes = store.current_results('route', [host for host, _ in ip_keys]) if ip_keys else []
+    lookup = {(row['server_ip'], row['port']): row for row in routes}
+    enriched = []
+    for item in items:
+        key = route_key(item['ip'], item.get('port'))
+        enriched.append({
+            **item, 'nodeId': node_id, 'nodeName': name,
+            'port': item.get('port', split_endpoint(item['ip'], PROBE_TEST_PORT)[1]),
+            'latestRoute': lookup.get(key) if key else None,
+        })
+    return enriched
 
 
 def audit(username: str, action: str, *, success: bool = True, message: str = "") -> None:

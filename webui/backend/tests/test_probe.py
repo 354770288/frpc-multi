@@ -411,6 +411,18 @@ class ProbeStoreTests(unittest.TestCase):
     def test_query_servers_conn_buckets(self):
         self._seed_servers_for_paging()
         from app.probe.store import ServerPageQuery
+        from app.probe.jobs import ProbeJobStore
+        jobs = ProbeJobStore(self.store.database_path)
+        node = jobs.create_node('bucket-primary')['id']
+        jobs.set_execution_policy(node, [])
+        jobs.heartbeat(node, 'test', ['discover', 'route', 'connectivity', 'speed'], [])
+        jobs.create_primary_job('connectivity', ips=['10.0.0.9', '10.0.0.10'])
+        jobs.report(node, (task := jobs.claim(node))['taskId'], task['attemptId'], result={
+            'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True,
+        })
+        jobs.report(node, (task := jobs.claim(node))['taskId'], task['attemptId'], result={
+            'frps_reachable': True, 'tunnel_established': False, 'firewall_open': False,
+        })
         passed = {r["ip"] for r in self.store.query_servers(ServerPageQuery(conn="pass"))["items"]}
         partial = {r["ip"] for r in self.store.query_servers(ServerPageQuery(conn="partial"))["items"]}
         failed = {r["ip"] for r in self.store.query_servers(ServerPageQuery(conn="fail"))["items"]}
@@ -639,9 +651,9 @@ class ProbeStoreTests(unittest.TestCase):
         })
         rows = self.store.list_servers_with_status()
         by_ip = {row["ip"]: row for row in rows}
-        # 最新一条连通性记录（firewall_open=False 那条）应胜出
-        self.assertEqual(by_ip["10.0.0.1"]["c_firewall_open"], 0)
-        self.assertEqual(by_ip["10.0.0.1"]["s_dl_speed_mbps"], 8.0)
+        # Legacy console writes remain in history but are not current projection rows.
+        self.assertIsNone(by_ip["10.0.0.1"]["c_test_time"])
+        self.assertIsNone(by_ip["10.0.0.1"]["s_test_time"])
         self.assertIsNone(by_ip["10.0.0.2"]["c_test_time"])
 
         history = self.store.list_connectivity_history(ip="10.0.0.1")
@@ -670,9 +682,10 @@ class ProbeStoreTests(unittest.TestCase):
         })
         stats = self.store.dashboard()
         self.assertEqual(stats["servers"], 3)
-        self.assertEqual(stats["connectivity"]["reachable"], 2)
-        self.assertEqual(stats["speed"]["avgDownloadMbps"], 16.0)
-        self.assertEqual(stats["speed"]["avgUploadMbps"], 8.0)
+        self.assertEqual(stats["connectivity"]["tested"], 0)
+        self.assertEqual(stats["connectivity"]["reachable"], 0)
+        self.assertIsNone(stats["speed"]["avgDownloadMbps"])
+        self.assertIsNone(stats["speed"]["avgUploadMbps"])
 
     def test_group_precreate_and_merge(self):
         # 预创建分组在没有任何服务器时就存在
@@ -1103,6 +1116,40 @@ class ProbeApiTests(unittest.TestCase):
         self.assertTrue(response.json()["ok"])
         response = client.patch("/api/probe/servers/99999", json={"label": "x"}, headers=headers)
         self.assertEqual(response.status_code, 404)
+
+    def test_primary_route_enriches_server_and_discovery_for_console_source(self):
+        client, headers = self.make_client()
+        from app.probe.jobs import ProbeJobStore
+        from app.probe.store import ProbeStore
+
+        ip = '192.0.2.92'
+        assets = ProbeStore(self.db_path)
+        assets.create_server(ip=ip)
+        assets.create_server(ip=ip + ':7001')
+        assets.upsert_discover_results_batch([(ip, 7000, 4.0), (ip, 7001, 5.0)])
+        jobs = ProbeJobStore(self.db_path)
+        primary = jobs.create_node('route-current-primary')['id']
+        jobs.set_execution_policy(primary, [])
+        jobs.heartbeat(primary, 'test', ['discover', 'route', 'connectivity', 'speed'], [])
+        jobs.create_primary_job('route', ips=[ip])
+        task = jobs.claim(primary)
+        jobs.report(primary, task['taskId'], task['attemptId'], result={'ok': True, 'isCn2': True})
+
+        servers = client.get('/api/probe/servers?nodeId=console', headers=headers).json()
+        server_items = {item['ip']: item for item in servers['items']}
+        latest_route = server_items[ip]['latestRoute']
+        self.assertEqual(latest_route['node_id'], primary)
+        self.assertTrue(latest_route['ok'])
+        self.assertEqual(server_items[ip]['nodeId'], 'console')
+        self.assertIsNone(server_items[ip + ':7001']['latestRoute'])
+
+        discovered = client.get('/api/probe/discover/results?nodeId=console', headers=headers).json()
+        discovered_items = {(item['ip'], item['port']): item for item in discovered['items']}
+        discovered_item = discovered_items[(ip, 7000)]
+        self.assertEqual(discovered_item['latestRoute']['node_id'], primary)
+        self.assertTrue(discovered_item['latestRoute']['isCn2'])
+        self.assertIn('CN2', discovered_item['labels'])
+        self.assertIsNone(discovered_items[(ip, 7001)]['latestRoute'])
 
     def test_start_test_rejects_bad_requests(self):
         client, headers = self.make_client(PROBE_FRPC_BIN="/bin/echo")

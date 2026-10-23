@@ -120,7 +120,7 @@ export function TestCreatePage() {
     {step===3 && <Card><CardHeader><CardTitle>核对本次提交</CardTitle></CardHeader><CardContent className="space-y-2 text-sm">
       <p>目标：{targets.length} 个端点 · {scope==='group' ? `分组 ${group}` : scope==='all' ? '全部服务器' : scope==='selected' ? '勾选目标' : '手动输入'}</p>
       <p>测试：{MODE_NAMES[mode]}</p><p>执行主节点：{primaryNode?.name || '未配置'}</p>
-      <p>目标服务端口固定为 7000。完成后可在批次详情和来源对比中查看结果。</p>
+      <p>目标服务端口固定为 7000。完成后可在批次详情和按节点筛选的历史记录中查看结果。</p>
     </CardContent></Card>}
     <div className="flex justify-between gap-2"><Button variant="outline" disabled={step===1||submitting} onClick={()=>setStep(step-1)}>上一步</Button>{step<3 ? <Button disabled={loading || (step===1 && invalidManualPort) || (step===2 && !policyReady)} onClick={next}>下一步</Button> : <Button disabled={submitting || !policyReady || !targets.length || invalidManualPort} onClick={submit}>{submitting ? '提交中…' : '提交测试'}</Button>}</div>
   </main>;

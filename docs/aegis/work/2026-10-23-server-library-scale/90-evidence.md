@@ -76,7 +76,18 @@ Policy validation, node eligibility, job creation, and task insertion run in one
 
 Failover now snapshots the ordered policy into each job, transfers unfinished tasks only after lease/owner failure, increments and validates execution generation, preserves generation across pipeline stages, and requires the protocol feature on backup claim. Sweep work is bounded to at most 500 job/owner pairs and 500 task IDs per poll, with persistent cursor progress. Task transfer audit rows are available through a paginated endpoint. Legacy workers remain compatible for generation-zero primary tasks; backups without the new feature remain on standby.
 
-The full scale target, server-library consumer migration to the current projection, classification/filter/query redesign, 100k acceptance data, 1M stress, 10M scan throughput/memory, and production deployment remain unverified.
+The full scale target, classification/filter/query redesign, 100k acceptance data, 1M stress, 10M scan throughput/memory, and production deployment remain unverified.
+
+## Slice: unified server views and source-free daily UI
+
+- `./.venv/bin/python -m unittest tests.test_probe_jobs tests.test_probe tests.test_lb` — exit 0; 174 tests passed after route enrichment port isolation.
+- `npm run build` — exit 0.
+- `npm test` — 2 files, 3 tests passed.
+- `npm run test:e2e -- e2e/test-creation.spec.ts` — 18 Playwright tests passed, including legacy URL preservation, no daily source selector/cross-node comparison, LB primary summary, and history source retention.
+- `git diff --check` — coordinator will rerun before commit.
+- Independent backend review found and fixed route enrichment still reading per-node history, plus a 7001/7000 endpoint mix-up. The final re-review confirmed the fix.
+
+`ProbeStore` server list, filtered status, and dashboard views now read the unified route/connectivity/speed projection regardless of legacy node query parameters. Route status enrichment is limited to the exact fixed-7000 endpoint. Legacy Console rows stay available in history, while current views show untested until the configured primary has a projection. Discovery observations remain keyed by actual executing node. Daily server and LB pages no longer offer result-source selection, and cross-node comparison controls are removed; historical results still retain per-node filtering and provenance.
 
 ## Slice: unified current-result projection foundation
 

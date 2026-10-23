@@ -492,17 +492,23 @@ class ProbeJobsTests(unittest.TestCase):
         store.delete_node(node['id']);self.assertEqual(len(ProbeJobStore(path).list_nodes()),1)
     def test_source_query_filters_and_speed_sort(self):
         assets=ProbeStore(self.path);assets.create_server(ip='192.0.2.1');assets.create_server(ip='192.0.2.2')
-        self.job('speed',ips=['192.0.2.1','192.0.2.2']);t=self.store.claim(self.a);self.finish(self.a,t,{'dl_ok':True,'dl_speed_bps':1024*1024,'ul_speed_bps':2})
+        self.set_primary(self.a)
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        self.store.create_primary_job('speed',ips=['192.0.2.1','192.0.2.2']);t=self.store.claim(self.a);self.finish(self.a,t,{'dl_ok':True,'dl_speed_bps':1024*1024,'ul_speed_bps':2})
         t=self.store.claim(self.a);self.finish(self.a,t,{'dl_ok':False,'dl_speed_bps':0})
         a=ProbeStore(self.path,node_id=self.a).query_servers(ServerPageQuery(sort='speed',order='desc'))
         self.assertEqual(a['items'][0]['ip'],'192.0.2.1');self.assertEqual(a['items'][0]['s_dl_speed_mbps'],8)
-        b=ProbeStore(self.path,node_id=self.b).query_servers(ServerPageQuery());self.assertIsNone(b['items'][0]['s_test_time'])
+        b=ProbeStore(self.path,node_id=self.b).query_servers(ServerPageQuery())
+        self.assertEqual(a['items'][0]['s_test_time'],b['items'][0]['s_test_time'])
+        self.assertEqual(a['items'][0]['s_dl_speed_mbps'],b['items'][0]['s_dl_speed_mbps'])
 
     def test_fixed_port_current_result_lookup_ignores_configured_frps_port(self):
         assets=ProbeStore(self.path)
         assets.create_server(ip='192.0.2.44')
         assets.update_config_overrides({'frps_port':7001})
-        self.job(ips=['192.0.2.44'])
+        self.set_primary(self.a)
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        self.store.create_primary_job('connectivity', ips=['192.0.2.44'])
         task=self.store.claim(self.a)
         self.assertEqual(task['port'],7000)
         self.finish(self.a,task,{'frps_reachable':True,'tunnel_established':True,'firewall_open':True})
@@ -543,7 +549,9 @@ class ProbeJobsTests(unittest.TestCase):
     def test_endpoint_ports_not_mixed_in_asset_status(self):
         assets=ProbeStore(self.path)
         assets.create_server(ip='192.0.2.1');assets.create_server(ip='192.0.2.1:7001')
-        self.job(ips=['192.0.2.1:7000'])
+        self.set_primary(self.a)
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        self.store.create_primary_job('connectivity', ips=['192.0.2.1:7000'])
         first=self.store.claim(self.a);self.assertEqual(first['port'],7000);self.finish(self.a,first,{'frps_reachable':True,'tunnel_established':True,'firewall_open':True})
         rows={r['ip']:r for r in ProbeStore(self.path,node_id=self.a).query_servers(ServerPageQuery())['items']}
         self.assertTrue(rows['192.0.2.1']['c_frps_reachable']);self.assertIsNone(rows['192.0.2.1:7001']['c_frps_reachable'])
@@ -582,12 +590,53 @@ class ProbeJobsTests(unittest.TestCase):
     def test_endpoint_aliases_no_duplicate_rows_and_latest_failed_dashboard(self):
         assets=ProbeStore(self.path)
         assets.create_server(ip='192.0.2.1');assets.create_server(ip='192.0.2.1:7000')
-        self.job('speed');self.finish(self.a,self.store.claim(self.a),{'dl_ok':True,'ul_ok':True,'dl_speed_bps':1048576,'ul_speed_bps':1048576})
+        self.set_primary(self.a)
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        self.store.create_primary_job('speed', ips=['192.0.2.1'])
+        self.finish(self.a,self.store.claim(self.a),{'dl_ok':True,'ul_ok':True,'dl_speed_bps':1048576,'ul_speed_bps':1048576})
         source=ProbeStore(self.path,node_id=self.a)
         rows=source.query_servers(ServerPageQuery());self.assertEqual(rows['total'],2);self.assertEqual(len(rows['items']),2)
         self.assertEqual(source.dashboard()['speed']['avgDownloadMbps'],8)
-        self.job('speed');self.finish(self.a,self.store.claim(self.a),{'dl_ok':False,'ul_ok':False})
+        self.store.create_primary_job('speed', ips=['192.0.2.1'])
+        self.finish(self.a,self.store.claim(self.a),{'dl_ok':False,'ul_ok':False})
         self.assertIsNone(source.dashboard()['speed']['avgDownloadMbps'])
+
+    def test_unified_current_status_is_shared_across_node_ids_and_backup_owner(self):
+        assets = ProbeStore(self.path)
+        assets.create_server(ip='192.0.2.89')
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b])
+        self.store.heartbeat(self.a, 'primary', ['discover', 'route', 'connectivity', 'speed'], [])
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.89'])
+        first = self.store.claim(self.a)
+        self.expire(first)
+        with self.store._db() as c:
+            c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (self.a,))
+        self.online_generation_worker(self.b)
+        takeover = self.store.claim(self.b)
+        self.store.report(self.b, takeover['taskId'], takeover['attemptId'], generation=takeover['generation'],
+                          result={'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True})
+
+        views = [ProbeStore(self.path, node_id=node).query_servers(ServerPageQuery())['items'][0]
+                 for node in (self.a, self.b)]
+        self.assertTrue(all(row['c_frps_reachable'] for row in views))
+        self.assertEqual(views[0]['c_test_time'], views[1]['c_test_time'])
+        self.assertEqual(views[0]['c_test_time'], self.store.current_results('connectivity')[0]['test_time'])
+        self.assertEqual(self.store.current_results('connectivity')[0]['job_id'], job['id'])
+
+    def test_unmanaged_history_stays_node_scoped_and_does_not_populate_current_views(self):
+        assets = ProbeStore(self.path)
+        assets.create_server(ip='192.0.2.90')
+        job = self.job(ips=['192.0.2.90'])
+        task = self.store.claim(self.a)
+        self.finish(self.a, task, {'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True})
+        a = ProbeStore(self.path, node_id=self.a)
+        b = ProbeStore(self.path, node_id=self.b)
+        self.assertIsNone(a.query_servers(ServerPageQuery())['items'][0]['c_test_time'])
+        self.assertIsNone(b.query_servers(ServerPageQuery())['items'][0]['c_test_time'])
+        self.assertEqual(len(self.store.history(self.a, 'connectivity')), 1)
+        self.assertEqual(self.store.history(self.b, 'connectivity'), [])
+        self.assertEqual(self.store.history(self.a, 'connectivity')[0]['job_id'], job['id'])
 
     def test_stage_counts_cover_whole_job_independent_of_task_page(self):
         job = self.job(nodes=[self.a, self.b], ips=['192.0.2.1', '192.0.2.2', '192.0.2.3'])
@@ -628,10 +677,10 @@ class ProbeJobsTests(unittest.TestCase):
         assets=ProbeStore(self.path);assets.create_server(ip='192.0.2.1')
         assets.update_config_overrides({'frps_port':7000})
         assets.add_connectivity_result({'server_ip':'192.0.2.1','frps_reachable':True,'tunnel_established':True,'firewall_open':True})
-        self.assertTrue(ProbeStore(self.path,node_id='console').query_servers(ServerPageQuery())['items'][0]['c_frps_reachable'])
+        self.assertIsNone(ProbeStore(self.path,node_id='console').query_servers(ServerPageQuery())['items'][0]['c_frps_reachable'])
         assets.update_config_overrides({'frps_port':7001})
         rows=ProbeStore(self.path,node_id='console').query_servers(ServerPageQuery())['items']
-        self.assertTrue(rows[0]['c_frps_reachable'])
+        self.assertIsNone(rows[0]['c_frps_reachable'])
         self.assertEqual(self.store.latest_results('console','connectivity')[0]['port'],7000)
     def test_worker_lease_loss_reports_infra_after_execution(self):
         import threading
@@ -656,9 +705,9 @@ class ProbeJobsTests(unittest.TestCase):
         finally:c.close()
         jobs=ProbeJobStore(path);source=ProbeStore(path,node_id='console')
         row=source.query_servers(ServerPageQuery())['items'][0]
-        self.assertTrue(row['c_frps_reachable']);self.assertEqual(row['s_dl_speed_mbps'],8)
+        self.assertIsNone(row['c_test_time']);self.assertIsNone(row['s_test_time'])
         self.assertEqual(len(jobs.history('console','connectivity')),1)
-        self.assertEqual(source.dashboard()['speed']['avgDownloadMbps'],8)
+        self.assertIsNone(source.dashboard()['speed']['avgDownloadMbps'])
 
     def test_source_page_uses_bounded_indexed_projection(self):
         import ipaddress
@@ -674,6 +723,7 @@ class ProbeJobsTests(unittest.TestCase):
                   '2026-10-21T00:00:00+00:00', json.dumps({'frps_reachable': generation != 3}))
                  for i, ip in enumerate(ips) for generation in range(4)],
             )
+        self.set_primary(self.a)
 
         class BudgetStore(ProbeStore):
             def _source_views(self, connection):

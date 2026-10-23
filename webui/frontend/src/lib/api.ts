@@ -175,9 +175,8 @@ export const probeApi = {
   historyPage: (kind: 'route' | 'connectivity' | 'speed', query: Record<string,string|number>) => api<{ items: ProbeResultBase[]; page: number; pageSize: number; total: number }>(`/api/probe/history/${kind}/page?${new URLSearchParams(Object.entries(query).map(([k,v]) => [k,String(v)]))}`),
   jobAction: (id: string, action: 'stop' | 'skip' | 'retry', taskIds?: string[]) => api<{ ok: boolean; changed: number }>(`/api/probe/jobs/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify({ taskIds }) }),
   compare: (ip: string, port: number) => api<{ items: ProbeComparison[] }>(`/api/probe/compare?${new URLSearchParams({ ip, port: String(port) })}`),
-  servers: (query: ServerQuery, signal?: AbortSignal, nodeId = 'console') => {
+  servers: (query: ServerQuery, signal?: AbortSignal) => {
     const params = new URLSearchParams({
-      nodeId,
       page: String(query.page),
       pageSize: String(query.pageSize),
       q: query.q?.trim() ?? '',
@@ -190,8 +189,8 @@ export const probeApi = {
     if (query.label !== undefined) params.set('label', query.label);
     return api<ServerPage>(`/api/probe/servers?${params.toString()}`, { signal });
   },
-  serverFacets: (signal?: AbortSignal, nodeId = 'console') =>
-    api<ServerFacets>(`/api/probe/servers/facets?nodeId=${encodeURIComponent(nodeId)}`, { signal }),
+  serverFacets: (signal?: AbortSignal) =>
+    api<ServerFacets>('/api/probe/servers/facets', { signal }),
   groups: () => api<GroupInfo[]>('/api/probe/servers/groups'),
   createGroup: (name: string, color?: GroupColor) =>
     api<{ ok: boolean; name: string }>('/api/probe/servers/groups', {

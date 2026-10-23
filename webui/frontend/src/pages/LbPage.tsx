@@ -48,7 +48,7 @@ export function LbPage() {
   const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectionConfig,setSelectionConfig]=useState<LbSelectionConfig|null>(null);
-  const [observationNodeName,setObservationNodeName]=useState('');
+  const [primaryNodeName,setPrimaryNodeName]=useState('');
   const [loadError,setLoadError]=useState('');
 
   const [editing, setEditing] = useState<LbDomain | 'new' | null>(null);
@@ -66,7 +66,8 @@ export function LbPage() {
       setGroups(groupList);
       setHealth(healthSnapshot);
       setSelectionConfig(selection);
-      setObservationNodeName(testNodes.items.find((node)=>node.id===selection.nodeId)?.name || selection.nodeId);
+      const policy = await probeApi.executionPolicy();
+      setPrimaryNodeName(testNodes.items.find((node)=>node.id===policy.primaryNodeId)?.name || policy.primaryNodeId || '未配置');
       setLoadError('');
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : '域名数据加载失败');
@@ -109,7 +110,7 @@ export function LbPage() {
         </div>
       </div>
       {loadError && <p role="alert" className="mb-4 rounded-md border border-destructive/30 p-3 text-sm text-destructive">{loadError}；当前信息可能不是最新。请重试。</p>}
-      <p className="mb-4 text-sm text-muted-foreground">域名选优来源：{observationNodeName || '加载中'} · 有效期 {selectionConfig?.maxAgeHours ?? '—'} 小时 · 实时健康检查：主控</p>
+      <p className="mb-4 text-sm text-muted-foreground">测量执行策略主用节点：{primaryNodeName || '加载中'} · 结果读取统一测量投影 · 有效期 {selectionConfig?.maxAgeHours ?? '—'} 小时 · 实时健康检查：主控</p>
 
       <div>
         <Card>
@@ -297,11 +298,11 @@ export function LbSettingsPage() {
   },[]);
   useEffect(()=>{void load();},[load]);
   return <main className="mx-auto max-w-3xl space-y-4 px-4 py-6 sm:px-6">
-    <div><Link to="/lb" className="text-sm text-muted-foreground hover:underline">← 返回域名选优</Link><h2 className="mt-3 text-xl font-semibold">域名设置</h2><p className="text-sm text-muted-foreground">配置所有域名共享的观测来源与 Cloudflare 接入</p></div>
+    <div><Link to="/lb" className="text-sm text-muted-foreground hover:underline">← 返回域名选优</Link><h2 className="mt-3 text-xl font-semibold">域名设置</h2><p className="text-sm text-muted-foreground">配置统一测量结果有效期与 Cloudflare 接入</p></div>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <LbSelectionCard onSaved={()=>{}} />
     <CloudflareCard configured={configured} masked={masked} zones={zones} onZones={setZones} onSaved={()=>void load()} />
-    <Card><CardHeader><CardTitle>工作原理</CardTitle></CardHeader><CardContent className="space-y-2 text-sm text-muted-foreground"><p>域名池内的候选由指定测试节点观测排序，主控持续检查当前 IP 的实时健康。</p><p>启用域名会在当前目标故障时切换到健康候选；“手动/定时”描述平时同步频率。</p><p>客户端 DNS 缓存和 frpc 重连时间会影响实际切换时长。</p></CardContent></Card>
+    <Card><CardHeader><CardTitle>工作原理</CardTitle></CardHeader><CardContent className="space-y-2 text-sm text-muted-foreground"><p>域名池内的候选按最近被接受的主用或备用测量结果排序，主控持续检查当前 IP 的实时健康。</p><p>执行来源与任务进度可在测试任务和历史记录中查看。启用域名会在当前目标故障时切换到健康候选；“手动/定时”描述平时同步频率。</p><p>客户端 DNS 缓存和 frpc 重连时间会影响实际切换时长。</p></CardContent></Card>
   </main>;
 }
 

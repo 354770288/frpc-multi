@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
 import type { ProbeRouteResult } from '../../lib/types';
 import { Badge } from '../../components/ui/badge';
-import { Button } from '../../components/ui/button';
 import {
   Card,
   CardContent,
@@ -14,11 +13,9 @@ import { formatLastSeen } from '../../lib/format';
 export function ProbeRouteHistory({
   nodeId,
   ip,
-  onCompare,
 }: {
   nodeId: string;
   ip: string;
-  onCompare: (ip: string, port: number) => void;
 }) {
   const [rows, setRows] = useState<ProbeRouteResult[]>([]);
   const [error, setError] = useState('');
@@ -58,7 +55,6 @@ export function ProbeRouteHistory({
                 <th className="p-2">路由</th>
                 <th className="p-2">跳数</th>
                 <th className="p-2">时间</th>
-                <th className="p-2">比较</th>
               </tr>
             </thead>
             <tbody>
@@ -76,15 +72,6 @@ export function ProbeRouteHistory({
                   <td className="p-2">{row.hops.length}</td>
                   <td className="p-2" title={row.test_time}>
                     {formatLastSeen(row.test_time)}
-                  </td>
-                  <td className="p-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => onCompare(row.server_ip, row.port)}
-                    >
-                      来源对比
-                    </Button>
                   </td>
                 </tr>
               ))}

@@ -17,7 +17,7 @@ test.beforeEach(async ({ page }) => {
     }
     if(url.pathname==='/api/probe/servers/groups')return json([{name:'QA',color:''}]);
     if(url.pathname==='/api/probe/servers/facets')return json({labels:[],groups:[]});
-    if(url.pathname==='/api/probe/discover/results')return json({items:[],page:1,pageSize:50,total:0,sort:'discoveredAt',order:'desc'});
+    if(url.pathname==='/api/probe/discover/results')return json({items:[{id:7,ip:'192.0.2.7',port:7000,latencyMs:8,nodeId:'remote',nodeName:'国内测试节点',group:'QA',labels:[],inLibrary:false,discoveredAt:'2026-10-23T10:00:00+00:00',latestRoute:null}],page:1,pageSize:50,total:1,sort:'discoveredAt',order:'desc'});
     if(url.pathname==='/api/probe/discover/facets')return json({labels:[],groups:[],imported:0,new:0});
     if(url.pathname==='/api/probe/dashboard')return json({servers:2,connectivity:{tested:1,reachable:1,tunnels:1,firewallOpen:1},speed:{tested:1,avgDownloadMbps:0,avgUploadMbps:0,maxDownloadMbps:0}});
     if(url.pathname==='/api/probe/config')return json({frpsPort:7000});
@@ -26,7 +26,7 @@ test.beforeEach(async ({ page }) => {
       const items=(url.searchParams.get('group')==='QA' ? entries.slice(0,1) : entries).map((item)=>({...item,nodeId:url.searchParams.get('nodeId') || 'console',nodeName:'QA',group:'QA',labels:[],createdAt:new Date().toISOString(),latestConnectivity:null,latestSpeed:null,latestRoute:null}));
       return json({items,page:Number(url.searchParams.get('page') || 1),pageSize:Number(url.searchParams.get('pageSize') || 200),total:url.searchParams.get('page')==='2' ? 120 : items.length,sort:'ip',order:'asc'});
     }
-    if(url.pathname==='/api/probe/history/route/page')return json({items:[],page:1,pageSize:50,total:205});
+    if(url.pathname==='/api/probe/history/route/page')return json({items:[{id:1,node_id:'remote',server_ip:'192.0.2.1',port:7000,test_time:'2026-10-23T10:00:00+00:00',ok:true,isCn2:false,hops:[],error:''}],page:1,pageSize:50,total:205});
     if(url.pathname==='/api/probe/history/connectivity/page')return json({items:[],page:1,pageSize:50,total:0});
     if(url.pathname==='/api/audit-logs/page')return json({items:[{id:1,username:'qa',action:'review',nodeId:null,instanceName:null,success:true,message:'老记录',createdAt:'2025-01-01T00:00:00+00:00'}],page:1,pageSize:50,total:205});
     const deploymentNode={id:1,name:'部署节点 QA',uuid:'qa-node',status:'online',online:true,lastSeenAt:new Date().toISOString(),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
@@ -132,6 +132,7 @@ test('network discovery uses the configured primary and fixed port 7000',async (
   expect(submitted).toMatchObject({mode:'discover',port:7000});
   expect(submitted).not.toHaveProperty('nodeIds');
   await expect(page.getByLabel('frps 端口')).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'来源对比'})).toHaveCount(0);
 });
 
 test('old group link only prefills the new test form',async ({page})=>{
@@ -145,20 +146,48 @@ test('old group link only prefills the new test form',async ({page})=>{
   expect(submissions).toBe(0);
 });
 
-test('legacy asset link restores the selected result source', async ({page})=>{
+test('legacy server link keeps its query but current results use the unified projection', async ({page})=>{
+  const serverRequests:string[]=[];
+  page.on('request',(request)=>{
+    if(new URL(request.url()).pathname==='/api/probe/servers')serverRequests.push(request.url());
+  });
   await page.goto('/probe?tab=servers&nodeId=remote');
   await expect(page).toHaveURL(/\/servers\?nodeId=remote/);
-  await expect(page.getByText(/结果来源：国内测试节点/)).toBeVisible();
+  await expect(page.getByText(/当前结果反映最近一次被接受的主用或备用测量/)).toBeVisible();
+  await expect(page.getByRole('combobox',{name:'观测来源'})).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'对比'})).toHaveCount(0);
+  await expect(page.getByText(/结果来源：/)).toHaveCount(0);
+  await expect.poll(()=>serverRequests.length).toBeGreaterThan(0);
+  expect(serverRequests.every((url)=>!new URL(url).searchParams.has('nodeId'))).toBe(true);
   await page.reload();
-  await expect(page.getByText(/结果来源：国内测试节点/)).toBeVisible();
+  await expect(page).toHaveURL(/\/servers\?nodeId=remote/);
+  await expect(page.getByText(/当前结果反映最近一次被接受的主用或备用测量/)).toBeVisible();
 });
 
 test('asset pagination stays in the URL after refresh',async ({page})=>{
   await page.goto('/servers?nodeId=remote&page=2&pageSize=50&sort=ip&order=desc');
-  await expect(page.getByText(/结果来源：国内测试节点/)).toBeVisible();
+  await expect(page.getByText(/当前结果反映最近一次被接受的主用或备用测量/)).toBeVisible();
   await expect(page).toHaveURL(/page=2/);
   await page.reload();
   await expect(page).toHaveURL(/page=2/);
+});
+
+test('LB settings follows the saved primary policy and keeps the compatibility payload field',async ({page})=>{
+  let saved:Record<string,unknown>|null=null;
+  page.on('request',(request)=>{
+    if(request.url().endsWith('/api/lb/selection-config') && request.method()==='PUT')saved=request.postDataJSON();
+  });
+  await page.goto('/lb/settings');
+  await expect(page.getByText('全局选优结果',{exact:true})).toBeVisible();
+  await expect(page.getByText('执行策略主用节点')).toBeVisible();
+  await expect(page.getByText('国内测试节点',{exact:true})).toBeVisible();
+  await expect(page.getByLabel('观测有效期（小时，1–168）')).toHaveValue('24');
+  await expect(page.getByLabel('穿透 / 速率观测节点')).toHaveCount(0);
+  await expect(page.getByText(/结果跟随统一测量投影/)).toBeVisible();
+  await page.getByLabel('观测有效期（小时，1–168）').fill('48');
+  await page.getByRole('button',{name:'保存选优配置'}).click();
+  await expect.poll(()=>saved).not.toBeNull();
+  expect(saved).toEqual({nodeId:'remote',maxAgeHours:48,healthSource:'console'});
 });
 
 test('audit and result totals come from paged server queries',async ({page})=>{
@@ -166,6 +195,9 @@ test('audit and result totals come from paged server queries',async ({page})=>{
   await expect(page.getByText('205 条匹配')).toBeVisible();
   await page.goto('/results?kind=route&nodeId=remote&ip=192.0.2.1');
   await expect(page.getByText('路由 · 共 205 条')).toBeVisible();
+  await expect(page.getByLabel('结果来源')).toHaveValue('remote');
+  await expect(page.getByText('192.0.2.1:7000')).toBeVisible();
+  await expect(page.getByRole('button',{name:'来源对比'})).toHaveCount(0);
   await page.reload();
   await expect(page.getByText('路由 · 共 205 条')).toBeVisible();
   await expect(page).toHaveURL(/nodeId=remote/);

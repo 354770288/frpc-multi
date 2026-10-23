@@ -6,7 +6,6 @@ import { formatLastSeen } from '../lib/format';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
-import { ProbeComparisonDialog } from './probe/ProbeComparisonDialog';
 
 type Kind='route'|'connectivity'|'speed';
 type Row=ProbeResultBase & Record<string,unknown>;
@@ -33,7 +32,6 @@ export function ResultsPage() {
   const [nodes,setNodes]=useState<TestNode[]>([]);
   const [error,setError]=useState('');
   const [loading,setLoading]=useState(true);
-  const [compare,setCompare]=useState<{ip:string;port:number}|null>(null);
   const request=useRef(0);
   const change=(key:string,value:string)=>setParams((current)=>{const next=new URLSearchParams(current);if(value)next.set(key,value);else next.delete(key);next.delete('page');return next;});
   useEffect(()=>{probeApi.testNodes().then((data)=>setNodes(data.items)).catch(()=>{});},[]);
@@ -69,13 +67,12 @@ export function ResultsPage() {
     <Card><CardHeader><CardTitle>{KIND_NAMES[kind]} · {total===null ? '加载中' : `共 ${total} 条`}</CardTitle></CardHeader><CardContent className="space-y-3">
       {loading && <p role="status" className="text-sm text-muted-foreground">正在加载…</p>}
       {rows.map((row)=><div key={row.id} className="rounded-lg border p-3 text-sm">
-        <div className="flex flex-wrap items-center gap-2"><strong className="font-mono">{row.server_ip}:{row.port}</strong><Badge tone="muted">{result(row,kind)}</Badge><span className="text-muted-foreground" title={row.test_time}>{formatLastSeen(row.test_time)}</span><Button size="sm" variant="outline" className="ml-auto" onClick={()=>setCompare({ip:row.server_ip,port:row.port})}>来源对比</Button></div>
+        <div className="flex flex-wrap items-center gap-2"><strong className="font-mono">{row.server_ip}:{row.port}</strong><Badge tone="muted">{result(row,kind)}</Badge><span className="text-muted-foreground" title={row.test_time}>{formatLastSeen(row.test_time)}</span></div>
         {kind==='route' && Array.isArray(row.hops) && <details className="mt-2 text-muted-foreground"><summary className="cursor-pointer">路由跳点（{row.hops.length}）</summary><ol className="mt-2 space-y-1 font-mono">{row.hops.map((hop,index)=><li key={index}>{index+1}. {String((hop as {host?:string}).host || '*')}</li>)}</ol></details>}
         {row.detail && <p className="mt-2 text-muted-foreground">{row.detail}</p>}
       </div>)}
       {!loading && !rows.length && !error && <p className="py-8 text-center text-sm text-muted-foreground">暂无匹配结果</p>}
       <div className="flex items-center justify-end gap-2 text-sm"><span>第 {page} 页</span><Button size="sm" variant="outline" disabled={page<=1} onClick={()=>setParams((current)=>{const next=new URLSearchParams(current);next.set('page',String(page-1));return next;})}>上一页</Button><Button size="sm" variant="outline" disabled={total===null || page*50>=total} onClick={()=>setParams((current)=>{const next=new URLSearchParams(current);next.set('page',String(page+1));return next;})}>下一页</Button></div>
     </CardContent></Card>
-    {compare && <ProbeComparisonDialog ip={compare.ip} port={compare.port} onClose={()=>setCompare(null)} />}
   </main>;
 }
