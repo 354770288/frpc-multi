@@ -279,3 +279,13 @@ Added rebuildable `speed_sort` and nullable `time_sort` columns to the asset cat
 - These measurements call the real storage methods and SQLite query plans, not HTTP, auth, browser, or production infrastructure. The `conn="pass"` count and contextual facets scan the full asset set and are materially slower than unfiltered count/list pages; the migration process RSS includes the one-time label normalization path.
 
 The isolated 1M storage acceptance passes for migration, paging, counts, facets, bulk-selection construction, and bounded task production. This does not cover production latency or end-to-end 100k import/update/delete UI operations.
+
+Plan coverage limit: this run includes 7,000 current rows, not 9 historical rows per asset across three test kinds; it is a single-process storage-method run, not the plan's 5 concurrent readers with sustained writes; and it does not report P50/P95, cold/warm cache repetitions, 10M scan input, or full import/update/delete browser flows. The 1M table should therefore be read as an isolated capacity smoke test, not as completion of all performance release gates.
+
+## Slice: 10M target planning and task creation smoke test
+
+- Synthetic range `100.64.0.0–100.216.150.127` resolves to one disjoint IPv4 interval containing exactly 10,000,000 targets.
+- `parse_targets()` took about 70 µs with a `tracemalloc` peak of 1,112 bytes; consuming the first 16 generated addresses did not expand the plan.
+- Isolated `ProbeJobStore.create_job('discover', ...)` took about 1.9 ms, set total=10M, and created exactly one pending discover task. The task payload was 96 bytes and held only interval bounds, cursor, chunk bounds, and size; the initial chunk was 4,096 addresses.
+- At initial job creation, task IP/error fields were empty and `probe_results`, `probe_discover_results`, and `probe_discover_observations` each remained at 0 rows.
+- No network scan ran. This validates compact target planning and first-chunk persistence only; worker throughput, queue/RSS during a full synthetic scan, successful-hit growth, and cancellation/restart recovery remain open.
