@@ -12,7 +12,8 @@
 - [x] Domestic primary/backup scheduler and backend unified current-result projection with LB reader.
 - [x] Switch server-library current-result queries and daily UI to the unified projection; remove source switching/comparison.
 - [x] Stable group IDs across assets, discovery candidates, and LB domains; block deletion while referenced.
-- [ ] Categorized tag dictionary/relations and separation of measurement facts from manual labels.
+- [x] Categorized tag dictionary/relations, CRUD/merge/assignment API, and tag-ID filtering/facets.
+- [ ] Desktop categorized-tag management and multi-category filtering UI.
 - [ ] Classification schema, scalable query APIs, and reversible migration.
 - [ ] Desktop server-library UI, saved views, and server-side bulk snapshots.
 - [ ] 100k acceptance dataset and isolated 1M capacity tests; regression and release readiness.
@@ -20,13 +21,14 @@
 ## ResumeStateHint
 
 - Current status: fixed-port, node-policy API/UI, atomic primary assignment, durable lease failover, unified current-result projection/LB, and source-free server-library current views are verified; broader plan remains active.
-- Active slice: normalize categorized tags and separate measurement facts, then implement scalable queries and large-library UI work.
+- Active slice: build desktop categorized-tag management and multiselect filters, then implement cursor paging, contextual facets, and server-side selection snapshots.
 - Completed: fixed target port 7000 across task creation paths; server result projection matches fixed port regardless of frps_port setting; HTTP validation maps to 400 including compatibility and route-start paths; historical alternate-port record remains retrievable; persisted policy validates stable worker IDs, preserves backup order, permits offline nodes, fails closed on corrupt state, protects referenced-node deletion; desktop test-node page explicitly saves primary and ordered backups; public task creation resolves the saved primary and checks policy plus inserts tasks atomically; task creation/discovery UI shows the saved role policy, distinguishes policy/node-list errors, submits no nodeIds and fixes port 7000.
 - Completed failover: jobs snapshot the ordered node chain; expired/unclaimed tasks transfer only to the next online generation-capable backup; pipeline child tasks preserve generation; old attempts are fenced; no-backup tasks remain pending and recover on owner heartbeat; transfer history is paged; batch waiting count is independent of task filters/pages.
 - Current-result foundation: canonical history stays immutable; a durable route/connectivity/speed projection seeds only from the first valid configured primary, updates only on accepted primary-managed results (including failover owners), stores provenance, clears with its source history, and is read by LB through candidate-group-scoped queries at fixed port 7000. Legacy history/source APIs remain during consumer migration.
 - Server-library consumers now use unified route/connectivity/speed views regardless of legacy `nodeId` parameters; daily source selectors and cross-node comparison controls are removed while history retains actual-node filters/provenance. Non-7000 endpoint rows do not inherit the fixed-7000 current result.
 - Stable group IDs now back asset, discovery, and LB references; migration is one-time and retryable, rename preserves identity, name/ID compatibility remains, and deleting a referenced group returns 409.
-- Next: normalize categorized tags without converting route-result labels into manual tags, then implement classification/filter/query APIs and UI, followed by batch snapshots and capacity acceptance.
+- Tag backend now has stable category/tag IDs, many-to-many asset assignments, name/category CRUD, tag rename/move/merge/delete, legacy-label compatibility projection, tag-ID assignment/filtering, and category-aware facets. Legacy route-like names are preserved as manual labels where provenance is absent; current route measurements remain in the separate result projection.
+- Synchronous text import is capped at 5,000 endpoints / 1 MiB; larger imports still need the planned async job/progress flow. Next: desktop tag management/multiselect filters, then cursor paging, contextual facets, selection snapshots, and capacity acceptance.
 
 ## Execution Readiness View
 
@@ -44,4 +46,4 @@
 - Decision: continue after source-of-truth audit.
 - Scope/compatibility: aligned with revised plan; old plan remains a historical baseline pending comparison with current code.
 - Open unknowns: current production domestic primary must be explicitly selected; result consumers that assume multi-node results; feasibility of 1M target data under existing SQLite deployment.
-- Slice result: backup lease transfer, unified current-result backend/LB/server views, and stable group identity are implemented and regression-tested; categorized tags, scalable server queries, 10万/100万 capacity, scan throughput/memory, and full rollout migration remain unverified; no production writes or deployment occurred.
+- Slice result: backup lease transfer, unified current-result backend/LB/server views, stable groups, and categorized tag APIs/data relations are implemented and regression-tested; categorized tag UI, scalable server queries, async import/bulk snapshots, 10万/100万 capacity, scan throughput/memory, and full rollout migration remain unverified; no production writes or deployment occurred.

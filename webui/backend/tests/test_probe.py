@@ -364,13 +364,139 @@ class ProbeStoreTests(unittest.TestCase):
         self.assertEqual((inserted, skipped), (2, 1))
         self.assertEqual(self.store.list_groups(), ["g1"])
 
+    def test_import_servers_processes_bounded_batches(self):
+        from app.probe import store as store_module
+        items = [
+            {"ip": f"10.50.0.{index}", "label": f"tag-{index % 2}", "group": f"g-{index % 2}"}
+            for index in range(1, 9)
+        ]
+        items.extend([{"ip": "10.50.0.1", "label": "ignored"},
+                      {"ip": "10.50.0.8", "label": "ignored"}])
+        real_sync = store_module._sync_server_tags_many
+        chunk_sizes = []
+
+        def record_sync(connection, entries, *, preserve_existing=True):
+            chunk_sizes.append(len(entries))
+            return real_sync(connection, entries, preserve_existing=preserve_existing)
+
+        with mock.patch.object(store_module, "SERVER_IMPORT_BATCH_SIZE", 3), \
+                mock.patch.object(store_module, "_sync_server_tags_many", side_effect=record_sync):
+            inserted, skipped = self.store.import_servers(items)
+        self.assertEqual((inserted, skipped), (8, 2))
+        self.assertTrue(chunk_sizes)
+        self.assertLessEqual(max(chunk_sizes), 3)
+        self.assertEqual(len(self.store.list_servers()), 8)
+
+    def test_import_servers_rejects_over_limit_before_writing(self):
+        from app.probe.store import MAX_SERVER_IMPORT_ITEMS, ServerImportLimitError
+        items = [{"ip": "10.53.0.1"}] * (MAX_SERVER_IMPORT_ITEMS + 1)
+        with self.assertRaises(ServerImportLimitError):
+            self.store.import_servers(items)
+        self.assertEqual(self.store.list_servers(), [])
+
+    def test_category_tag_crud_assignment_merge_delete_and_projection(self):
+        categories = {row["name"]: row for row in self.store.list_tag_categories()}
+        region = categories["region"]
+        carrier = self.store.create_tag_category("carrier-custom")
+        renamed = self.store.rename_tag_category(carrier["id"], "carrier-renamed")
+        self.assertEqual(renamed["id"], carrier["id"])
+
+        region_tag = self.store.create_tag(region["id"], "Premium")
+        carrier_tag = self.store.create_tag(renamed["id"], "Premium")
+        other = categories["other"]
+        other_tag = self.store.create_tag(other["id"], "Premium")
+        self.assertEqual(len({region_tag["id"], carrier_tag["id"], other_tag["id"]}), 3)
+        with self.assertRaises(ValueError):
+            self.store.create_tag(region["id"], "Premium")
+        with self.assertRaises(ValueError):
+            self.store.create_tag(region["id"], "comma,tag")
+        with self.assertRaises(ValueError):
+            self.store.update_tag(region_tag["id"], name="comma,tag")
+
+        first = self.store.create_server(
+            ip="10.51.0.1", labels=["legacy"], tag_ids=[region_tag["id"], other_tag["id"]]
+        )
+        second = self.store.create_server(ip="10.51.0.2", tag_ids=[carrier_tag["id"]])
+        self.assertEqual(set(first.labels), {"legacy", "Premium"})
+        self.assertEqual(second.labels, ["Premium"])
+
+        # Name-based replacement retains all matching category identities.
+        self.store.update_server(first.id, labels=["Premium", "Keep"])
+        connection = __import__("app.control.database", fromlist=["connect_database"]).connect_database(
+            self.store.database_path
+        )
+        try:
+            retained_ids = {row[0] for row in connection.execute(
+                "SELECT tag_id FROM probe_server_tags WHERE server_id=?", (first.id,)
+            )}
+        finally:
+            connection.close()
+        self.assertTrue({region_tag["id"], other_tag["id"]}.issubset(retained_ids))
+
+        self.store.update_servers_batch(
+            [second.id], add_tag_ids=[other_tag["id"]], remove_tag_ids=[carrier_tag["id"]]
+        )
+        self.assertEqual(self.store.get_server(second.id).labels, ["Premium"])
+
+        # Rename/move keep the tag ID and update the compatibility projection.
+        moved = self.store.update_tag(region_tag["id"], name="Priority", category_id=renamed["id"])
+        self.assertEqual(moved["id"], region_tag["id"])
+        self.assertEqual(moved["categoryId"], renamed["id"])
+        self.assertIn("Priority", self.store.get_server(first.id).labels)
+
+        merged = self.store.merge_tags(other_tag["id"], region_tag["id"])
+        self.assertEqual(merged["tagId"], region_tag["id"])
+        self.assertIn("Priority", self.store.get_server(second.id).labels)
+        self.assertNotIn("Premium", self.store.get_server(second.id).labels)
+
+        keep_tag = next(row for row in self.store.list_tags(other["id"])
+                        if row["name"] == "Keep")
+        self.assertEqual(self.store.delete_tag(keep_tag["id"]), 1)
+        self.assertNotIn("Keep", self.store.get_server(first.id).labels)
+        self.store.delete_tag(carrier_tag["id"])
+        self.assertNotIn("Premium", self.store.get_server(first.id).labels)
+        remaining = {row["id"] for row in self.store.list_tags()}
+        self.assertNotIn(other_tag["id"], remaining)
+        self.assertNotIn(carrier_tag["id"], remaining)
+
+    def test_legacy_other_category_uses_stable_id_after_rename(self):
+        from app.control.database import connect_database
+
+        other = next(row for row in self.store.list_tag_categories() if row["name"] == "other")
+        renamed = self.store.rename_tag_category(other["id"], "miscellaneous")
+        server = self.store.create_server(ip="10.52.0.1", labels=["legacy-one"])
+        self.store.update_servers_batch([server.id], add_labels=["legacy-two"])
+        self.assertEqual(set(self.store.get_server(server.id).labels), {"legacy-one", "legacy-two"})
+        connection = connect_database(self.store.database_path)
+        try:
+            assigned_categories = {row[0] for row in connection.execute(
+                "SELECT DISTINCT t.category_id FROM probe_server_tags st "
+                "JOIN probe_tags t ON t.id=st.tag_id WHERE st.server_id=?", (server.id,)
+            )}
+        finally:
+            connection.close()
+        self.assertEqual(renamed["id"], other["id"])
+        self.assertEqual(assigned_categories, {other["id"]})
+
+    def test_same_name_categories_project_to_one_legacy_label(self):
+        region = next(row for row in self.store.list_tag_categories() if row["name"] == "region")
+        carrier = next(row for row in self.store.list_tag_categories() if row["name"] == "carrier")
+        region_tag = self.store.create_tag(region["id"], "Shared")
+        carrier_tag = self.store.create_tag(carrier["id"], "Shared")
+        server = self.store.create_server(
+            ip="10.52.0.2", tag_ids=[region_tag["id"], carrier_tag["id"]]
+        )
+        self.assertEqual(server.label, ",Shared,")
+        refreshed = self.store.update_server(server.id, server_group="g")
+        self.assertEqual(refreshed.label, ",Shared,")
+
     def _seed_servers_for_paging(self):
         # ip 从大到小插入，验证数值排序；两台有连通结果，覆盖 conn 分级
         rows = [
             ("10.0.0.9", "gB", ""),
-            ("10.0.0.10", "gA", "CN2"),
+            ("10.0.0.10", "gA", "香港"),
             ("10.0.0.2", "gA", ""),
-            ("192.168.1.5", "", "非CN2"),
+            ("192.168.1.5", "", "美国"),
         ]
         for ip, group, label in rows:
             self.store.create_server(ip=ip, labels=[label] if label else [], server_group=group)
@@ -400,11 +526,10 @@ class ProbeStoreTests(unittest.TestCase):
         # 显式空串分组 = 筛无分组；undefined 不筛
         empty_group = self.store.query_servers(ServerPageQuery(group=""))
         self.assertEqual({r["ip"] for r in empty_group["items"]}, {"192.168.1.5"})
-        by_label = self.store.query_servers(ServerPageQuery(label="CN2"))
+        by_label = self.store.query_servers(ServerPageQuery(label="香港"))
         self.assertEqual([r["ip"] for r in by_label["items"]], ["10.0.0.10"])
-        # LIKE 子串语义：CN2 同时命中 label「CN2」与「非CN2」
-        keyword = self.store.query_servers(ServerPageQuery(q="CN2"))
-        self.assertEqual(keyword["total"], 2)
+        keyword = self.store.query_servers(ServerPageQuery(q="香港"))
+        self.assertEqual(keyword["total"], 1)
         by_group = self.store.query_servers(ServerPageQuery(group="gA"))
         self.assertEqual(by_group["total"], 2)
 
@@ -457,9 +582,223 @@ class ProbeStoreTests(unittest.TestCase):
         self._seed_servers_for_paging()
         facets = self.store.server_facets()
         labels = {row["label"]: row["count"] for row in facets["labels"]}
-        self.assertEqual(labels["CN2"], 1)
+        self.assertEqual(labels["香港"], 1)
         groups = {row["group"]: row["count"] for row in facets["groups"]}
         self.assertEqual(groups, {"gA": 2, "gB": 1})
+
+    def test_categorized_tag_migration_is_idempotent_and_asset_only(self):
+        from app.control.database import connect_database, _migrate_probe_tags
+
+        connection = connect_database(self.store.database_path)
+        try:
+            connection.execute("DELETE FROM probe_settings WHERE key='probe_categorized_tags_migrated'")
+            connection.execute(
+                "INSERT INTO probe_servers(ip,ip_sort,label,server_group,created_at) "
+                "VALUES('10.44.0.1',NULL,',北京,CN2,非CN2,未路由测试,', '', '2026-01-01')"
+            )
+            server_id = connection.execute(
+                "SELECT id FROM probe_servers WHERE ip='10.44.0.1'"
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT INTO probe_discover_results(ip,port,label,discovered_at) "
+                "VALUES('10.44.0.2',7000,',发现标签,CN2,','2026-01-01')"
+            )
+            connection.commit()
+            _migrate_probe_tags(connection)
+            _migrate_probe_tags(connection)
+            connection.commit()
+            labels = connection.execute(
+                "SELECT t.name FROM probe_server_tags st JOIN probe_tags t ON t.id=st.tag_id "
+                "WHERE st.server_id=? ORDER BY t.name", (server_id,)
+            ).fetchall()
+            self.assertEqual({row[0] for row in labels}, {"北京", "CN2", "非CN2", "未路由测试"})
+            self.assertEqual(connection.execute(
+                "SELECT label FROM probe_servers WHERE id=?", (server_id,)
+            ).fetchone()[0], ",北京,CN2,非CN2,未路由测试,")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM probe_tags WHERE name='发现标签'"
+            ).fetchone()[0], 0)
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM probe_server_tags WHERE server_id=?", (server_id,)
+            ).fetchone()[0], 4)
+            categories = {row[0] for row in connection.execute(
+                "SELECT name FROM probe_tag_categories"
+            )}
+            self.assertTrue({"region", "carrier", "purpose", "other"}.issubset(categories))
+        finally:
+            connection.close()
+
+    def test_categorized_tag_migration_rolls_back_and_retries(self):
+        import sqlite3
+        from app.control.database import connect_database, _migrate_probe_tags
+
+        connection = connect_database(self.store.database_path)
+        try:
+            connection.execute("DELETE FROM probe_settings WHERE key='probe_categorized_tags_migrated'")
+            connection.execute(
+                "INSERT INTO probe_servers(ip,ip_sort,label,server_group,created_at) "
+                "VALUES('10.44.0.3',NULL,',重试标签,CN2,', '', '2026-01-01')"
+            )
+            connection.execute(
+                "CREATE TRIGGER fail_tag_backfill BEFORE INSERT ON probe_tags "
+                "BEGIN SELECT RAISE(ABORT, 'forced tag migration failure'); END"
+            )
+            connection.commit()
+            with self.assertRaises(sqlite3.IntegrityError):
+                _migrate_probe_tags(connection)
+            self.assertIsNone(connection.execute(
+                "SELECT value FROM probe_settings WHERE key='probe_categorized_tags_migrated'"
+            ).fetchone())
+            self.assertEqual(connection.execute(
+                "SELECT label FROM probe_servers WHERE ip='10.44.0.3'"
+            ).fetchone()[0], ",重试标签,CN2,")
+            connection.execute("DROP TRIGGER fail_tag_backfill")
+            connection.commit()
+            _migrate_probe_tags(connection)
+            self.assertEqual(connection.execute(
+                "SELECT value FROM probe_settings WHERE key='probe_categorized_tags_migrated'"
+            ).fetchone()[0], "1")
+            self.assertEqual(connection.execute(
+                "SELECT label FROM probe_servers WHERE ip='10.44.0.3'"
+            ).fetchone()[0], ",重试标签,CN2,")
+        finally:
+            connection.close()
+
+    def test_asset_tag_writes_keep_projection_and_sql_facets_aligned(self):
+        from app.probe.store import ServerPageQuery
+        first = self.store.create_server(ip="10.45.0.1", labels=["A", "CN2"])
+        self.assertEqual(first.label, ",A,CN2,")
+        second_inserted, _ = self.store.import_servers([
+            {"ip": "10.45.0.2", "label": "A,B,非CN2"},
+        ])
+        self.assertEqual(second_inserted, 1)
+        second = next(server for server in self.store.list_servers() if server.ip == "10.45.0.2")
+        self.store.update_servers_batch([first.id, second.id], add_labels=["C"])
+        self.store.update_servers_batch([second.id], remove_labels=["B"])
+        self.assertEqual(set(self.store.get_server(first.id).labels), {"A", "C", "CN2"})
+        self.assertEqual(set(self.store.get_server(second.id).labels), {"A", "C", "非CN2"})
+
+        # Normalized data is authoritative for exact filters and facets.
+        from app.control.database import connect_database
+        connection = connect_database(self.store.database_path)
+        try:
+            connection.execute("UPDATE probe_servers SET label='' WHERE id=?", (first.id,))
+            connection.commit()
+        finally:
+            connection.close()
+        updated = self.store.update_server(first.id, server_group="g")
+        self.assertEqual(set(updated.labels), {"A", "C", "CN2"})
+        connection = connect_database(self.store.database_path)
+        try:
+            connection.execute("UPDATE probe_servers SET label='' WHERE id=?", (second.id,))
+            connection.commit()
+        finally:
+            connection.close()
+        self.store.update_servers_batch([second.id], add_labels=["D"])
+        self.assertEqual(set(self.store.get_server(second.id).labels), {"A", "C", "D", "非CN2"})
+        self.store.update_servers_batch([second.id], remove_labels=["D"])
+        labels = {row["label"]: row["count"] for row in self.store.server_facets()["labels"]}
+        self.assertEqual(labels, {"A": 2, "C": 2, "CN2": 1, "非CN2": 1})
+        self.assertEqual(self.store.query_servers(ServerPageQuery(label="A"))["total"], 2)
+
+    def test_category_aware_facets_and_tag_id_filter_keep_legacy_name_filter(self):
+        from app.control.database import connect_database
+        from app.probe.store import ServerPageQuery
+
+        first = self.store.create_server(ip="10.47.0.1", labels=["Shared"])
+        second = self.store.create_server(ip="10.47.0.2", labels=["Shared"])
+        connection = connect_database(self.store.database_path)
+        try:
+            other_tag_id = connection.execute(
+                "SELECT st.tag_id FROM probe_server_tags st WHERE st.server_id=?", (second.id,)
+            ).fetchone()[0]
+            connection.execute("DELETE FROM probe_server_tags WHERE server_id=?", (second.id,))
+            region_id = connection.execute(
+                "SELECT id FROM probe_tag_categories WHERE name='region'"
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT INTO probe_tags(id,category_id,name,created_at) VALUES('region-shared',?,'Shared','2026-01-01')",
+                (region_id,),
+            )
+            connection.execute(
+                "INSERT INTO probe_server_tags(server_id,tag_id) VALUES(?, 'region-shared')", (second.id,)
+            )
+            connection.commit()
+            other_name = connection.execute(
+                "SELECT name FROM probe_tags WHERE id=?", (other_tag_id,)
+            ).fetchone()[0]
+            self.assertEqual(other_name, "Shared")
+        finally:
+            connection.close()
+
+        facets = self.store.server_facets()
+        self.assertEqual({row["label"]: row["count"] for row in facets["labels"]}["Shared"], 2)
+        shared_items = [row for row in facets["tagItems"] if row["name"] == "Shared"]
+        self.assertEqual({(row["category"], row["count"]) for row in shared_items},
+                         {("other", 1), ("region", 1)})
+        region_tag_id = next(row["tagId"] for row in shared_items if row["category"] == "region")
+        self.store.update_servers_batch([second.id], add_labels=["New"])
+        self.store.update_server(second.id, labels=["Shared", "Changed"])
+        connection = connect_database(self.store.database_path)
+        try:
+            retained = connection.execute(
+                "SELECT t.id, c.name FROM probe_server_tags st "
+                "JOIN probe_tags t ON t.id=st.tag_id "
+                "JOIN probe_tag_categories c ON c.id=t.category_id "
+                "WHERE st.server_id=? AND t.name='Shared'", (second.id,)
+            ).fetchall()
+            changed = connection.execute(
+                "SELECT c.name FROM probe_server_tags st "
+                "JOIN probe_tags t ON t.id=st.tag_id "
+                "JOIN probe_tag_categories c ON c.id=t.category_id "
+                "WHERE st.server_id=? AND t.name='Changed'", (second.id,)
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertIn((region_tag_id, "region"), {(row["id"], row["name"]) for row in retained})
+        self.assertEqual(changed, "other")
+        by_tag = self.store.query_servers(ServerPageQuery(tag_id=region_tag_id))
+        self.assertEqual([row["ip"] for row in by_tag["items"]], ["10.47.0.2"])
+        self.assertEqual(self.store.query_servers(ServerPageQuery(label="Shared"))["total"], 2)
+
+    def test_discovery_import_preserves_route_like_labels_with_ambiguous_provenance(self):
+        self.store.upsert_discover_results_batch([("10.46.0.1", 7000, 1.0)])
+        row = discover_rows(self.store)[0]
+        self.store.update_discover_batch([row["id"]], add_labels=["家宽"])
+        self.store.set_route_label("10.46.0.1", "CN2")
+        result = self.store.import_discover_results([row["id"]])
+        self.assertEqual(result.inserted, 1)
+        server = self.store.list_servers()[0]
+        self.assertEqual(server.label, ",家宽,CN2,")
+        labels = {row["label"] for row in self.store.server_facets()["labels"]}
+        self.assertEqual(labels, {"家宽", "CN2"})
+
+    def test_label_mutations_lock_before_reading_normalized_relations(self):
+        from app.probe import store as store_module
+        server = self.store.create_server(ip="10.48.0.1", labels=["Existing"])
+        real_connect = store_module.connect_database
+
+        def traced_connect(path):
+            connection = real_connect(path)
+            connection.set_trace_callback(self.sql_trace.append)
+            return connection
+
+        self.sql_trace = []
+        with mock.patch.object(store_module, "connect_database", side_effect=traced_connect):
+            self.store.update_server(server.id, labels=["Existing", "Updated"])
+            lock_index = next(i for i, sql in enumerate(self.sql_trace)
+                              if sql.upper().startswith("BEGIN IMMEDIATE"))
+            relation_index = next(i for i, sql in enumerate(self.sql_trace)
+                                  if "SELECT st.server_id, st.tag_id, t.name" in sql)
+            self.assertLess(lock_index, relation_index)
+
+            self.sql_trace.clear()
+            self.store.update_servers_batch([server.id], add_labels=["Batch"])
+            lock_index = next(i for i, sql in enumerate(self.sql_trace)
+                              if sql.upper().startswith("BEGIN IMMEDIATE"))
+            relation_index = next(i for i, sql in enumerate(self.sql_trace)
+                                  if "SELECT st.server_id, t.name" in sql)
+            self.assertLess(lock_index, relation_index)
 
     def test_probe_servers_migration_backfills_ip_sort(self):
         # 旧结构库（无 ip_sort 列）→ initialize_database 回填；无效 IP 永驻 NULL
@@ -978,7 +1317,8 @@ class ProbeStoreTests(unittest.TestCase):
 
         self.assertEqual(result, (2, 1, 1))
         server = next(server for server in self.store.list_servers() if server.ip == "10.0.2.1")
-        self.assertEqual((server.label, server.server_group), (",未路由测试,second-label,", "second-group"))
+        self.assertEqual((server.label, server.server_group),
+                         (",未路由测试,second-label,", "second-group"))
 
     def test_batch_operations_chunk_at_lower_sqlite_limit(self):
         from app.probe import store as store_module
@@ -1206,6 +1546,99 @@ class ProbeApiTests(unittest.TestCase):
         self.assertTrue(response.json()["ok"])
         response = client.patch("/api/probe/servers/99999", json={"label": "x"}, headers=headers)
         self.assertEqual(response.status_code, 404)
+
+    def test_tag_management_and_server_tag_id_api(self):
+        client, headers = self.make_client()
+        category = client.post(
+            "/api/probe/tags/categories", json={"name": "api-region"}, headers=headers
+        ).json()
+        tag = client.post(
+            "/api/probe/tags", json={"categoryId": category["id"], "name": "West"}, headers=headers
+        ).json()
+        created = client.post(
+            "/api/probe/servers",
+            json={"ip": "10.2.4.1", "labels": ["manual"], "tagIds": [tag["id"]]},
+            headers=headers,
+        ).json()
+        self.assertEqual(set(created["labels"]), {"manual", "West"})
+        updated = client.patch(
+            f"/api/probe/servers/{created['id']}", json={"tagIds": [tag["id"]]}, headers=headers
+        ).json()
+        self.assertEqual(updated["labels"], ["West"])
+
+        second_tag = client.post(
+            "/api/probe/tags", json={"categoryId": category["id"], "name": "East"}, headers=headers
+        ).json()
+        result = client.post(
+            "/api/probe/servers/batch-update",
+            json={"ids": [created["id"]], "addTagIds": [second_tag["id"]]}, headers=headers,
+        )
+        self.assertEqual(result.json()["updated"], 1)
+        labels = client.get("/api/probe/servers/facets", headers=headers).json()["labels"]
+        self.assertEqual({row["label"] for row in labels}, {"East", "West"})
+        items = client.get(f"/api/probe/tags?categoryId={category['id']}", headers=headers).json()["items"]
+        self.assertEqual({row["id"] for row in items}, {tag["id"], second_tag["id"]})
+        renamed = client.patch(
+            f"/api/probe/tags/categories/{category['id']}",
+            json={"name": "api-region-renamed"}, headers=headers,
+        ).json()
+        self.assertEqual(renamed["id"], category["id"])
+
+    def test_server_batch_import_limits_return_413_without_writes(self):
+        from app.probe.store import (
+            MAX_SERVER_IMPORT_ITEMS, MAX_SERVER_IMPORT_TEXT_BYTES, ProbeStore,
+        )
+        client, headers = self.make_client()
+        oversized_text = "x" * (MAX_SERVER_IMPORT_TEXT_BYTES + 1)
+        response = client.post(
+            "/api/probe/servers/batch", json={"text": oversized_text}, headers=headers
+        )
+        self.assertEqual(response.status_code, 413)
+        self.assertIn("拆分", response.json()["detail"])
+        self.assertEqual(ProbeStore(self.db_path).list_servers(), [])
+
+        entries = json.dumps(["10.53.0.1"] * (MAX_SERVER_IMPORT_ITEMS + 1))
+        response = client.post(
+            "/api/probe/servers/batch", json={"text": entries}, headers=headers
+        )
+        self.assertEqual(response.status_code, 413)
+        self.assertIn("5000", response.json()["detail"])
+        self.assertEqual(ProbeStore(self.db_path).list_servers(), [])
+
+    def test_server_api_accepts_tag_id_and_returns_category_aware_facets(self):
+        client, headers = self.make_client()
+        from app.control.database import connect_database
+        from app.probe.store import ProbeStore
+
+        store = ProbeStore(self.db_path)
+        first = store.create_server(ip="10.2.3.1", labels=["Shared"])
+        second = store.create_server(ip="10.2.3.2", labels=["Shared"])
+        connection = connect_database(self.db_path)
+        try:
+            connection.execute("DELETE FROM probe_server_tags WHERE server_id=?", (second.id,))
+            region_id = connection.execute(
+                "SELECT id FROM probe_tag_categories WHERE name='region'"
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT INTO probe_tags(id,category_id,name,created_at) "
+                "VALUES('api-region-shared',?,'Shared','2026-01-01')", (region_id,)
+            )
+            connection.execute(
+                "INSERT INTO probe_server_tags(server_id,tag_id) VALUES(?, 'api-region-shared')",
+                (second.id,),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        filtered = client.get(
+            "/api/probe/servers?tagId=api-region-shared", headers=headers
+        ).json()
+        self.assertEqual([item["ip"] for item in filtered["items"]], ["10.2.3.2"])
+        facets = client.get("/api/probe/servers/facets", headers=headers).json()
+        self.assertEqual({item["label"]: item["count"] for item in facets["labels"]}["Shared"], 2)
+        self.assertEqual({item["category"] for item in facets["tagItems"]
+                          if item["name"] == "Shared"}, {"other", "region"})
 
     def test_primary_route_enriches_server_and_discovery_for_console_source(self):
         client, headers = self.make_client()

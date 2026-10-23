@@ -97,7 +97,18 @@ The full scale target, classification/filter/query redesign, 100k acceptance dat
 
 Added UUID group IDs and nullable references on assets, discovery candidates, and LB domains. A one-time transactionally marked migration maps every legacy group name to a stable ID; failed migration leaves the marker unset for retry, and completed startups avoid re-scanning group-name columns. Existing name-based APIs remain compatible, while list/assignment/rename/color/delete/domain APIs accept and expose IDs. Rename preserves the group ID and updates legacy display-name projections. Deletion returns HTTP 409 while assets, discovery results, or LB domains reference the group. LB domain selection and sync continue to use the same group after rename.
 
-Categorized tag relations, separation of manual tags from route measurements, scalable cursor/filter APIs, and large-data performance remain unimplemented.
+At that checkpoint, categorized tag relations, separation of manual tags from route measurements, scalable cursor/filter APIs, and large-data performance remained unimplemented. The following slice records the backend tag schema and API work.
+
+## Slice: categorized tag API and assignment
+
+- `./.venv/bin/python -m unittest tests.test_lb_selection tests.test_probe_jobs tests.test_probe tests.test_lb tests.test_database` — coordinator rerun: 219 tests passed.
+- `python -m py_compile` on touched backend modules — exit 0.
+- `git diff --check` — coordinator will rerun before commit.
+- Independent spec/quality reviews found and drove fixes for category ambiguity, startup marker locking, stale compatibility reads, write serialization, duplicate projection labels, route-like manual label preservation, and import bounds. Final review confirmed the synchronous import cap.
+
+Added stable category/tag CRUD and tag merge/move semantics, asset assignment by tag ID on create/update/batch, category-specific `tagItems` facets and `tagId` filtering, and legacy name-projection compatibility. Existing labels migrate to `other`, and retained tag IDs/categories survive old name-based edits. The legacy projection deduplicates tag names when the same name exists in more than one category. The exact route-like strings CN2, 非CN2, and 未路由测试 are preserved as manual labels when historical provenance is ambiguous; accepted route measurements remain in the separate current-result projection. Synchronous text import rejects requests over 5,000 entries or 1 MiB with HTTP 413 before parsing/writes; asynchronous high-volume import/progress remains a later slice.
+
+The desktop category/tag management and multiselect UI, cursor pagination and contextual facets, server-side selection snapshots, and 100k/1M performance runs remain pending.
 
 ## Slice: unified current-result projection foundation
 

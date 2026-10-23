@@ -75,7 +75,7 @@ def selection_for_domain(domain: LbDomain, probe: ProbeStore, monitor) -> dict:
     max_age = config["maxAgeHours"] * 3600
     candidate_ips = list(dict.fromkeys(_endpoint(row["ip"], PROBE_TEST_PORT)[0] for row in healthy))
     # Choose latest first, THEN filter age: failed recent results must hide older successes.
-    latest = {kind: {_endpoint(r["server_ip"], PROBE_TEST_PORT): r
+    latest = {kind: {_endpoint(r["server_ip"], r.get("port", PROBE_TEST_PORT)): r
                      for r in observations.current_results(kind, candidate_ips, server_group=domain.group_name)
                      if _fresh(r, max_age)}
               for kind in ("connectivity", "speed")}
@@ -83,7 +83,7 @@ def selection_for_domain(domain: LbDomain, probe: ProbeStore, monitor) -> dict:
     observed = set()
     timestamps = []
     for row in healthy:
-        endpoint = _endpoint(row["ip"], PROBE_TEST_PORT)
+        endpoint = (_endpoint(row["ip"], PROBE_TEST_PORT)[0], PROBE_TEST_PORT)
         conn = latest["connectivity"].get(endpoint)
         speed = latest["speed"].get(endpoint)
         if conn is not None or speed is not None:

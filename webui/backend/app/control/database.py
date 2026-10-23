@@ -90,6 +90,26 @@ CREATE TABLE IF NOT EXISTS probe_groups (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS probe_tag_categories (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS probe_tags (
+    id TEXT PRIMARY KEY NOT NULL,
+    category_id TEXT NOT NULL REFERENCES probe_tag_categories(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (category_id, name)
+);
+CREATE TABLE IF NOT EXISTS probe_server_tags (
+    server_id INTEGER NOT NULL REFERENCES probe_servers(id) ON DELETE CASCADE,
+    tag_id TEXT NOT NULL REFERENCES probe_tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (server_id, tag_id)
+);
+CREATE INDEX IF NOT EXISTS idx_probe_server_tags_tag_server
+    ON probe_server_tags (tag_id, server_id);
+
 CREATE TABLE IF NOT EXISTS probe_discover_results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ip TEXT NOT NULL,
@@ -455,6 +475,70 @@ def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
         connection.commit()
 
 
+def _migrate_probe_tags(connection: sqlite3.Connection) -> None:
+    """Seed categories and backfill asset labels once, atomically and in bounded batches."""
+    namespace = uuid.UUID("895bfb47-4ce4-4b5f-a8fd-266ef7129031")
+    category_ids = {
+        name: str(uuid.uuid5(namespace, f"probe-tag-category:{name}"))
+        for name in ("region", "carrier", "purpose", "other")
+    }
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        marker = connection.execute(
+            "SELECT value FROM probe_settings WHERE key = 'probe_categorized_tags_migrated'"
+        ).fetchone()
+        if marker is not None:
+            connection.execute("DROP INDEX IF EXISTS idx_probe_tags_category_name")
+            connection.commit()
+            return
+        connection.execute("DROP INDEX IF EXISTS idx_probe_tags_category_name")
+        created_at = "1970-01-01T00:00:00+00:00"
+        connection.executemany(
+            "INSERT OR IGNORE INTO probe_tag_categories (id, name, created_at) VALUES (?, ?, ?)",
+            [(category_id, name, created_at) for name, category_id in category_ids.items()],
+        )
+        other_id = connection.execute(
+            "SELECT id FROM probe_tag_categories WHERE name = 'other'"
+        ).fetchone()["id"]
+
+        last_seen_id = 0
+        while True:
+            batch = connection.execute(
+                "SELECT id, label FROM probe_servers WHERE id > ? ORDER BY id LIMIT ?",
+                (last_seen_id, DISCOVER_MIGRATION_BATCH_SIZE),
+            ).fetchall()
+            if not batch:
+                break
+            last_seen_id = batch[-1]["id"]
+            for row in batch:
+                labels = [part.strip() for part in str(row["label"] or "").strip(",").split(",")
+                          if part.strip()]
+                labels = list(dict.fromkeys(labels))
+                packed = "," + ",".join(labels) + "," if labels else ""
+                connection.execute(
+                    "UPDATE probe_servers SET label = ? WHERE id = ?", (packed, row["id"])
+                )
+                for label in labels:
+                    tag_id = str(uuid.uuid5(namespace, f"probe-tag:{other_id}:{label}"))
+                    connection.execute(
+                        "INSERT OR IGNORE INTO probe_tags (id, category_id, name, created_at) "
+                        "VALUES (?, ?, ?, ?)", (tag_id, other_id, label, created_at),
+                    )
+                    connection.execute(
+                        "INSERT OR IGNORE INTO probe_server_tags (server_id, tag_id) VALUES (?, ?)",
+                        (row["id"], tag_id),
+                    )
+
+        connection.execute(
+            "INSERT INTO probe_settings (key, value) VALUES ('probe_categorized_tags_migrated', '1')"
+        )
+    except Exception:
+        connection.rollback()
+        raise
+    else:
+        connection.commit()
+
+
 def _migrate_labels_to_multi(connection: sqlite3.Connection) -> None:
     """label 单值 → 逗号哨兵多值格式（`,a,b,`）；幂等：已归一化的行跳过。
 
@@ -539,6 +623,7 @@ def initialize_database(path: Path) -> None:
             _migrate_probe_discover_results(connection)
             _migrate_probe_servers(connection)
             _migrate_labels_to_multi(connection)
+            _migrate_probe_tags(connection)
         finally:
             connection.close()
 

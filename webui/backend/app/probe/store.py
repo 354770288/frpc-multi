@@ -28,6 +28,14 @@ ServerConn = Literal["all", "pass", "partial", "fail", "untested"]
 ServerSort = Literal["ip", "group", "conn", "speed", "time"]
 SortOrder = Literal["asc", "desc"]
 _SQL_VARIABLE_HEADROOM = 8
+_TAG_UUID_NAMESPACE = uuid.UUID("895bfb47-4ce4-4b5f-a8fd-266ef7129031")
+SERVER_IMPORT_BATCH_SIZE = 500
+MAX_SERVER_IMPORT_ITEMS = 5_000
+MAX_SERVER_IMPORT_TEXT_BYTES = 1_048_576
+
+
+class ServerImportLimitError(ValueError):
+    """A synchronous server import exceeded its bounded request limits."""
 
 
 class DiscoverImportResult(NamedTuple):
@@ -95,6 +103,197 @@ def _pack_labels(labels: Iterable[str]) -> str:
     return "," + ",".join(parts) + "," if parts else ""
 
 
+def _asset_labels(labels: Iterable[str]) -> list[str]:
+    """Normalize manual asset labels without inferring their provenance."""
+    return _normalize_labels(labels)
+
+
+def _clean_tag_name(name: str) -> str:
+    clean = str(name or "").strip()
+    if not clean:
+        raise ValueError("标签名称不能为空")
+    if "," in clean:
+        raise ValueError("标签名称不能包含逗号")
+    return clean
+
+
+def _other_category_id(connection: sqlite3.Connection) -> str:
+    category_id = str(uuid.uuid5(_TAG_UUID_NAMESPACE, "probe-tag-category:other"))
+    category = connection.execute(
+        "SELECT id FROM probe_tag_categories WHERE id = ?", (category_id,)
+    ).fetchone()
+    if category is not None:
+        return category["id"]
+    connection.execute(
+        "INSERT OR IGNORE INTO probe_tag_categories (id, name, created_at) VALUES (?, 'other', ?)",
+        (category_id, now_iso()),
+    )
+    category = connection.execute(
+        "SELECT id FROM probe_tag_categories WHERE id = ?", (category_id,)
+    ).fetchone()
+    if category is not None:
+        return category["id"]
+    # A database initialized before the stable category ID existed may already
+    # have a user-created `other`; retain that canonical unique-name row.
+    category = connection.execute(
+        "SELECT id FROM probe_tag_categories WHERE name = 'other'"
+    ).fetchone()
+    if category is None:
+        raise RuntimeError("default tag category could not be resolved")
+    return category["id"]
+
+
+def _sync_server_tags_many(connection: sqlite3.Connection,
+                           entries: Sequence[tuple[int, Sequence[str]]], *,
+                           preserve_existing: bool = True) -> None:
+    """Batch relation/projection replacement, preserving category IDs for retained names."""
+    if not entries:
+        return
+    category_id = _other_category_id(connection)
+    normalized = [(server_id, _asset_labels(labels)) for server_id, labels in entries]
+    existing: dict[int, dict[str, list[str]]] = {server_id: {} for server_id, _ in normalized}
+    if preserve_existing:
+        for chunk in _chunks(connection, [server_id for server_id, _ in normalized]):
+            placeholders = ",".join("?" for _ in chunk)
+            for row in connection.execute(
+                "SELECT st.server_id, st.tag_id, t.name FROM probe_server_tags st "
+                "JOIN probe_tags t ON t.id = st.tag_id "
+                f"WHERE st.server_id IN ({placeholders})", chunk
+            ):
+                existing[row["server_id"]].setdefault(row["name"], []).append(row["tag_id"])
+
+    tags: dict[str, str] = {}
+    relation_rows: list[tuple[int, str]] = []
+    for server_id, labels in normalized:
+        for label in labels:
+            preserved_ids = existing[server_id].get(label, [])
+            if preserved_ids:
+                relation_rows.extend((server_id, tag_id) for tag_id in preserved_ids)
+            else:
+                tag_id = tags.setdefault(label, str(uuid.uuid5(
+                    _TAG_UUID_NAMESPACE, f"probe-tag:{category_id}:{label}"
+                )))
+                relation_rows.append((server_id, tag_id))
+    connection.executemany(
+        "DELETE FROM probe_server_tags WHERE server_id = ?",
+        [(server_id,) for server_id, _ in normalized],
+    )
+    created_at = now_iso()
+    if tags:
+        connection.executemany(
+            "INSERT OR IGNORE INTO probe_tags (id, category_id, name, created_at) VALUES (?, ?, ?, ?)",
+            [(tag_id, category_id, label, created_at) for label, tag_id in tags.items()],
+        )
+    connection.executemany(
+        "INSERT OR IGNORE INTO probe_server_tags (server_id, tag_id) VALUES (?, ?)",
+        relation_rows,
+    )
+    connection.executemany(
+        "UPDATE probe_servers SET label = ? WHERE id = ?",
+        [(_pack_labels(labels), server_id) for server_id, labels in normalized],
+    )
+
+
+def _sync_server_tags(connection: sqlite3.Connection, server_id: int,
+                      labels: Iterable[str]) -> list[str]:
+    """Replace one server's normalized tags and compatibility projection atomically."""
+    normalized = _asset_labels(labels)
+    _sync_server_tags_many(connection, [(server_id, normalized)])
+    return normalized
+
+
+def _server_labels_from_relation(connection: sqlite3.Connection, server_id: int) -> list[str]:
+    return [row["name"] for row in connection.execute(
+        "SELECT t.name FROM probe_server_tags st JOIN probe_tags t ON t.id = st.tag_id "
+        "WHERE st.server_id = ? GROUP BY t.name ORDER BY t.name", (server_id,)
+    )]
+
+
+def _tag_ids(connection: sqlite3.Connection, values: Iterable[str]) -> list[str]:
+    ids = list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+    if not ids:
+        return []
+    found: set[str] = set()
+    for chunk in _chunks(connection, ids):
+        placeholders = ",".join("?" for _ in chunk)
+        found.update(row["id"] for row in connection.execute(
+            f"SELECT id FROM probe_tags WHERE id IN ({placeholders})", chunk
+        ))
+    missing = [tag_id for tag_id in ids if tag_id not in found]
+    if missing:
+        raise ValueError(f"标签不存在: {', '.join(missing)}")
+    return ids
+
+
+def _refresh_server_projections(connection: sqlite3.Connection,
+                                server_ids: Iterable[int]) -> None:
+    ids = list(dict.fromkeys(int(server_id) for server_id in server_ids))
+    for chunk in _chunks(connection, ids):
+        placeholders = ",".join("?" for _ in chunk)
+        rows = connection.execute(
+            "SELECT st.server_id, t.name FROM probe_server_tags st "
+            "JOIN probe_tags t ON t.id=st.tag_id "
+            f"WHERE st.server_id IN ({placeholders}) ORDER BY st.server_id, t.name", chunk
+        ).fetchall()
+        labels: dict[int, list[str]] = {server_id: [] for server_id in chunk}
+        for row in rows:
+            labels[row["server_id"]].append(row["name"])
+        connection.executemany(
+            "UPDATE probe_servers SET label=? WHERE id=?",
+            [(_pack_labels(dict.fromkeys(values)), server_id) for server_id, values in labels.items()],
+        )
+
+
+def _capture_tag_servers(connection: sqlite3.Connection, tag_ids: Sequence[str]) -> None:
+    connection.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS _probe_tag_projection_refresh "
+        "(server_id INTEGER PRIMARY KEY)"
+    )
+    connection.execute("DELETE FROM _probe_tag_projection_refresh")
+    for chunk in _chunks(connection, list(tag_ids)):
+        placeholders = ",".join("?" for _ in chunk)
+        connection.execute(
+            "INSERT OR IGNORE INTO _probe_tag_projection_refresh(server_id) "
+            "SELECT server_id FROM probe_server_tags "
+            f"WHERE tag_id IN ({placeholders})", chunk
+        )
+
+
+def _refresh_captured_server_projections(connection: sqlite3.Connection) -> None:
+    last_id = 0
+    while True:
+        batch = connection.execute(
+            "SELECT server_id FROM _probe_tag_projection_refresh "
+            "WHERE server_id > ? ORDER BY server_id LIMIT ?",
+            (last_id, SERVER_IMPORT_BATCH_SIZE),
+        ).fetchall()
+        if not batch:
+            break
+        ids = [row["server_id"] for row in batch]
+        last_id = ids[-1]
+        _refresh_server_projections(connection, ids)
+
+
+def _refresh_tag_projection(connection: sqlite3.Connection, tag_ids: Sequence[str]) -> None:
+    if not tag_ids:
+        return
+    _capture_tag_servers(connection, tag_ids)
+    _refresh_captured_server_projections(connection)
+
+
+def _assign_server_tag_ids(connection: sqlite3.Connection, server_id: int,
+                           tag_ids: Iterable[str], *, replace: bool = False) -> None:
+    ids = _tag_ids(connection, tag_ids)
+    if replace:
+        connection.execute("DELETE FROM probe_server_tags WHERE server_id=?", (server_id,))
+    if ids:
+        connection.executemany(
+            "INSERT OR IGNORE INTO probe_server_tags(server_id,tag_id) VALUES(?,?)",
+            [(server_id, tag_id) for tag_id in ids],
+        )
+    _refresh_server_projections(connection, [server_id])
+
+
 def _unpack_labels(packed: str) -> list[str]:
     """哨兵格式 → 标签列表（兼容 legacy 未打包值）。"""
     if not packed:
@@ -128,6 +327,7 @@ class ServerPageQuery:
     q: str = ""
     group: str | None = None
     label: str | None = None
+    tag_id: str | None = None
     conn: ServerConn = "all"
     sort: ServerSort = "group"
     order: SortOrder = "asc"
@@ -369,8 +569,10 @@ class ProbeStore:
 
         return self._with_connection(read)
 
-    def create_server(self, *, ip: str, labels: Sequence[str] = (), server_group: str = "") -> ProbeServer:
+    def create_server(self, *, ip: str, labels: Sequence[str] = (), server_group: str = "",
+                      tag_ids: Sequence[str] = ()) -> ProbeServer:
         addr = validate_probe_addr(ip)
+        clean_labels = _asset_labels(labels)
         created_at = now_iso()
         ip_sort = _ip_sort_for(addr)
 
@@ -380,9 +582,12 @@ class ProbeStore:
                 cursor = connection.execute(
                     "INSERT INTO probe_servers (ip, ip_sort, label, server_group, group_id, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    (addr, ip_sort, _pack_labels(labels), group_name,
+                    (addr, ip_sort, _pack_labels(clean_labels), group_name,
                      _ensure_group_id(connection, group_name), created_at),
                 )
+                _sync_server_tags(connection, int(cursor.lastrowid), clean_labels)
+                if tag_ids:
+                    _assign_server_tag_ids(connection, int(cursor.lastrowid), tag_ids)
             except Exception as exc:
                 if "UNIQUE" in str(exc):
                     raise ValueError(f"服务器已存在: {addr}") from exc
@@ -411,21 +616,31 @@ class ProbeStore:
         ip: str | None = None,
         labels: Sequence[str] | None = None,
         server_group: str | None = None,
+        tag_ids: Sequence[str] | None = None,
     ) -> ProbeServer:
-        server = self.get_server(server_id)
-        new_ip = validate_probe_addr(ip) if ip is not None else server.ip
-        new_label = _pack_labels(labels) if labels is not None else server.label
-        new_group = (server_group or "").strip() if server_group is not None else server.server_group
-        # 恒重算排序键：改 IP 后旧键失效；对域名/IPv6 落 NULL（null-last 兜底）
-        new_ip_sort = _ip_sort_for(new_ip)
-
         def write(connection):
+            connection.execute("BEGIN IMMEDIATE")
+            server = connection.execute(
+                "SELECT * FROM probe_servers WHERE id = ?", (server_id,)
+            ).fetchone()
+            if server is None:
+                raise KeyError(f"服务器不存在: {server_id}")
+            new_ip = validate_probe_addr(ip) if ip is not None else server["ip"]
+            new_labels = _asset_labels(labels) if labels is not None else _server_labels_from_relation(connection, server_id)
+            new_group = (server_group or "").strip() if server_group is not None else server["server_group"]
+            new_ip_sort = _ip_sort_for(new_ip)
             resolved_group = _canonical_group_name(connection, new_group)
             connection.execute(
                 "UPDATE probe_servers SET ip = ?, ip_sort = ?, label = ?, server_group = ?, group_id = ? WHERE id = ?",
-                (new_ip, new_ip_sort, new_label, resolved_group,
+                (new_ip, new_ip_sort, _pack_labels(new_labels), resolved_group,
                  _ensure_group_id(connection, resolved_group), server_id),
             )
+            if labels is not None:
+                _sync_server_tags(connection, server_id, new_labels)
+            if tag_ids is not None:
+                _assign_server_tag_ids(
+                    connection, server_id, tag_ids, replace=labels is None
+                )
             connection.commit()
 
         self._with_connection(write)
@@ -441,35 +656,221 @@ class ProbeStore:
         self._with_connection(write)
 
     def import_servers(self, items: list[dict]) -> tuple[int, int]:
-        """批量导入 [{ip, label?, group?}]。已存在的 IP 跳过。返回 (新增, 跳过)。"""
-        cleaned: list[tuple[str, int | None, str, str]] = []
-        for item in items:
-            addr = validate_probe_addr(str(item.get("ip", "")))
-            cleaned.append((
-                addr,
-                _ip_sort_for(addr),
-                _pack_labels([str(item.get("label", "") or "")]),
-                str(item.get("group", "") or "").strip(),
-            ))
-        if not cleaned:
+        """Atomically import bounded input chunks; very large imports need the async job slice."""
+        if len(items) > MAX_SERVER_IMPORT_ITEMS:
+            raise ServerImportLimitError(
+                f"同步导入最多 {MAX_SERVER_IMPORT_ITEMS} 条，请拆分为多个较小批次导入"
+            )
+        if not items:
             return 0, 0
         created_at = now_iso()
 
         def write(connection):
-            cleaned_rows = [(ip, ip_sort, label, _canonical_group_name(connection, group))
-                            for ip, ip_sort, label, group in cleaned]
-            cursor = connection.executemany(
-                "INSERT OR IGNORE INTO probe_servers (ip, ip_sort, label, server_group, group_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                [(ip, ip_sort, label, group, _ensure_group_id(connection, group), created_at)
-                 for ip, ip_sort, label, group in cleaned_rows],
-            )
-            connection.commit()
-            inserted = cursor.rowcount if cursor.rowcount >= 0 else 0
-            return inserted
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                inserted = 0
+                group_ids: dict[str, tuple[str, str | None]] = {}
+                for offset in range(0, len(items), SERVER_IMPORT_BATCH_SIZE):
+                    candidates: dict[str, tuple[int | None, list[str], str]] = {}
+                    for item in items[offset:offset + SERVER_IMPORT_BATCH_SIZE]:
+                        ip = validate_probe_addr(str(item.get("ip", "")))
+                        group = str(item.get("group", "") or "").strip()
+                        candidates.setdefault(
+                            ip, (_ip_sort_for(ip), _asset_labels([str(item.get("label", "") or "")]), group)
+                        )
+                    for _, _, group in candidates.values():
+                        if group not in group_ids:
+                            canonical = _canonical_group_name(connection, group)
+                            group_ids[group] = (canonical, _ensure_group_id(connection, canonical))
+                    ips = list(candidates)
+                    placeholders = ",".join("?" for _ in ips)
+                    existing = {row["ip"] for row in connection.execute(
+                        f"SELECT ip FROM probe_servers WHERE ip IN ({placeholders})", ips
+                    )}
+                    cursor = connection.executemany(
+                        "INSERT OR IGNORE INTO probe_servers "
+                        "(ip, ip_sort, label, server_group, group_id, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        [(ip, candidates[ip][0], _pack_labels(candidates[ip][1]),
+                          group_ids[candidates[ip][2]][0], group_ids[candidates[ip][2]][1], created_at)
+                         for ip in ips],
+                    )
+                    inserted += max(cursor.rowcount, 0)
+                    imported_ips = [ip for ip in ips if ip not in existing]
+                    if imported_ips:
+                        entries: list[tuple[int, Sequence[str]]] = []
+                        imported_placeholders = ",".join("?" for _ in imported_ips)
+                        rows = connection.execute(
+                            f"SELECT id, ip FROM probe_servers WHERE ip IN ({imported_placeholders})", imported_ips
+                        ).fetchall()
+                        entries.extend((row["id"], candidates[row["ip"]][1]) for row in rows)
+                        _sync_server_tags_many(connection, entries, preserve_existing=False)
+                return inserted
 
         inserted = self._with_connection(write)
-        return inserted, len(cleaned) - inserted
+        return inserted, len(items) - inserted
+
+    def list_tag_categories(self) -> list[dict]:
+        def read(connection):
+            return [dict(row) for row in connection.execute(
+                "SELECT c.id, c.name, c.created_at AS createdAt, COUNT(t.id) AS tagCount "
+                "FROM probe_tag_categories c LEFT JOIN probe_tags t ON t.category_id=c.id "
+                "GROUP BY c.id, c.name, c.created_at ORDER BY c.name"
+            )]
+        return self._with_connection(read)
+
+    def create_tag_category(self, name: str) -> dict:
+        clean = str(name or "").strip()
+        if not clean:
+            raise ValueError("分类名称不能为空")
+        category_id, created_at = str(uuid.uuid4()), now_iso()
+
+        def write(connection):
+            try:
+                connection.execute(
+                    "INSERT INTO probe_tag_categories(id,name,created_at) VALUES(?,?,?)",
+                    (category_id, clean, created_at),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"分类已存在: {clean}") from exc
+            connection.commit()
+        self._with_connection(write)
+        return next(category for category in self.list_tag_categories()
+                    if category["id"] == category_id)
+
+    def rename_tag_category(self, category_id: str, name: str) -> dict:
+        clean = str(name or "").strip()
+        if not clean:
+            raise ValueError("分类名称不能为空")
+
+        def write(connection):
+            row = connection.execute(
+                "SELECT id FROM probe_tag_categories WHERE id=?", (category_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"分类不存在: {category_id}")
+            try:
+                connection.execute(
+                    "UPDATE probe_tag_categories SET name=? WHERE id=?", (clean, category_id)
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"分类已存在: {clean}") from exc
+            connection.commit()
+        self._with_connection(write)
+        return next(category for category in self.list_tag_categories()
+                    if category["id"] == category_id)
+
+    def list_tags(self, category_id: str | None = None) -> list[dict]:
+        def read(connection):
+            where = "WHERE t.category_id=?" if category_id is not None else ""
+            params = (category_id,) if category_id is not None else ()
+            return [dict(row) for row in connection.execute(
+                "SELECT t.id, t.category_id AS categoryId, c.name AS category, t.name, "
+                "t.created_at AS createdAt, COUNT(DISTINCT st.server_id) AS serverCount "
+                "FROM probe_tags t JOIN probe_tag_categories c ON c.id=t.category_id "
+                "LEFT JOIN probe_server_tags st ON st.tag_id=t.id "
+                f"{where} GROUP BY t.id, t.category_id, c.name, t.name, t.created_at "
+                "ORDER BY c.name, t.name", params
+            )]
+        return self._with_connection(read)
+
+    def create_tag(self, category_id: str, name: str) -> dict:
+        clean = _clean_tag_name(name)
+        tag_id, created_at = str(uuid.uuid4()), now_iso()
+
+        def write(connection):
+            if connection.execute(
+                "SELECT 1 FROM probe_tag_categories WHERE id=?", (category_id,)
+            ).fetchone() is None:
+                raise KeyError(f"分类不存在: {category_id}")
+            try:
+                connection.execute(
+                    "INSERT INTO probe_tags(id,category_id,name,created_at) VALUES(?,?,?,?)",
+                    (tag_id, category_id, clean, created_at),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"该分类下标签已存在: {clean}") from exc
+            connection.commit()
+        self._with_connection(write)
+        return next(tag for tag in self.list_tags() if tag["id"] == tag_id)
+
+    def update_tag(self, tag_id: str, *, name: str | None = None,
+                   category_id: str | None = None) -> dict:
+        if name is None and category_id is None:
+            raise ValueError("至少提供标签名称或分类")
+        clean = _clean_tag_name(name) if name is not None else None
+
+        def write(connection):
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT id, name, category_id FROM probe_tags WHERE id=?", (tag_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"标签不存在: {tag_id}")
+            next_name = clean if clean is not None else row["name"]
+            next_category = category_id if category_id is not None else row["category_id"]
+            if connection.execute(
+                "SELECT 1 FROM probe_tag_categories WHERE id=?", (next_category,)
+            ).fetchone() is None:
+                raise KeyError(f"分类不存在: {next_category}")
+            try:
+                connection.execute(
+                    "UPDATE probe_tags SET name=?, category_id=? WHERE id=?",
+                    (next_name, next_category, tag_id),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("目标分类中已存在同名标签") from exc
+            if next_name != row["name"]:
+                _refresh_tag_projection(connection, [tag_id])
+            connection.commit()
+        self._with_connection(write)
+        return next(tag for tag in self.list_tags() if tag["id"] == tag_id)
+
+    def delete_tag(self, tag_id: str) -> int:
+        def write(connection):
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM probe_tags WHERE id=?", (tag_id,)).fetchone() is None:
+                raise KeyError(f"标签不存在: {tag_id}")
+            _capture_tag_servers(connection, [tag_id])
+            affected = connection.execute(
+                "SELECT COUNT(*) FROM _probe_tag_projection_refresh"
+            ).fetchone()[0]
+            connection.execute("DELETE FROM probe_tags WHERE id=?", (tag_id,))
+            _refresh_captured_server_projections(connection)
+            connection.commit()
+            return affected
+        return self._with_connection(write)
+
+    def merge_tags(self, source_id: str, target_id: str) -> dict:
+        if source_id == target_id:
+            raise ValueError("来源标签与目标标签必须不同")
+
+        def write(connection):
+            connection.execute("BEGIN IMMEDIATE")
+            source = connection.execute(
+                "SELECT id FROM probe_tags WHERE id=?", (source_id,)
+            ).fetchone()
+            target = connection.execute(
+                "SELECT id FROM probe_tags WHERE id=?", (target_id,)
+            ).fetchone()
+            if source is None:
+                raise KeyError(f"标签不存在: {source_id}")
+            if target is None:
+                raise KeyError(f"标签不存在: {target_id}")
+            _capture_tag_servers(connection, [source_id])
+            affected = connection.execute(
+                "SELECT COUNT(*) FROM _probe_tag_projection_refresh"
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT OR IGNORE INTO probe_server_tags(server_id,tag_id) "
+                "SELECT server_id,? FROM probe_server_tags WHERE tag_id=?",
+                (target_id, source_id),
+            )
+            connection.execute("DELETE FROM probe_tags WHERE id=?", (source_id,))
+            _refresh_captured_server_projections(connection)
+            connection.commit()
+            return {"tagId": target_id, "mergedServers": affected}
+        return self._with_connection(write)
 
     def list_groups(self) -> list[str]:
         """预创建分组 ∪ 服务器上实际使用的分组（仅名称）。"""
@@ -818,19 +1219,49 @@ class ProbeStore:
                     existing_selected += 1
                     if row["ip"] not in candidates:
                         candidates[row["ip"]] = (
-                            row["ip"], _ip_sort_for(row["ip"]), row["label"],
+                            row["ip"], _ip_sort_for(row["ip"]),
+                            _asset_labels(_unpack_labels(row["label"])),
                             resolved_override or row["server_group"], timestamp
                         )
                 if not candidates:
                     return DiscoverImportResult(existing_selected, 0, 0)
-                cursor = connection.executemany(
-                    "INSERT OR IGNORE INTO probe_servers "
-                    "(ip, ip_sort, label, server_group, group_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    [(ip, ip_sort, label, _canonical_group_name(connection, server_group),
-                      _ensure_group_id(connection, server_group), created_at)
-                     for ip, ip_sort, label, server_group, created_at in candidates.values()],
-                )
-                inserted = max(cursor.rowcount, 0)
+                inserted = 0
+                imported_labels: dict[str, list[str]] = {}
+                ips = list(candidates)
+                group_ids: dict[str, tuple[str, str | None]] = {}
+                for _, _, _, server_group, _ in candidates.values():
+                    if server_group not in group_ids:
+                        group_name = _canonical_group_name(connection, server_group)
+                        group_ids[server_group] = (group_name, _ensure_group_id(connection, group_name))
+                for chunk in _chunks(connection, ips):
+                    placeholders = ",".join("?" for _ in chunk)
+                    existing = {row["ip"] for row in connection.execute(
+                        f"SELECT ip FROM probe_servers WHERE ip IN ({placeholders})", chunk
+                    )}
+                    values = []
+                    for ip in chunk:
+                        _, ip_sort, labels, server_group, created_at = candidates[ip]
+                        group_name, group_id = group_ids[server_group]
+                        values.append((ip, ip_sort, _pack_labels(labels), group_name,
+                                       group_id, created_at))
+                    cursor = connection.executemany(
+                        "INSERT OR IGNORE INTO probe_servers "
+                        "(ip, ip_sort, label, server_group, group_id, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)", values,
+                    )
+                    inserted += max(cursor.rowcount, 0)
+                    imported_labels.update(
+                        (ip, candidates[ip][2]) for ip in chunk if ip not in existing
+                    )
+                if imported_labels:
+                    entries: list[tuple[int, Sequence[str]]] = []
+                    for chunk in _chunks(connection, list(imported_labels)):
+                        placeholders = ",".join("?" for _ in chunk)
+                        rows = connection.execute(
+                            f"SELECT id, ip FROM probe_servers WHERE ip IN ({placeholders})", chunk
+                        ).fetchall()
+                        entries.extend((row["id"], imported_labels[row["ip"]]) for row in rows)
+                    _sync_server_tags_many(connection, entries, preserve_existing=False)
                 return DiscoverImportResult(
                     existing_selected, inserted, existing_selected - inserted
                 )
@@ -863,15 +1294,18 @@ class ProbeStore:
             return []
 
         def read(connection):
-            packed: list[str] = []
+            counts: dict[str, int] = {}
             for chunk in _chunks(connection, normalized):
                 placeholders = ",".join("?" for _ in chunk)
                 rows = connection.execute(
-                    "SELECT label FROM probe_servers "
-                    f"WHERE id IN ({placeholders}) AND label != ''", chunk
+                    "SELECT t.name AS label, COUNT(DISTINCT st.server_id) AS count "
+                    "FROM probe_server_tags st JOIN probe_tags t ON t.id = st.tag_id "
+                    f"WHERE st.server_id IN ({placeholders}) GROUP BY t.name", chunk
                 ).fetchall()
-                packed.extend(row["label"] for row in rows)
-            return _aggregate_labels(packed)
+                for row in rows:
+                    counts[row["label"]] = counts.get(row["label"], 0) + row["count"]
+            return [{"label": label, "count": count}
+                    for label, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
 
         return self._with_connection(read)
 
@@ -895,6 +1329,7 @@ class ProbeStore:
         def write(connection):
             affected = 0
             with connection:
+                connection.execute("BEGIN IMMEDIATE")
                 group_for_update = (_canonical_group_name(connection, clean_group)
                                     if clean_group is not None else None)
                 for chunk in _chunks(connection, normalized, headroom=4):
@@ -956,9 +1391,10 @@ class ProbeStore:
     def update_servers_batch(
         self, ids: list[int], *, group: str | None = None,
         add_labels: Sequence[str] = (), remove_labels: Sequence[str] = (),
+        add_tag_ids: Sequence[str] = (), remove_tag_ids: Sequence[str] = (),
     ) -> int:
         """批量更新服务器：分组覆盖 + 标签增/删（多标签语义），返回更新行数。"""
-        if group is None and not add_labels and not remove_labels:
+        if group is None and not add_labels and not remove_labels and not add_tag_ids and not remove_tag_ids:
             raise ValueError("至少提供分组或标签之一")
         clean_group = (group or "").strip() if group is not None else None
         if group is not None and not clean_group:
@@ -973,14 +1409,17 @@ class ProbeStore:
         def write(connection):
             affected = 0
             with connection:
+                connection.execute("BEGIN IMMEDIATE")
                 group_for_update = (_canonical_group_name(connection, clean_group)
                                     if clean_group is not None else None)
+                add_ids = _tag_ids(connection, add_tag_ids)
+                remove_ids = _tag_ids(connection, remove_tag_ids)
                 for chunk in _chunks(connection, normalized, headroom=4):
                     placeholders = ",".join("?" for _ in chunk)
-                    affected += connection.execute(
-                        f"SELECT COUNT(*) FROM probe_servers WHERE id IN ({placeholders})",
-                        chunk,
-                    ).fetchone()[0]
+                    rows = connection.execute(
+                        f"SELECT id FROM probe_servers WHERE id IN ({placeholders})", chunk
+                    ).fetchall()
+                    affected += len(rows)
                     if group_for_update is not None:
                         group_id = _ensure_group_id(connection, group_for_update)
                         connection.execute(
@@ -988,24 +1427,42 @@ class ProbeStore:
                             f"WHERE id IN ({placeholders})",
                             (group_for_update, group_id, *chunk),
                         )
-                    for label in removes:
-                        cursor = connection.execute(
-                            "UPDATE probe_servers SET label = CASE "
-                            "WHEN REPLACE(label, ?, ',') = ',' THEN '' "
-                            "ELSE REPLACE(label, ?, ',') END "
-                            f"WHERE id IN ({placeholders})",
-                            (f",{label},", f",{label},", *chunk),
-                        )
-                    for label in adds:
-                        pattern = _label_like_pattern(label)
-                        cursor = connection.execute(
-                            "UPDATE probe_servers SET label = CASE "
-                            "WHEN label = '' THEN ? "
-                            "WHEN label LIKE ? ESCAPE '\\' THEN label "
-                            "ELSE label || ? END "
-                            f"WHERE id IN ({placeholders})",
-                            (f",{label},", pattern, f"{label},", *chunk),
-                        )
+                    if adds or removes:
+                        server_ids = [row["id"] for row in rows]
+                        tag_labels: dict[int, list[str]] = {server_id: [] for server_id in server_ids}
+                        if server_ids:
+                            tag_placeholders = ",".join("?" for _ in server_ids)
+                            for tag in connection.execute(
+                                "SELECT st.server_id, t.name FROM probe_server_tags st "
+                                "JOIN probe_tags t ON t.id = st.tag_id "
+                                f"WHERE st.server_id IN ({tag_placeholders}) ORDER BY t.name",
+                                server_ids,
+                            ):
+                                tag_labels[tag["server_id"]].append(tag["name"])
+                        entries = []
+                        for server_id in server_ids:
+                            labels = [label for label in tag_labels[server_id] if label not in removes]
+                            entries.append((server_id, _normalize_labels([*labels, *adds])))
+                        _sync_server_tags_many(connection, entries)
+                    if add_tag_ids or remove_tag_ids:
+                        for server_chunk in _chunks(connection, [row["id"] for row in rows], headroom=2):
+                            if remove_ids:
+                                for tag_chunk in _chunks(connection, remove_ids, headroom=1):
+                                    tag_placeholders = ",".join("?" for _ in tag_chunk)
+                                    server_placeholders = ",".join("?" for _ in server_chunk)
+                                    connection.execute(
+                                        "DELETE FROM probe_server_tags "
+                                        f"WHERE server_id IN ({server_placeholders}) "
+                                        f"AND tag_id IN ({tag_placeholders})",
+                                        (*server_chunk, *tag_chunk),
+                                    )
+                            if add_ids:
+                                for tag_chunk in _chunks(connection, add_ids):
+                                    connection.executemany(
+                                        "INSERT OR IGNORE INTO probe_server_tags(server_id,tag_id) VALUES(?,?)",
+                                        [(server_id, tag_id) for server_id in server_chunk for tag_id in tag_chunk],
+                                    )
+                            _refresh_server_projections(connection, server_chunk)
             return affected
 
         return self._with_connection(write)
@@ -1081,10 +1538,22 @@ class ProbeStore:
                 params.extend([query.group, query.group, query.group])
             if query.label is not None:
                 if query.label == "":
-                    where.append("s.label = ''")
+                    where.append(
+                        "NOT EXISTS (SELECT 1 FROM probe_server_tags st WHERE st.server_id = s.id)"
+                    )
                 else:
-                    where.append("s.label LIKE ? ESCAPE '\\'")
-                    params.append(_label_like_pattern(query.label))
+                    where.append(
+                        "EXISTS (SELECT 1 FROM probe_server_tags st "
+                        "JOIN probe_tags t ON t.id = st.tag_id "
+                        "WHERE st.server_id = s.id AND t.name = ? COLLATE BINARY)"
+                    )
+                    params.append(query.label.strip())
+            if query.tag_id is not None:
+                where.append(
+                    "EXISTS (SELECT 1 FROM probe_server_tags st "
+                    "WHERE st.server_id = s.id AND st.tag_id = ?)"
+                )
+                params.append(query.tag_id)
             if query.conn != "all":
                 score = self._CONN_SCORE_SQL
                 if query.conn == "pass":
@@ -1159,14 +1628,26 @@ class ProbeStore:
         """服务器库标签云 / 分组筛选数据源（仅 probe_servers 自身）。"""
 
         def read(connection):
-            packed = [row["label"] for row in connection.execute(
-                "SELECT label FROM probe_servers WHERE label != ''")]
+            labels = connection.execute(
+                "SELECT t.name AS label, COUNT(DISTINCT st.server_id) AS count "
+                "FROM probe_server_tags st JOIN probe_tags t ON t.id = st.tag_id "
+                "GROUP BY t.name ORDER BY count DESC, t.name"
+            ).fetchall()
+            tag_items = connection.execute(
+                "SELECT t.id AS tagId, c.id AS categoryId, c.name AS category, "
+                "t.name AS name, COUNT(DISTINCT st.server_id) AS count "
+                "FROM probe_tags t JOIN probe_tag_categories c ON c.id = t.category_id "
+                "LEFT JOIN probe_server_tags st ON st.tag_id = t.id "
+                "GROUP BY t.id, c.id, c.name, t.name HAVING COUNT(st.server_id) > 0 "
+                "ORDER BY c.name, t.name"
+            ).fetchall()
             groups = connection.execute(
                 "SELECT server_group, COUNT(*) AS count FROM probe_servers "
                 "WHERE server_group != '' GROUP BY server_group ORDER BY server_group"
             ).fetchall()
             return {
-                "labels": _aggregate_labels(packed),
+                "labels": [{"label": row["label"], "count": row["count"]} for row in labels],
+                "tagItems": [dict(row) for row in tag_items],
                 "groups": [{"group": row["server_group"], "count": row["count"]} for row in groups],
             }
 

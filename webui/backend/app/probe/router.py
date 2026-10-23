@@ -26,7 +26,8 @@ from .adapters import LegacyProbeAdapter, LegacyDiscoverAdapter, serial_options
 from .route import load_route_nodes, route_hub, save_route_nodes
 from .runner import MODES, ProbeRunner
 from .store import (
-    DiscoverPageQuery, ProbeStore, ServerPageQuery, unpack_labels, validate_probe_addr,
+    MAX_SERVER_IMPORT_ITEMS, MAX_SERVER_IMPORT_TEXT_BYTES, DiscoverPageQuery,
+    ProbeStore, ServerImportLimitError, ServerPageQuery, unpack_labels, validate_probe_addr,
 )
 
 router = APIRouter(prefix="/api/probe", dependencies=[Depends(require_auth)])
@@ -246,12 +247,14 @@ def _public_speed(row: dict) -> dict:
 class ServerCreate(BaseModel):
     ip: str
     labels: list[str] = []
+    tagIds: list[str] = []
     group: str = ""
 
 
 class ServerPatch(BaseModel):
     ip: str | None = None
     labels: list[str] | None = None
+    tagIds: list[str] | None = None
     group: str | None = None
 
 
@@ -315,13 +318,14 @@ def list_servers(
     q: str = "",
     group: str | None = None,
     label: str | None = None,
+    tagId: str | None = None,
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
     sort: Literal["ip", "group", "conn", "speed", "time"] = "group",
     order: Literal["asc", "desc"] = "asc",
     nodeId: str = "console",
 ):
     result = source_store(nodeId).query_servers(ServerPageQuery(
-        page=page, page_size=page_size, q=q, group=group, label=label,
+        page=page, page_size=page_size, q=q, group=group, label=label, tag_id=tagId,
         conn=conn, sort=sort, order=order,
     ))
     return {
@@ -390,6 +394,114 @@ class ServerBatchUpdate(BaseModel):
     group: str | None = None
     addLabels: list[str] = []
     removeLabels: list[str] = []
+    addTagIds: list[str] = []
+    removeTagIds: list[str] = []
+
+
+class TagCategoryCreate(BaseModel):
+    name: str
+
+
+class TagCategoryPatch(BaseModel):
+    name: str
+
+
+class TagCreate(BaseModel):
+    categoryId: str
+    name: str
+
+
+class TagPatch(BaseModel):
+    name: str | None = None
+    categoryId: str | None = None
+
+
+class TagMerge(BaseModel):
+    targetTagId: str
+
+
+@router.get("/tags/categories")
+def list_tag_categories():
+    return {"items": probe_store().list_tag_categories()}
+
+
+@router.post("/tags/categories")
+def create_tag_category(payload: TagCategoryCreate, user: Annotated[str, Depends(require_auth)]):
+    try:
+        category = probe_store().create_tag_category(payload.name)
+    except ValueError as exc:
+        audit(user, "probe_create_tag_category", success=False, message=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit(user, "probe_create_tag_category", message=category["name"])
+    return category
+
+
+@router.patch("/tags/categories/{category_id}")
+def rename_tag_category(category_id: str, payload: TagCategoryPatch,
+                        user: Annotated[str, Depends(require_auth)]):
+    try:
+        category = probe_store().rename_tag_category(category_id, payload.name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        audit(user, "probe_rename_tag_category", success=False, message=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit(user, "probe_rename_tag_category", message=f"{category_id} → {category['name']}")
+    return category
+
+
+@router.get("/tags")
+def list_tags(categoryId: str | None = None):
+    return {"items": probe_store().list_tags(categoryId)}
+
+
+@router.post("/tags")
+def create_tag(payload: TagCreate, user: Annotated[str, Depends(require_auth)]):
+    try:
+        tag = probe_store().create_tag(payload.categoryId, payload.name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        audit(user, "probe_create_tag", success=False, message=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit(user, "probe_create_tag", message=f"{tag['category']} / {tag['name']}")
+    return tag
+
+
+@router.patch("/tags/{tag_id}")
+def update_tag(tag_id: str, payload: TagPatch, user: Annotated[str, Depends(require_auth)]):
+    try:
+        tag = probe_store().update_tag(tag_id, name=payload.name, category_id=payload.categoryId)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        audit(user, "probe_update_tag", success=False, message=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit(user, "probe_update_tag", message=f"{tag_id} → {tag['category']} / {tag['name']}")
+    return tag
+
+
+@router.post("/tags/{tag_id}/merge")
+def merge_tags(tag_id: str, payload: TagMerge, user: Annotated[str, Depends(require_auth)]):
+    try:
+        result = probe_store().merge_tags(tag_id, payload.targetTagId)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        audit(user, "probe_merge_tags", success=False, message=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit(user, "probe_merge_tags", message=f"{tag_id} → {payload.targetTagId}")
+    return result
+
+
+@router.delete("/tags/{tag_id}")
+def delete_tag(tag_id: str, user: Annotated[str, Depends(require_auth)]):
+    try:
+        affected = probe_store().delete_tag(tag_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit(user, "probe_delete_tag", message=f"{tag_id}; {affected} 台服务器")
+    return {"ok": True, "affectedServers": affected}
 
 
 @router.post("/servers/batch-update")
@@ -400,7 +512,8 @@ def batch_update_servers(payload: ServerBatchUpdate, user: Annotated[str, Depend
     try:
         updated = store.update_servers_batch(
             payload.ids, group=payload.group,
-            add_labels=payload.addLabels, remove_labels=payload.removeLabels)
+            add_labels=payload.addLabels, remove_labels=payload.removeLabels,
+            add_tag_ids=payload.addTagIds, remove_tag_ids=payload.removeTagIds)
     except ValueError as exc:
         audit(user, "probe_batch_update_servers", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -411,6 +524,10 @@ def batch_update_servers(payload: ServerBatchUpdate, user: Annotated[str, Depend
         changes.append(f"加标签 {payload.addLabels}")
     if payload.removeLabels:
         changes.append(f"去标签 {payload.removeLabels}")
+    if payload.addTagIds:
+        changes.append(f"加分类标签 {payload.addTagIds}")
+    if payload.removeTagIds:
+        changes.append(f"去分类标签 {payload.removeTagIds}")
     audit(user, "probe_batch_update_servers", message=f"{updated} 台：{'，'.join(changes)}")
     return {"updated": updated}
 
@@ -419,7 +536,9 @@ def batch_update_servers(payload: ServerBatchUpdate, user: Annotated[str, Depend
 def create_server(payload: ServerCreate, user: Annotated[str, Depends(require_auth)]):
     store = probe_store()
     try:
-        server = store.create_server(ip=payload.ip, labels=payload.labels, server_group=payload.group)
+        server = store.create_server(
+            ip=payload.ip, labels=payload.labels, tag_ids=payload.tagIds, server_group=payload.group
+        )
     except ValueError as exc:
         audit(user, "probe_create_server", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -434,7 +553,8 @@ def update_server(server_id: int, payload: ServerPatch, user: Annotated[str, Dep
     try:
         server = store.update_server(
             server_id,
-            ip=payload.ip, labels=payload.labels, server_group=payload.group,
+            ip=payload.ip, labels=payload.labels, tag_ids=payload.tagIds,
+            server_group=payload.group,
         )
     except ValueError as exc:
         audit(user, "probe_update_server", success=False, message=str(exc))
@@ -460,16 +580,33 @@ def delete_server(server_id: int, user: Annotated[str, Depends(require_auth)]):
 
 @router.post("/servers/batch")
 def batch_import(payload: ServerBatchImport, user: Annotated[str, Depends(require_auth)]):
+    if len(payload.text.encode("utf-8")) > MAX_SERVER_IMPORT_TEXT_BYTES:
+        message = (
+            f"同步导入文本上限为 {MAX_SERVER_IMPORT_TEXT_BYTES} 字节；"
+            f"每批最多 {MAX_SERVER_IMPORT_ITEMS} 条，请拆分为多个较小批次导入"
+        )
+        audit(user, "probe_import_servers", success=False, message=message)
+        raise HTTPException(status_code=413, detail=message)
     try:
         items = parse_batch_text(payload.text, payload.group)
         items = [item for item in items if str(item.get("ip", "")).strip()]
+        if len(items) > MAX_SERVER_IMPORT_ITEMS:
+            raise ServerImportLimitError(
+                f"同步导入每批最多 {MAX_SERVER_IMPORT_ITEMS} 条，请拆分为多个较小批次导入"
+            )
     except ValueError as exc:
+        if isinstance(exc, ServerImportLimitError):
+            audit(user, "probe_import_servers", success=False, message=str(exc))
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not items:
         raise HTTPException(status_code=400, detail="没有可导入的服务器")
     store = probe_store()
     try:
         inserted, skipped = store.import_servers(items)
+    except ServerImportLimitError as exc:
+        audit(user, "probe_import_servers", success=False, message=str(exc))
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except ValueError as exc:
         audit(user, "probe_import_servers", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
