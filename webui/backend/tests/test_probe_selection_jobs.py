@@ -74,11 +74,15 @@ class ProbeSelectionJobTests(unittest.TestCase):
 
     def test_selection_api_and_idempotency_survive_expiry_and_policy_change(self):
         selection = self.selection(self.add_assets(2))
-        import app.probe.router as router
         payload = JobCreate(mode="route", targetScope="selection", selectionId=selection["selectionId"],
                             idempotencyKey="api-key", nodeIds=[self.primary])
-        with patch.object(router, "job_store", return_value=self.jobs), \
-             patch.object(router, "_effective_options", return_value=ProbeOptions()):
+        # Other tests reload app.probe.router after removing it from sys.modules.
+        # This imported function can then retain the old module globals while
+        # `router` resolves to the newly loaded module object.
+        with patch.dict(jobs_create.__globals__, {
+            "job_store": lambda: self.jobs,
+            "_effective_options": lambda: ProbeOptions(),
+        }):
             created = jobs_create(payload, user="alice")
             self.assertEqual(created["targetTotal"], 2)
             self.assertEqual(created["targetMaterialized"], 0)
