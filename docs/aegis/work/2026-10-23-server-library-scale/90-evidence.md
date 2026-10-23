@@ -37,7 +37,7 @@ The `/api/probe/jobs` selection scope accepts a selection ID, mode, options, and
 
 At the end of the producer-backend slice, the frontend had not yet created tests from saved selection snapshots; no end-to-end 100k task execution/concurrent write benchmark, 1M capacity test, browser E2E for the new selection flow, or production migration/deployment had been performed.
 
-Complexity control: `jobs.py` is now 1,254 lines, crossing the strong 1,200-line pressure signal. Producer logic remains in the scheduler transaction owner to keep policy, task insertion, cursor movement, and lease/failover changes atomic. Treat this as `exceeded-and-governed`: the next maintainability slice should extract cohesive producer operations without adding a second transaction owner, after the desktop selection-test flow is integrated. This is a follow-up, not a claim that the complexity issue is fully closed.
+Complexity control: initial producer implementation crossed the 1,200-line strong pressure signal in `jobs.py`; this was governed by extracting cohesive creation/materialization/failover helpers into `selection_jobs.py`. `jobs.py` is now 1,125 lines. The scheduler remains the sole transaction owner and passes its open connection into helpers; quality review confirmed no import cycle or second persistence owner. Complexity closure for this pressure signal: `exceeded-and-governed`; defer further extraction unless line pressure returns.
 
 ## Slice: desktop selection-backed test creation
 
