@@ -33,6 +33,7 @@ import type {
   ServerCursorPage,
   ServerPage,
   ServerQuery,
+  ServerView,
   ManagedTag,
   TagCategory,
   ServerSelection,
@@ -176,6 +177,12 @@ function serverFilterParams(query: ServerQuery) {
 }
 
 export const probeApi = {
+  serverViews: () => api<{ items: ServerView[] }>('/api/probe/server-views'),
+  createServerView: (payload: Pick<ServerView, 'name' | 'filters' | 'sort' | 'order' | 'visibleColumns'>) =>
+    api<ServerView>('/api/probe/server-views', { method: 'POST', body: JSON.stringify(payload) }),
+  updateServerView: (id: string, payload: Partial<Pick<ServerView, 'name' | 'filters' | 'sort' | 'order' | 'visibleColumns'>>) =>
+    api<ServerView>(`/api/probe/server-views/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteServerView: (id: string) => api<{ ok: boolean }>(`/api/probe/server-views/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   testNodes: () => api<{ items: TestNode[] }>('/api/probe/nodes'),
   failoversPage: (query: Record<string, string | number>) => api<{ items: ProbeFailover[]; page: number; pageSize: number; total: number }>(`/api/probe/nodes/failovers?${new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]))}`),
   executionPolicy: () => api<TestNodeExecutionPolicy>('/api/probe/nodes/execution-policy'),

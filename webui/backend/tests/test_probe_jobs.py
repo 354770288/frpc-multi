@@ -502,6 +502,156 @@ class ProbeJobsTests(unittest.TestCase):
         self.assertEqual(a['items'][0]['s_test_time'],b['items'][0]['s_test_time'])
         self.assertEqual(a['items'][0]['s_dl_speed_mbps'],b['items'][0]['s_dl_speed_mbps'])
 
+    def test_measurement_sort_projection_tracks_results_and_asset_endpoints(self):
+        assets=ProbeStore(self.path)
+        raw=assets.create_server(ip='198.51.100.1')
+        alias=assets.create_server(ip='198.51.100.2:07000')
+        other_port=assets.create_server(ip='198.51.100.3:7001')
+        domain=assets.create_server(ip='speed.example.test')
+        ipv6=assets.create_server(ip='2001:db8::1')
+        stamp='2026-10-21T00:00:00+00:00'
+        with self.store._db() as c:
+            for server_ip, source_id, bps in (
+                ('198.51.100.1', 1, 2 * 1024 * 1024),
+                ('198.51.100.2', 2, 0),
+                ('198.51.100.3', 3, 99 * 1024 * 1024),
+                ('speed.example.test', 4, 88 * 1024 * 1024),
+                ('2001:db8::1', 5, 77 * 1024 * 1024),
+            ):
+                c.execute(
+                    "INSERT INTO probe_current_results "
+                    "(server_ip,kind,port,source_result_id,node_id,job_id,task_id,generation,test_time,data) "
+                    "VALUES(?,'speed',7000,?,'node','job','task',0,?,?)",
+                    (server_ip, source_id, stamp, json.dumps({'dl_speed_bps': bps})),
+                )
+            rows={r['ip']: (r['speed_sort'],r['time_sort']) for r in c.execute(
+                "SELECT ip,speed_sort,time_sort FROM probe_servers")}
+            self.assertEqual(rows['198.51.100.1'][0],16)
+            self.assertEqual(rows['198.51.100.1'][1],stamp)
+            self.assertEqual(rows['198.51.100.2:07000'],(0,stamp))
+            self.assertEqual(rows['198.51.100.3:7001'],(0,None))
+            self.assertEqual(rows['speed.example.test'],(704,stamp))
+            self.assertEqual(rows['2001:db8::1'],(616,stamp))
+            c.commit()
+            page=assets.query_servers(ServerPageQuery(sort='time',order='desc',page_size=10))
+            listed={row['ip']:row for row in page['items']}
+            self.assertEqual(listed['speed.example.test']['s_dl_speed_mbps'],704)
+            self.assertEqual(listed['2001:db8::1']['s_dl_speed_mbps'],616)
+
+            # Existing domain/IPv6 projections use the same host join as the list.
+            c.execute("UPDATE probe_current_results SET data=?,test_time=? "
+                      "WHERE server_ip='speed.example.test' AND kind='speed'",
+                      (json.dumps({'dl_speed_bps':1024*1024}),stamp))
+            row=c.execute("SELECT speed_sort,time_sort FROM probe_servers WHERE id=?",(domain.id,)).fetchone()
+            self.assertEqual((row['speed_sort'],row['time_sort']),(8,stamp))
+            c.execute("DELETE FROM probe_current_results WHERE server_ip='2001:db8::1' AND kind='speed'")
+            row=c.execute("SELECT speed_sort,time_sort FROM probe_servers WHERE id=?",(ipv6.id,)).fetchone()
+            self.assertEqual((row['speed_sort'],row['time_sort']),(0,None))
+            c.execute("INSERT INTO probe_servers(ip,ip_sort,label,server_group,created_at) "
+                      "VALUES('speed.example.test:07000',NULL,'','','2026-01-01')")
+            row=c.execute("SELECT speed_sort,time_sort FROM probe_servers "
+                          "WHERE ip='speed.example.test:07000'").fetchone()
+            self.assertEqual((row['speed_sort'],row['time_sort']),(8,stamp))
+
+            # IP edits recompute the key from the existing fixed-port row.
+            c.execute("UPDATE probe_servers SET ip='198.51.100.3:7000' WHERE id=?",(other_port.id,))
+            row=c.execute("SELECT speed_sort,time_sort FROM probe_servers WHERE id=?",(other_port.id,)).fetchone()
+            self.assertEqual((row['speed_sort'],row['time_sort']),(792,stamp))
+            c.execute("UPDATE probe_current_results SET data=?,test_time=? "
+                      "WHERE server_ip='198.51.100.2' AND kind='speed'",
+                      (json.dumps({'dl_speed_bps':3*1024*1024}),'2026-10-22T00:00:00+00:00'))
+            alias_rows=c.execute(
+                "SELECT speed_sort,time_sort FROM probe_servers WHERE ip IN ('198.51.100.2:07000','198.51.100.2') "
+                "ORDER BY ip").fetchall()
+            self.assertEqual([(row['speed_sort'],row['time_sort']) for row in alias_rows],
+                             [(24,'2026-10-22T00:00:00+00:00')])
+            c.commit()
+            page=assets.query_servers(ServerPageQuery(sort='time',order='desc',page_size=10))
+            self.assertEqual(page['items'][0]['ip'],alias.ip)
+            self.assertEqual(page['items'][0]['s_test_time'],'2026-10-22T00:00:00+00:00')
+            c.execute("DELETE FROM probe_current_results WHERE server_ip='198.51.100.1' AND kind='speed'")
+            row=c.execute("SELECT speed_sort,time_sort FROM probe_servers WHERE id=?",(raw.id,)).fetchone()
+            self.assertEqual((row['speed_sort'],row['time_sort']),(0,None))
+
+            # Assets created after measurements pick up their matching projection.
+            c.execute("INSERT INTO probe_servers(ip,ip_sort,label,server_group,created_at) "
+                      "VALUES('198.51.100.2',0,'','','2026-01-01')")
+            row=c.execute("SELECT speed_sort,time_sort FROM probe_servers WHERE ip='198.51.100.2'").fetchone()
+            self.assertEqual((row['speed_sort'],row['time_sort']),
+                             (24,'2026-10-22T00:00:00+00:00'))
+
+            c.execute("DELETE FROM probe_current_results WHERE server_ip='198.51.100.2' AND kind='speed'")
+            alias_rows=c.execute(
+                "SELECT speed_sort,time_sort FROM probe_servers WHERE "
+                "ip IN ('198.51.100.2:07000','198.51.100.2')").fetchall()
+            self.assertEqual([(row['speed_sort'],row['time_sort']) for row in alias_rows],
+                             [(0,None),(0,None)])
+
+    def test_speed_time_ordering_uses_materialized_values_and_stable_ids(self):
+        assets=ProbeStore(self.path)
+        ips=['203.0.113.1','203.0.113.2','203.0.113.3','203.0.113.4']
+        for ip in ips: assets.create_server(ip=ip)
+        with self.store._db() as c:
+            for server_ip, source_id, stamp, bps in (
+                (ips[0],11,'2026-10-21T00:00:00+00:00',0),
+                (ips[1],12,'2026-10-22T00:00:00+00:00',2*1024*1024),
+                (ips[2],13,'2026-10-23T00:00:00+00:00',2*1024*1024),
+            ):
+                c.execute(
+                    "INSERT INTO probe_current_results "
+                    "(server_ip,kind,port,source_result_id,node_id,job_id,task_id,generation,test_time,data) "
+                    "VALUES(?,'speed',7000,?,'node','job','task',0,?,?)",
+                    (server_ip,source_id,stamp,json.dumps({'dl_speed_bps':bps})),
+                )
+        for order, expected in (
+            ('asc',[ips[0],ips[3],ips[1],ips[2]]),
+            ('desc',[ips[2],ips[1],ips[3],ips[0]]),
+        ):
+            speed=assets.query_servers(ServerPageQuery(sort='speed',order=order,page_size=10))
+            self.assertEqual([r['ip'] for r in speed['items']],expected)
+        for order, expected in (
+            ('asc',[ips[0],ips[1],ips[2],ips[3]]),
+            ('desc',[ips[2],ips[1],ips[0],ips[3]]),
+        ):
+            timed=assets.query_servers(ServerPageQuery(sort='time',order=order,page_size=10))
+            self.assertEqual([r['ip'] for r in timed['items']],expected)
+
+    def test_measurement_sort_query_plans_use_indexes_without_order_temp_tree(self):
+        from contextlib import closing
+        from app.control.database import connect_database
+        source=ProbeStore(self.path,node_id=self.a)
+        with closing(connect_database(self.path)) as c:
+            source._source_views(c)
+            for sort in ('speed','time'):
+                for order in ('asc','desc'):
+                    index = ('idx_probe_servers_speed_sort_id' if sort == 'speed' else
+                             'idx_probe_servers_time_sort_' + order)
+                    query=ServerPageQuery(sort=sort,order=order)
+                    order_sql=', '.join(f'{expr} {direction}'
+                                        for expr,direction in source._server_order_terms(query))
+                    plan=' '.join(str(tuple(row)) for row in c.execute(
+                        'EXPLAIN QUERY PLAN '+source._server_select_sql()+' '+source._server_from_sql()+
+                        ' ORDER BY '+order_sql+' LIMIT ?', (50,)))
+                    self.assertIn(index,plan)
+                    self.assertNotIn('TEMP B-TREE FOR ORDER BY',plan.upper())
+            lookup_plan=' '.join(str(tuple(row)) for row in c.execute(
+                "EXPLAIN QUERY PLAN SELECT (SELECT r.test_time FROM main.probe_current_results r "
+                "WHERE r.kind='speed' AND r.port=7000 AND r.server_ip="
+                "(CASE WHEN substr(probe_servers.ip,-5)=':7000' "
+                "THEN substr(probe_servers.ip,1,length(probe_servers.ip)-5) "
+                "ELSE probe_servers.ip END)) FROM main.probe_servers LIMIT 1"))
+            self.assertIn('SEARCH r USING INDEX',lookup_plan)
+            self.assertIn('server_ip=? AND kind=? AND port=?',lookup_plan)
+            self.assertNotIn('SCAN r',lookup_plan)
+            asset_host_plan=' '.join(str(tuple(row)) for row in c.execute(
+                "EXPLAIN QUERY PLAN UPDATE main.probe_servers SET speed_sort=0 WHERE "
+                "(CASE WHEN (length(ip)-length(replace(ip,':',''))=1 "
+                "AND substr(ip,instr(ip,':')+1)<>'' "
+                "AND substr(ip,instr(ip,':')+1) NOT GLOB '*[^0-9]*' "
+                "AND CAST(substr(ip,instr(ip,':')+1) AS INTEGER)=7000) "
+                "THEN substr(ip,1,instr(ip,':')-1) ELSE ip END)='203.0.113.1'"))
+            self.assertIn('SEARCH main.probe_servers USING INDEX idx_probe_servers_current_host',asset_host_plan)
+
     def test_fixed_port_current_result_lookup_ignores_configured_frps_port(self):
         assets=ProbeStore(self.path)
         assets.create_server(ip='192.0.2.44')

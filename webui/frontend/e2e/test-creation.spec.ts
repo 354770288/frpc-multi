@@ -16,6 +16,7 @@ test.beforeEach(async ({ page }) => {
       return json({items:[{id:page,taskId:`task-${page}`,jobId:'job-qa',fromNodeId:'remote',toNodeId:'backup',generation:page,reason:'primary_offline',transferredAt:'2026-10-23T10:00:00+00:00'}],page,pageSize:20,total:21});
     }
     if(url.pathname==='/api/probe/servers/groups')return json([{id:'group-qa',name:'QA',color:''},{id:'group-west',name:'West',color:''}]);
+    if(url.pathname==='/api/probe/server-views')return json({items:[]});
     if(url.pathname==='/api/probe/server-selections' && route.request().method()==='POST'){
       const body=route.request().postDataJSON() as {group?:string};
       const count=body.group==='QA' ? 1 : 120;
@@ -155,6 +156,226 @@ test('selection submission keeps its idempotency key after an uncertain response
   expect(submissions).toHaveLength(2);
   expect(submissions[0].idempotencyKey).toBe(submissions[1].idempotencyKey);
   expect(submissions[1]).toMatchObject({mode:'speed',targetScope:'selection',selectionId:'retry-selection'});
+});
+
+test('server views save stable filters and columns, restore query state, rename, and delete', async ({page}) => {
+  const views: Record<string, any>[] = [];
+  let createdPayload: Record<string, any> | null = null;
+  await page.route('**/api/probe/server-views**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: views }) });
+    if (request.method() === 'POST') {
+      createdPayload = request.postDataJSON();
+      const view = { id: 'saved-view-1', ...createdPayload, createdAt: 'now', updatedAt: 'now' };
+      views.push(view);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(view) });
+    }
+    if (request.method() === 'PATCH') {
+      const view = views[0];
+      Object.assign(view, request.postDataJSON());
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(view) });
+    }
+    if (request.method() === 'DELETE') {
+      views.splice(0, 1);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/servers?page=3&pageSize=25&cursor=do-not-save&q=seed-query&groupIds=group-qa&includeTagIds=tag-region-cn&excludeTagIds=tag-carrier-cn&tagMode=all&sort=group&order=desc');
+  await expect(page.getByPlaceholder('搜索 IP / 标签 / 分组')).toHaveValue('seed-query');
+  await expect(page).toHaveURL(/q=seed-query/);
+  await page.getByLabel('新视图名称').fill('线路分组');
+  await page.getByLabel('显示列 路由').uncheck();
+  await page.getByRole('button', { name: '保存当前视图' }).click();
+  await expect(page.getByLabel('加载保存视图')).toContainText('线路分组');
+  expect(createdPayload).toMatchObject({
+    name: '线路分组',
+    filters: { q: 'seed-query', groupIds: ['group-qa'], includeTagIds: ['tag-region-cn'], excludeTagIds: ['tag-carrier-cn'], tagMode: 'all' },
+    sort: 'group', order: 'desc',
+  });
+  expect(createdPayload?.visibleColumns).not.toContain('route');
+  expect(createdPayload).not.toHaveProperty('page');
+  expect(createdPayload).not.toHaveProperty('cursor');
+
+  await page.goto('/servers?page=4&sort=ip&order=asc&q=elsewhere');
+  await page.getByLabel('加载保存视图').click();
+  await page.getByRole('option', { name: '线路分组' }).click();
+  await expect(page).toHaveURL(/groupIds=group-qa/);
+  await expect(page).toHaveURL(/includeTagIds=tag-region-cn/);
+  await expect(page).toHaveURL(/excludeTagIds=tag-carrier-cn/);
+  await expect(page).toHaveURL(/q=seed-query/);
+  await expect(page).toHaveURL(/tagMode=all/);
+  await expect(page).toHaveURL(/sort=group/);
+  await expect(page).toHaveURL(/order=desc/);
+  await expect(page).toHaveURL(/page=1/);
+  await expect(page).not.toHaveURL(/cursor=/);
+  await expect(page.getByLabel('显示列 路由')).not.toBeChecked();
+
+  await page.getByRole('button', { name: '重命名' }).click();
+  await page.getByLabel('视图新名称').fill('核心线路');
+  await page.getByRole('button', { name: '确认重命名' }).click();
+  await expect(page.getByLabel('加载保存视图')).toContainText('核心线路');
+  await page.getByRole('button', { name: '删除视图' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '删除视图' }).click();
+  await expect(page.getByLabel('加载保存视图')).toContainText('当前筛选');
+  expect(views).toHaveLength(0);
+});
+
+test('server view CRUD locks pending actions and ignores a stale list response', async ({page}) => {
+  await page.addInitScript(() => {
+    const originalSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: any[]) =>
+      originalSetTimeout(handler, timeout === 300 ? 10_000 : timeout, ...args)) as typeof window.setTimeout;
+  });
+  let releaseList!: () => void;
+  let releaseCreate!: () => void;
+  let releaseRename!: () => void;
+  let releaseDelete!: () => void;
+  let listStarted!: () => void;
+  const listGate = new Promise<void>((resolve) => { releaseList = resolve; });
+  const createGate = new Promise<void>((resolve) => { releaseCreate = resolve; });
+  const renameGate = new Promise<void>((resolve) => { releaseRename = resolve; });
+  const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+  const listStartedGate = new Promise<void>((resolve) => { listStarted = resolve; });
+  let postCount = 0;
+  let patchCount = 0;
+  let deleteCount = 0;
+  let storedView: Record<string, any> | null = null;
+  let createdPayload: Record<string, any> | null = null;
+  await page.route('**/api/probe/server-views**', async (route) => {
+    const request = route.request();
+    if (request.method() === 'GET') {
+      listStarted();
+      await listGate;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [] }) });
+    }
+    if (request.method() === 'POST') {
+      postCount++;
+      createdPayload = request.postDataJSON();
+      await createGate;
+      storedView = { id: 'pending-view', ...createdPayload, createdAt: 'now', updatedAt: 'now' };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(storedView) });
+    }
+    if (request.method() === 'PATCH') {
+      patchCount++;
+      await renameGate;
+      Object.assign(storedView!, request.postDataJSON());
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(storedView) });
+    }
+    if (request.method() === 'DELETE') {
+      deleteCount++;
+      await deleteGate;
+      storedView = null;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/servers?q=initial-query');
+  await listStartedGate;
+  await page.getByLabel('新视图名称').fill('Pending');
+  await page.getByPlaceholder('搜索 IP / 标签 / 分组').fill('instant-query');
+  await page.getByRole('button', { name: '保存当前视图' }).click();
+  const createButton = page.getByRole('button', { name: '保存中…' });
+  await expect(createButton).toBeDisabled();
+  await createButton.click({ force: true });
+  expect(postCount).toBe(1);
+  expect(createdPayload).toMatchObject({ filters: { q: 'instant-query' } });
+  releaseCreate();
+  await expect(page.getByLabel('加载保存视图')).toContainText('Pending');
+  await expect(page).toHaveURL(/q=instant-query/);
+  releaseList();
+  await expect(page.getByLabel('加载保存视图')).toContainText('Pending');
+
+  await page.getByRole('button', { name: '重命名' }).click();
+  await page.getByLabel('视图新名称').fill('Renamed');
+  await page.getByRole('button', { name: '确认重命名' }).click();
+  const renameButton = page.getByRole('button', { name: '重命名中…' });
+  await expect(renameButton).toBeDisabled();
+  await renameButton.click({ force: true });
+  expect(patchCount).toBe(1);
+  releaseRename();
+  await expect(page.getByLabel('加载保存视图')).toContainText('Renamed');
+
+  await page.getByRole('button', { name: '删除视图' }).click();
+  const confirmDelete = page.getByRole('alertdialog').getByRole('button', { name: '删除视图' });
+  await confirmDelete.click();
+  const deletingButton = page.getByRole('alertdialog').getByRole('button', { name: '删除中…' });
+  await expect(deletingButton).toBeDisabled();
+  await deletingButton.click({ force: true });
+  expect(deleteCount).toBe(1);
+  releaseDelete();
+  await expect(page.getByLabel('加载保存视图')).toContainText('当前筛选');
+});
+
+test('server view creation preserves edits made while its POST is pending', async ({page}) => {
+  let releaseCreate!: () => void;
+  const createGate = new Promise<void>((resolve) => { releaseCreate = resolve; });
+  let createdPayload: Record<string, any> | null = null;
+  await page.route('**/api/probe/server-views**', async (route) => {
+    const request = route.request();
+    if (request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [] }) });
+    if (request.method() === 'POST') {
+      createdPayload = request.postDataJSON();
+      await createGate;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'delayed-view', ...createdPayload, createdAt: 'now', updatedAt: 'now' }) });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/servers?q=before&sort=ip&order=asc');
+  await page.getByLabel('新视图名称').fill('Snapshot');
+  await page.getByRole('button', { name: '保存当前视图' }).click();
+  await expect(page.getByRole('button', { name: '保存中…' })).toBeDisabled();
+  expect(createdPayload).toMatchObject({ filters: { q: 'before' }, sort: 'ip', order: 'asc' });
+
+  await page.getByPlaceholder('搜索 IP / 标签 / 分组').fill('after');
+  await page.locator('thead').getByRole('button', { name: /分组/ }).click();
+  await page.getByLabel('显示列 路由').uncheck();
+  await expect(page).toHaveURL(/q=after/);
+  await expect(page).toHaveURL(/sort=group/);
+  releaseCreate();
+
+  await expect(page.getByLabel('加载保存视图')).toContainText('当前筛选');
+  await expect(page).toHaveURL(/q=after/);
+  await expect(page).toHaveURL(/sort=group/);
+  await expect(page.getByLabel('显示列 路由')).not.toBeChecked();
+  await page.getByLabel('加载保存视图').click();
+  await expect(page.getByRole('option', { name: 'Snapshot' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '重命名' })).toHaveCount(0);
+});
+
+test('quick saved view ignores page and cursor changes caused by immediate search submit', async ({page}) => {
+  await page.addInitScript(() => {
+    const originalSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: any[]) =>
+      originalSetTimeout(handler, timeout === 300 ? 10_000 : timeout, ...args)) as typeof window.setTimeout;
+  });
+  let createdPayload: Record<string, any> | null = null;
+  await page.route('**/api/probe/server-views**', async (route) => {
+    const request = route.request();
+    if (request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [] }) });
+    if (request.method() === 'POST') {
+      createdPayload = request.postDataJSON();
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'quick-view', ...createdPayload, createdAt: 'now', updatedAt: 'now' }) });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/servers?page=3&pageSize=25&cursor=cursor-before&q=before&sort=ip&order=asc');
+  await page.getByLabel('新视图名称').fill('Quick view');
+  await page.getByPlaceholder('搜索 IP / 标签 / 分组').fill('quick-query');
+  await page.getByRole('button', { name: '保存当前视图' }).click();
+  await expect(page.getByLabel('加载保存视图')).toContainText('Quick view');
+  expect(createdPayload).toMatchObject({ filters: { q: 'quick-query' }, sort: 'ip', order: 'asc' });
+  expect(createdPayload).not.toHaveProperty('page');
+  expect(createdPayload).not.toHaveProperty('cursor');
+  await expect(page).toHaveURL(/q=quick-query/);
+  await expect(page).toHaveURL(/page=1/);
+  await expect(page).not.toHaveURL(/cursor=/);
+  await expect(page.getByRole('button', { name: '重命名' })).toBeVisible();
 });
 
 test('Back and Forward restore snapshot scope and mode without creating another selection',async ({page})=>{

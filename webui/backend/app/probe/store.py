@@ -1629,8 +1629,8 @@ class ProbeStore:
         if query.sort == "conn":
             return [(self._CONN_SCORE_SQL, direction), ("s.id", direction)]
         if query.sort == "speed":
-            return [("COALESCE(json_extract(p.data,'$.dl_speed_bps'),0)*8.0/1048576", direction), ("s.id", direction)]
-        return [("(p.test_time IS NULL)", "ASC"), ("p.test_time", direction), ("s.id", direction)]
+            return [("s.speed_sort", direction), ("s.id", direction)]
+        return [("(s.time_sort IS NULL)", "ASC"), ("s.time_sort", direction), ("s.id", direction)]
 
     @staticmethod
     def _server_from_sql(ip_index: str | None = None) -> str:

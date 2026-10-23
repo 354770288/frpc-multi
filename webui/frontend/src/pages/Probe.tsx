@@ -36,8 +36,9 @@ import type {
   TestNode, TestNodeExecutionPolicy, ProbeJobDetail, GroupColor, GroupInfo, LabelCount, ServerConn,
   ProbeConnectivityHistory, ProbeDashboard, ProbeServer,
   ProbeSpeedHistory, ProbeTestConfig,
-  ServerFacets, ServerQuery, ServerTagFacet,
+  ServerFacets, ServerQuery, ServerTagFacet, ServerView, ServerViewColumn,
 } from '../lib/types';
+import { queryFromSavedView, savedViewPayload, serverViewDraftSignature, SERVER_VIEW_COLUMNS } from './probe/serverViews';
 
 /** 路由测试系统保留标签 → Badge variant（灰/红/绿三态）。 */
 function labelVariant(label: string): 'destructive' | 'success' | 'muted' {
@@ -140,15 +141,130 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
   const discovery = useDiscovery(tab === 'discover', nodeId);
   // 服务器库同样走服务端分页（数据/轮询/跨页勾选由 hook 统一持有）
   const servers = useServers(tab === 'servers');
-  const serverBulk = useServerBulk(tab === 'servers');
-  const refreshedBulkJob = useRef<string | null>(null);
-  const serverRows = servers.page.items;
-  // 服务器表搜索框：本地受控 + 300ms 防抖
-  const [serverSearch, setServerSearch] = useState('');
+  const [serverSearch, setServerSearch] = useState(servers.query.q ?? '');
+  useEffect(() => { setServerSearch(servers.query.q ?? ''); }, [servers.query.q]);
   useEffect(() => {
     const timer = setTimeout(() => servers.setSearch(serverSearch), 300);
     return () => clearTimeout(timer);
   }, [serverSearch, servers.setSearch]);
+  const serverQueryRef = useRef(servers.query); serverQueryRef.current = servers.query;
+  const serverSearchRef = useRef(serverSearch); serverSearchRef.current = serverSearch;
+  const [savedViews, setSavedViews] = useState<ServerView[]>([]);
+  const [savedViewId, setSavedViewId] = useState('');
+  const [savedViewName, setSavedViewName] = useState('');
+  const [renameViewName, setRenameViewName] = useState('');
+  const [renamingView, setRenamingView] = useState(false);
+  const [deletingView, setDeletingView] = useState<ServerView | null>(null);
+  const [viewsLoading, setViewsLoading] = useState(false);
+  const [creatingView, setCreatingView] = useState(false);
+  const [savingViewName, setSavingViewName] = useState(false);
+  const [deletingViewBusy, setDeletingViewBusy] = useState(false);
+  const viewsRequestGeneration = useRef(0);
+  const viewsMutationGeneration = useRef(0);
+  const viewsMutationLocks = useRef({ create: false, rename: false, delete: false });
+  const [visibleServerColumns, setVisibleServerColumns] = useState<ServerViewColumn[]>(SERVER_VIEW_COLUMNS.map((column) => column.id));
+  const visibleServerColumnsRef = useRef(visibleServerColumns); visibleServerColumnsRef.current = visibleServerColumns;
+  const activeSavedView = savedViews.find((view) => view.id === savedViewId) ?? null;
+  const beginViewsMutation = () => {
+    viewsMutationGeneration.current++;
+    viewsRequestGeneration.current++;
+    setViewsLoading(false);
+  };
+  const finishViewsMutation = () => {
+    viewsMutationGeneration.current++;
+    viewsRequestGeneration.current++;
+  };
+  const loadSavedViews = useCallback(async () => {
+    const requestGeneration = ++viewsRequestGeneration.current;
+    const mutationGeneration = viewsMutationGeneration.current;
+    setViewsLoading(true);
+    try {
+      const result = await probeApi.serverViews();
+      if (requestGeneration === viewsRequestGeneration.current && mutationGeneration === viewsMutationGeneration.current) setSavedViews(result.items);
+    }
+    catch (error) {
+      if (requestGeneration === viewsRequestGeneration.current && mutationGeneration === viewsMutationGeneration.current) toast.error(error instanceof Error ? error.message : '保存视图加载失败');
+    }
+    finally { if (requestGeneration === viewsRequestGeneration.current) setViewsLoading(false); }
+  }, []);
+  useEffect(() => { if (tab === 'servers') void loadSavedViews(); }, [tab, loadSavedViews]);
+  const applyServerView = (view: ServerView) => {
+    setSavedViewId(view.id);
+    setVisibleServerColumns(view.visibleColumns);
+    setServerSearch(view.filters.q ?? '');
+    servers.applySavedView(queryFromSavedView(view));
+  };
+  const createServerView = async () => {
+    const name = savedViewName.trim();
+    if (!name) { toast.error('请输入视图名称'); return; }
+    if (viewsMutationLocks.current.create) return;
+    const searchAtSubmit = serverSearchRef.current;
+    const queryAtSubmit = { ...serverQueryRef.current, q: searchAtSubmit };
+    const columnsAtSubmit = [...visibleServerColumnsRef.current];
+    const submittedSignature = serverViewDraftSignature(queryAtSubmit, searchAtSubmit, columnsAtSubmit);
+    viewsMutationLocks.current.create = true;
+    setCreatingView(true);
+    beginViewsMutation();
+    servers.setSearch(searchAtSubmit);
+    try {
+      const created = await probeApi.createServerView({ name, ...savedViewPayload(queryAtSubmit, columnsAtSubmit) });
+      setSavedViews((current) => [...current.filter((view) => view.id !== created.id), created].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')));
+      setSavedViewName('');
+      const currentSignature = serverViewDraftSignature(serverQueryRef.current, serverSearchRef.current, visibleServerColumnsRef.current);
+      if (currentSignature === submittedSignature) {
+        setSavedViewId(created.id);
+        setVisibleServerColumns(created.visibleColumns);
+        setServerSearch(created.filters.q ?? '');
+        servers.applySavedView(queryFromSavedView(created));
+      } else {
+        setSavedViewId('');
+      }
+      toast.success(`已保存视图「${created.name}」`);
+    } catch (error) { toast.error(error instanceof Error ? error.message : '保存视图失败'); }
+    finally {
+      viewsMutationLocks.current.create = false;
+      setCreatingView(false);
+      finishViewsMutation();
+    }
+  };
+  const renameServerView = async () => {
+    if (!activeSavedView || !renameViewName.trim()) return;
+    if (viewsMutationLocks.current.rename) return;
+    viewsMutationLocks.current.rename = true;
+    setSavingViewName(true);
+    beginViewsMutation();
+    try {
+      const updated = await probeApi.updateServerView(activeSavedView.id, { name: renameViewName.trim() });
+      setSavedViews((current) => current.map((view) => view.id === updated.id ? updated : view).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')));
+      setRenamingView(false); toast.success('视图名称已更新');
+    } catch (error) { toast.error(error instanceof Error ? error.message : '重命名视图失败'); }
+    finally {
+      viewsMutationLocks.current.rename = false;
+      setSavingViewName(false);
+      finishViewsMutation();
+    }
+  };
+  const deleteServerView = async () => {
+    if (!deletingView) return;
+    if (viewsMutationLocks.current.delete) return;
+    viewsMutationLocks.current.delete = true;
+    setDeletingViewBusy(true);
+    beginViewsMutation();
+    try {
+      await probeApi.deleteServerView(deletingView.id);
+      setSavedViews((current) => current.filter((view) => view.id !== deletingView.id));
+      if (savedViewId === deletingView.id) setSavedViewId('');
+      setDeletingView(null); toast.success('视图已删除');
+    } catch (error) { toast.error(error instanceof Error ? error.message : '删除视图失败'); }
+    finally {
+      viewsMutationLocks.current.delete = false;
+      setDeletingViewBusy(false);
+      finishViewsMutation();
+    }
+  };
+  const serverBulk = useServerBulk(tab === 'servers');
+  const refreshedBulkJob = useRef<string | null>(null);
+  const serverRows = servers.page.items;
   const discoverRows = discovery.page.items;
   const dSelected = discovery.selected;
 
@@ -626,6 +742,41 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                 <Button size="sm" onClick={() => setEditing('new')}><Plus size={13} />添加</Button>
               </div>
             </CardHeader>
+            <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2" aria-label="保存的服务器视图">
+              <span className="text-xs font-medium">保存视图</span>
+              <div className="w-48">
+                <Select value={savedViewId || 'none'} disabled={viewsLoading || creatingView || savingViewName || deletingViewBusy} onValueChange={(value) => {
+                  if (value === 'none') { setSavedViewId(''); return; }
+                  const view = savedViews.find((item) => item.id === value);
+                  if (view) applyServerView(view);
+                }}>
+                  <SelectTrigger size="sm" aria-label="加载保存视图"><SelectValue placeholder="选择视图" /></SelectTrigger>
+                  <SelectContent><SelectGroup>
+                    <SelectItem value="none">当前筛选</SelectItem>
+                    {savedViews.map((view) => <SelectItem key={view.id} value={view.id}>{view.name}</SelectItem>)}
+                  </SelectGroup></SelectContent>
+                </Select>
+              </div>
+              {viewsLoading && <span role="status" className="text-xs text-muted-foreground">正在加载…</span>}
+              <Input aria-label="新视图名称" className="h-8 w-36" placeholder="新视图名称" value={savedViewName} disabled={creatingView} onChange={(event) => setSavedViewName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createServerView(); }} />
+              <Button size="sm" variant="outline" disabled={!savedViewName.trim() || creatingView} onClick={() => void createServerView()}>{creatingView ? '保存中…' : '保存当前视图'}</Button>
+              {activeSavedView && (renamingView ? <>
+                <Input aria-label="视图新名称" className="h-8 w-36" value={renameViewName} disabled={savingViewName} onChange={(event) => setRenameViewName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void renameServerView(); }} />
+                <Button size="sm" variant="outline" disabled={savingViewName || !renameViewName.trim()} onClick={() => void renameServerView()}>{savingViewName ? '重命名中…' : '确认重命名'}</Button>
+                <Button size="sm" variant="ghost" disabled={savingViewName} onClick={() => setRenamingView(false)}>取消</Button>
+              </> : <>
+                <Button size="sm" variant="ghost" disabled={savingViewName || deletingViewBusy} onClick={() => { setRenameViewName(activeSavedView.name); setRenamingView(true); }}>重命名</Button>
+                <Button size="sm" variant="ghost" className="text-destructive" disabled={deletingViewBusy || savingViewName} onClick={() => setDeletingView(activeSavedView)}>删除视图</Button>
+              </>)}
+              <fieldset className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                <legend className="sr-only">服务器表格显示列</legend>
+                <span className="text-muted-foreground">显示列</span>
+                {SERVER_VIEW_COLUMNS.map((column) => <label key={column.id} className="flex items-center gap-1.5">
+                  <input type="checkbox" aria-label={`显示列 ${column.label}`} checked={visibleServerColumns.includes(column.id)} disabled={visibleServerColumns.length === 1 && visibleServerColumns.includes(column.id)} onChange={() => setVisibleServerColumns((current) => current.includes(column.id) ? current.filter((id) => id !== column.id) : [...current, column.id])} />
+                  {column.label}
+                </label>)}
+              </fieldset>
+            </div>
             <ServerAdvancedFilters
               query={servers.query}
               groups={groups}
@@ -743,16 +894,13 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                           onChange={(e) => servers.toggleCurrentPage(e.target.checked)}
                         />
                       </Th>
-                      <ThSort label="服务器" sortKey="ip" activeKey={servers.query.sort} asc={servers.query.order === 'asc'}
-                        onSort={() => servers.setSort('ip', servers.query.sort === 'ip' && servers.query.order === 'asc' ? 'desc' : 'asc')} />
-                      <ThSort label="分组" sortKey="group" activeKey={servers.query.sort} asc={servers.query.order === 'asc'}
-                        onSort={() => servers.setSort('group', servers.query.sort === 'group' && servers.query.order === 'asc' ? 'desc' : 'asc')} />
-                      <ThSort label="连通性" sortKey="conn" activeKey={servers.query.sort} asc={servers.query.order === 'asc'}
-                        onSort={() => servers.setSort('conn', servers.query.sort === 'conn' && servers.query.order === 'asc' ? 'desc' : 'asc')} />
-                      <ThSort label="速率" sortKey="speed" activeKey={servers.query.sort} asc={servers.query.order === 'asc'}
-                        onSort={() => servers.setSort('speed', servers.query.sort === 'speed' && servers.query.order === 'desc' ? 'asc' : 'desc')} />
-                      <ThSort label="测速时间" sortKey="time" activeKey={servers.query.sort} asc={servers.query.order === 'asc'}
-                        onSort={() => servers.setSort('time', servers.query.sort === 'time' && servers.query.order === 'desc' ? 'asc' : 'desc')} />
+                      {visibleServerColumns.includes('ip') && <ThSort label="服务器" sortKey="ip" activeKey={servers.query.sort} asc={servers.query.order === 'asc'} onSort={() => servers.setSort('ip', servers.query.sort === 'ip' && servers.query.order === 'asc' ? 'desc' : 'asc')} />}
+                      {visibleServerColumns.includes('group') && <ThSort label="分组" sortKey="group" activeKey={servers.query.sort} asc={servers.query.order === 'asc'} onSort={() => servers.setSort('group', servers.query.sort === 'group' && servers.query.order === 'asc' ? 'desc' : 'asc')} />}
+                      {visibleServerColumns.includes('tags') && <Th>标签</Th>}
+                      {visibleServerColumns.includes('route') && <Th>路由</Th>}
+                      {visibleServerColumns.includes('connectivity') && <ThSort label="连通性" sortKey="conn" activeKey={servers.query.sort} asc={servers.query.order === 'asc'} onSort={() => servers.setSort('conn', servers.query.sort === 'conn' && servers.query.order === 'asc' ? 'desc' : 'asc')} />}
+                      {visibleServerColumns.includes('speed') && <ThSort label="速率" sortKey="speed" activeKey={servers.query.sort} asc={servers.query.order === 'asc'} onSort={() => servers.setSort('speed', servers.query.sort === 'speed' && servers.query.order === 'desc' ? 'asc' : 'desc')} />}
+                      {visibleServerColumns.includes('lastTestTime') && <ThSort label="测速时间" sortKey="time" activeKey={servers.query.sort} asc={servers.query.order === 'asc'} onSort={() => servers.setSort('time', servers.query.sort === 'time' && servers.query.order === 'desc' ? 'asc' : 'desc')} />}
                       <Th align="right">操作</Th>
                     </tr>
                   </thead>
@@ -767,18 +915,17 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                             onChange={() => servers.toggleSelected(item.id, item.ip)}
                           />
                         </Td>
-                        <Td>
-                          <div className="font-mono text-[12px] font-medium">{item.ip}</div><div className="mt-1 text-[11px] text-muted-foreground">{item.latestRoute ? item.latestRoute.ok ? item.latestRoute.isCn2 ? 'CN2' : '非 CN2' : '路由失败' : '未测路由'}</div>
-                          {item.labels.length > 0 && <div className="truncate text-[11px] text-muted-foreground">{item.labels.join(' · ')}</div>}
-                        </Td>
-                        <Td>{item.group ? <Badge variant={groupVariant(groupColorMap.get(item.group))} dot>{item.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
-                        <Td><ConnBadge latest={item.latestConnectivity} /></Td>
-                        <Td><SpeedText latest={item.latestSpeed} /></Td>
-                        <Td>
+                        {visibleServerColumns.includes('ip') && <Td><div className="font-mono text-[12px] font-medium">{item.ip}</div></Td>}
+                        {visibleServerColumns.includes('group') && <Td>{item.group ? <Badge variant={groupVariant(groupColorMap.get(item.group))} dot>{item.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>}
+                        {visibleServerColumns.includes('tags') && <Td>{item.labels.length ? <div className="flex flex-wrap gap-1">{item.labels.map((label) => <Badge key={label} tone="muted">{label}</Badge>)}</div> : <span className="text-xs text-muted-foreground">—</span>}</Td>}
+                        {visibleServerColumns.includes('route') && <Td>{item.latestRoute ? <Badge tone={item.latestRoute.ok ? item.latestRoute.isCn2 ? 'success' : 'warning' : 'muted'}>{item.latestRoute.ok ? item.latestRoute.isCn2 ? 'CN2' : '非 CN2' : '路由失败'}</Badge> : <span className="text-xs text-muted-foreground">未测试</span>}</Td>}
+                        {visibleServerColumns.includes('connectivity') && <Td><ConnBadge latest={item.latestConnectivity} /></Td>}
+                        {visibleServerColumns.includes('speed') && <Td><SpeedText latest={item.latestSpeed} /></Td>}
+                        {visibleServerColumns.includes('lastTestTime') && <Td>
                           <span className="whitespace-nowrap text-xs text-muted-foreground">
                             {latestServerObservationTime(item) ? formatLastSeen(latestServerObservationTime(item)!) : '—'}
                           </span>
-                        </Td>
+                        </Td>}
                         <Td align="right">
                           <div className="flex items-center justify-end gap-1">
                             <Button size="sm" variant="outline" onClick={() => navigate(`/instances/new?${new URLSearchParams({server:probeEndpointHost(item.ip),port:String(item.port)})}`)} title="用此服务器创建 frpc 实例">
@@ -791,7 +938,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                       </tr>
                     ))}
                     {!serverRows.length && (
-                      <tr><td colSpan={7} className="px-4 py-10 text-center text-xs text-muted-foreground">
+                      <tr><td colSpan={visibleServerColumns.length + 2} className="px-4 py-10 text-center text-xs text-muted-foreground">
                         {servers.pageLoading ? '服务器列表加载中…' : servers.pageError ? '服务器列表读取失败' : servers.totalCount === null ? (servers.countLoading ? '服务器总数加载中…' : '服务器总数暂不可用') : servers.totalCount ? '当前筛选条件下没有匹配的记录' : '暂无服务器，点击「添加」或「批量导入」开始'}
                       </td></tr>
                     )}
@@ -940,6 +1087,12 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
           onCancel={() => setDeleting(null)} onConfirm={deleteServer}
         />
       )}
+      {deletingView && <ConfirmOverlay
+        title={`删除保存视图「${deletingView.name}」`}
+        description="删除后无法恢复此视图。"
+        confirmLabel={deletingViewBusy ? '删除中…' : '删除视图'} variant="destructive" confirmDisabled={deletingViewBusy} keepOpenOnConfirm
+        onCancel={() => setDeletingView(null)} onConfirm={() => void deleteServerView()}
+      />}
       {groupsOpen && (
         <GroupDialog
           groups={groups}

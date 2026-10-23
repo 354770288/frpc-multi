@@ -17,7 +17,7 @@ export function Overlay({ title, children, onClose, wide }: {
   </Dialog>;
 }
 
-export function ConfirmOverlay({ title, description, confirmLabel, variant, onCancel, onConfirm, children }: {
+export function ConfirmOverlay({ title, description, confirmLabel, variant, onCancel, onConfirm, children, confirmDisabled, keepOpenOnConfirm }: {
   title: string;
   description: string;
   confirmLabel: string;
@@ -25,12 +25,14 @@ export function ConfirmOverlay({ title, description, confirmLabel, variant, onCa
   onCancel: () => void;
   onConfirm: () => void;
   children?: ReactNode;
+  confirmDisabled?: boolean;
+  keepOpenOnConfirm?: boolean;
 }) {
   return <AlertDialog open onOpenChange={(open)=>{if(!open)onCancel();}}>
     <AlertDialogContent>
       <AlertDialogHeader><AlertDialogTitle>{title}</AlertDialogTitle><AlertDialogDescription>{description}</AlertDialogDescription></AlertDialogHeader>
       {children}
-      <AlertDialogFooter><AlertDialogCancel onClick={onCancel}>取消</AlertDialogCancel><AlertDialogAction variant={variant} onClick={onConfirm}>{confirmLabel}</AlertDialogAction></AlertDialogFooter>
+      <AlertDialogFooter><AlertDialogCancel onClick={onCancel}>取消</AlertDialogCancel><AlertDialogAction variant={variant} disabled={confirmDisabled} onClick={(event) => { if (keepOpenOnConfirm) event.preventDefault(); onConfirm(); }}>{confirmLabel}</AlertDialogAction></AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>;
 }

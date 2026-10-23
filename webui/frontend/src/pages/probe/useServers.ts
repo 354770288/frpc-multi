@@ -328,6 +328,11 @@ export function useServers(active: boolean) {
   }, []);
   const setConn = useCallback((conn: ServerConn) => updateQuery({ conn }), [updateQuery]);
   const setSort = useCallback((sort: ServerSort, order: DiscoverOrder) => updateQuery({ sort, order }), [updateQuery]);
+  const applySavedView = useCallback((changes: Partial<ServerQuery>) => {
+    pushUrlRef.current = true;
+    setTagPage(1);
+    setQuery((current) => ({ ...current, ...changes, page: 1, cursor: undefined }));
+  }, []);
   const setPageNumber = useCallback((nextPage: number) => updateQuery({ page: nextPage }, false), [updateQuery]);
   const setPageSize = useCallback((pageSize: number) => updateQuery({ pageSize }), [updateQuery]);
   const cursorIndex = Math.max(0, cursorTrail.lastIndexOf(query.cursor ?? ''));
@@ -410,6 +415,7 @@ export function useServers(active: boolean) {
     setTagCandidatePage,
     setConn,
     setSort,
+    applySavedView,
     setPageNumber,
     setPageSize,
     toggleSelected,

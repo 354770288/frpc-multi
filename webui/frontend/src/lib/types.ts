@@ -353,6 +353,18 @@ export type DiscoverFacets = {
 export type ServerConn = 'all' | 'pass' | 'partial' | 'fail' | 'untested';
 export type ServerSort = 'ip' | 'group' | 'conn' | 'speed' | 'time';
 
+export type ServerViewColumn = 'ip' | 'group' | 'tags' | 'route' | 'connectivity' | 'speed' | 'lastTestTime';
+export type ServerView = {
+  id: string;
+  name: string;
+  filters: Pick<ServerQuery, 'q' | 'group' | 'label' | 'tagId' | 'groupIds' | 'includeTagIds' | 'excludeTagIds' | 'tagMode' | 'conn'>;
+  sort: ServerSort;
+  order: DiscoverOrder;
+  visibleColumns: ServerViewColumn[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ServerQuery = {
   page: number;
   pageSize: number;

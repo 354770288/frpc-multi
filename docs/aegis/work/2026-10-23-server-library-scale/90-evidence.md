@@ -244,4 +244,38 @@ Server-library status/query views and UI source-selector retirement remain the n
 - Spec review found one malformed-filter type path that could return 500; explicit string checks and API regressions now verify 400 for non-string `conn` and `tagMode`.
 - Final quality review passed with no P0–P2 findings.
 
-Added a Console-wide shared saved-view collection with authenticated list/create/patch/delete routes, case-folded unique names, validated filters, stable group/tag ID support, explicit sort and visible-column whitelists, and a 16 KiB payload bound. Pagination cursors and selections are excluded by the filter schema. The database change is additive and initialization-safe. Frontend integration and indexed measurement sorts remain pending.
+Added a Console-wide shared saved-view collection with authenticated list/create/patch/delete routes, case-folded unique names, validated filters, stable group/tag ID support, explicit sort and visible-column whitelists, and a 16 KiB payload bound. Pagination cursors and selections are excluded by the filter schema. The database change is additive and initialization-safe.
+
+## Slice: saved server views (frontend)
+
+- `npm run build` — exit 0.
+- `npm test` — 6 files, 14 tests passed.
+- `npm run test:e2e -- e2e/test-creation.spec.ts` — coordinator rerun: 38 tests passed.
+- E2E covers shared view CRUD, stable-ID filters, sort and visible columns, URL restoration, debounce-window save, stale list responses, duplicate mutations, edits during delayed create, and rapid save from page/cursor URLs.
+- Independent spec and quality reviews passed after fixes for URL search restoration, request races, and pagination-only draft signature changes.
+- `git diff --check` — exit 0.
+
+The server library now loads shared views, saves its persistent filter/sort/column draft, and supports rename/delete. Applying a view restores filters and sorting into the URL while resetting page/cursor; selections remain separate. Delayed requests preserve edits made while create is pending, and older list reads cannot replace later CRUD results.
+
+## Slice: indexed speed/time sorting (backend)
+
+- `PROJECT_DIR=/tmp/frpc-multi-backend-verified DATABASE_PATH=/tmp/frpc-multi-backend-verified/console.db ./.venv/bin/python -m unittest tests.test_probe_saved_views tests.test_probe_contextual_facets tests.test_probe_selection_jobs tests.test_probe_jobs tests.test_probe_bulk tests.test_probe tests.test_database tests.test_lb tests.test_lb_selection` — exit 0; 264 tests passed.
+- `cd webui/backend && ./.venv/bin/python -m unittest tests/test_probe_jobs.py` — exit 0; 74 tests passed.
+- `cd webui/backend && ./.venv/bin/python -m unittest tests/test_probe.py` — exit 0; 99 tests passed.
+- Query-plan regression tests run the complete server-list SELECT/JOIN in both directions; speed uses `idx_probe_servers_speed_sort_id`, time uses the matching ASC/DESC expression index, and neither plan has `TEMP B-TREE FOR ORDER BY`.
+- 100,000 mixed raw IPv4, `:07000`, domain, and IPv6 assets with current speed rows loaded in 6.49 s including triggers and indexes. Projection backfill took 0.77 s; first-page `query_servers` timings were 3.33 ms (speed ASC), 1.78 ms (speed DESC), 1.70 ms (time ASC), and 1.63 ms (time DESC).
+- The backfill `EXPLAIN QUERY PLAN` uses the current-results primary-key index for each correlated row lookup (`server_ip=? AND kind=? AND port=?`); result-trigger asset updates use `idx_probe_servers_current_host`.
+
+Added rebuildable `speed_sort` and nullable `time_sort` columns to the asset catalog. Initialization backfills them once from fixed-port current speed rows; transactional triggers maintain them for current-result insert/update/delete and asset insert/IP changes. Projection matching now follows the server-list host join for canonical IPv4, domains, and IPv6, including zero-padded port forms such as `:07000`; an expression index keeps trigger-side asset lookup indexed. Zero-speed and NULL-last ordering semantics are preserved. No older speed/time projection triggers were present to retire. Triggers use `IF NOT EXISTS`, so repeat initialization does not drop/recreate them.
+
+## Slice: isolated 1M storage capacity acceptance
+
+- Fixture: 1,000,000 assets (80% IPv4, 10% domains, 10% IPv6), 64 groups, 32 tags, and 7,000 current-result rows (3,500 connectivity, 3,500 speed), seeded in an isolated temporary SQLite database from the prior schema.
+- Host: macOS 26.5 ARM, 10 CPU cores, 16 GiB RAM; Python 3.14.2 and SQLite 3.51.2. Temporary databases were removed after verification.
+- Seeding: 1.47 s. Full `initialize_database()` migration: 34.395 s CPU 33.702 s; peak RSS 232.5 MiB; migrated DB+WAL 523,259,904 bytes (~499 MiB). Post-migration process RSS ~52 MiB.
+- `/servers` offset first page for IP/speed/time sorts (50 rows plus total): each about 4–5 ms. `count_servers()` for all assets: 3 ms. `count_servers(conn="pass")`: 1.465 s for 3,500 matching assets. Filtered `server_facets()`: 1.612 s.
+- All-match selection snapshot: 100 `run_once()` calls of 10,000 rows, 0.685 s total for 1,000,000 rows. Selection-backed scheduler materialized a 250-target batch in 4 ms.
+- Current frontend IP cursor endpoint on a separate 1M IPv4 fixture: 50-row first page in 1.6 ms, `hasMore=true`; EXPLAIN uses `idx_probe_servers_ip_sort_id` and current-result primary-key lookups.
+- These measurements call the real storage methods and SQLite query plans, not HTTP, auth, browser, or production infrastructure. The `conn="pass"` count and contextual facets scan the full asset set and are materially slower than unfiltered count/list pages; the migration process RSS includes the one-time label normalization path.
+
+The isolated 1M storage acceptance passes for migration, paging, counts, facets, bulk-selection construction, and bounded task production. This does not cover production latency or end-to-end 100k import/update/delete UI operations.

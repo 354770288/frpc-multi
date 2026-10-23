@@ -971,7 +971,26 @@ class ProbeStoreTests(unittest.TestCase):
                     );
                     INSERT INTO probe_servers (ip, label, created_at)
                     VALUES ('8.8.8.8', 'x', '2026-01-01T00:00:00'),
+                           ('8.8.8.9:07000', '', '2026-01-01T00:00:00'),
+                           ('speed.example.test', '', '2026-01-01T00:00:00'),
+                           ('2001:db8::9', '', '2026-01-01T00:00:00'),
                            ('not-an-ip', '', '2026-01-01T00:00:00');
+                    CREATE TABLE probe_current_results (
+                        server_ip TEXT NOT NULL, kind TEXT NOT NULL, port INTEGER NOT NULL CHECK(port=7000),
+                        source_result_id INTEGER NOT NULL, node_id TEXT NOT NULL, job_id TEXT NOT NULL,
+                        task_id TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0,
+                        test_time TEXT NOT NULL, data TEXT NOT NULL,
+                        PRIMARY KEY(server_ip,kind,port)
+                    );
+                    INSERT INTO probe_current_results VALUES
+                        ('8.8.8.8','speed',7000,1,'node','job','task',0,
+                         '2026-10-21T00:00:00+00:00','{"dl_speed_bps":1048576}'),
+                        ('8.8.8.9','speed',7000,2,'node','job','task',0,
+                         '2026-10-22T00:00:00+00:00','{"dl_speed_bps":2097152}'),
+                        ('speed.example.test','speed',7000,3,'node','job','task',0,
+                         '2026-10-23T00:00:00+00:00','{"dl_speed_bps":3145728}'),
+                        ('2001:db8::9','speed',7000,4,'node','job','task',0,
+                         '2026-10-24T00:00:00+00:00','{"dl_speed_bps":4194304}');
                     """
                 )
                 connection.commit()
@@ -987,6 +1006,22 @@ class ProbeStoreTests(unittest.TestCase):
                 connection.close()
             self.assertEqual(values["8.8.8.8"], int(_ipv4_int("8.8.8.8")))
             self.assertIsNone(values["not-an-ip"])
+            self.assertIsNone(values["8.8.8.9:07000"])
+            connection = _database.connect_database(path)
+            try:
+                rows = {row["ip"]: (row["speed_sort"], row["time_sort"]) for row in
+                        connection.execute("SELECT ip,speed_sort,time_sort FROM probe_servers")}
+                indexes = {row["name"] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'")}
+                self.assertEqual(rows["8.8.8.8"], (8.0, "2026-10-21T00:00:00+00:00"))
+                self.assertEqual(rows["8.8.8.9:07000"], (16.0, "2026-10-22T00:00:00+00:00"))
+                self.assertEqual(rows["speed.example.test"], (24.0, "2026-10-23T00:00:00+00:00"))
+                self.assertEqual(rows["2001:db8::9"], (32.0, "2026-10-24T00:00:00+00:00"))
+                self.assertIn("idx_probe_servers_speed_sort_id", indexes)
+                self.assertIn("idx_probe_servers_time_sort_asc", indexes)
+                self.assertIn("idx_probe_servers_time_sort_desc", indexes)
+            finally:
+                connection.close()
 
     def test_group_color(self):
         # 预创建分组带色 / 改色 / 清色；非法颜色拒绝

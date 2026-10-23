@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS probe_servers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ip TEXT NOT NULL UNIQUE,
     ip_sort INTEGER,
+    speed_sort REAL NOT NULL DEFAULT 0,
+    time_sort TEXT,
     label TEXT NOT NULL DEFAULT '',
     server_group TEXT NOT NULL DEFAULT '',
     group_id TEXT,
@@ -497,8 +499,17 @@ def _migrate_probe_discover_results(connection: sqlite3.Connection) -> None:
         connection.commit()
 
 
+def _probe_asset_host_sql(value: str) -> str:
+    """Extract the fixed-port host while preserving split_probe_endpoint semantics."""
+    colon_count = f"length({value})-length(replace({value},':',''))"
+    suffix = f"substr({value},instr({value},':')+1)"
+    is_port_7000 = (f"({colon_count}=1 AND {suffix}<>'' "
+                    f"AND {suffix} NOT GLOB '*[^0-9]*' AND CAST({suffix} AS INTEGER)=7000)")
+    return f"(CASE WHEN {is_port_7000} THEN substr({value},1,instr({value},':')-1) ELSE {value} END)"
+
+
 def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
-    """probe_servers 补 ip_sort 数值列（分页数值排序）+ 查询索引，模式同发现表。"""
+    """Maintain materialized IP/speed/time sort keys and their query indexes."""
     columns = _column_names(connection, "probe_servers")
     if not columns:
         return
@@ -507,6 +518,10 @@ def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
         connection.execute("BEGIN IMMEDIATE")
         if "ip_sort" not in columns:
             connection.execute("ALTER TABLE probe_servers ADD COLUMN ip_sort INTEGER")
+        if "speed_sort" not in columns:
+            connection.execute("ALTER TABLE probe_servers ADD COLUMN speed_sort REAL NOT NULL DEFAULT 0")
+        if "time_sort" not in columns:
+            connection.execute("ALTER TABLE probe_servers ADD COLUMN time_sort TEXT")
 
         # 物化批次 + id 单调游标：既避免「遍历游标同时改 WHERE 列」的未定义行为，
         # 也保证整批无法解析的行不会死循环（这些行永驻 NULL，null-last 排序兜底）。
@@ -532,6 +547,29 @@ def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
                     "UPDATE probe_servers SET ip_sort = ? WHERE id = ?", valid
                 )
 
+        # These keys follow the server-list endpoint join: any host accepted by
+        # probe_endpoint_host participates, including domains and IPv6, while
+        # only fixed-port current speed rows are considered. Keep unmeasured
+        # speed at zero and time at NULL.
+        projection_seeded = connection.execute(
+            "SELECT 1 FROM probe_settings WHERE key='probe_server_measurement_sort_seeded'"
+        ).fetchone()
+        if projection_seeded is None:
+            asset_host = _probe_asset_host_sql("probe_servers.ip")
+            connection.execute(
+                "UPDATE probe_servers SET speed_sort=COALESCE(("
+                "SELECT COALESCE(json_extract(r.data,'$.dl_speed_bps'),0)*8.0/1048576 "
+                "FROM probe_current_results r WHERE r.kind='speed' AND r.port=7000 "
+                f"AND r.server_ip={asset_host}"
+                "),0), time_sort=(SELECT r.test_time FROM probe_current_results r "
+                "WHERE r.kind='speed' AND r.port=7000 "
+                f"AND r.server_ip={asset_host})"
+            )
+            connection.execute(
+                "INSERT INTO probe_settings(key,value) "
+                "VALUES('probe_server_measurement_sort_seeded','1')"
+            )
+
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_probe_servers_group_ip "
             "ON probe_servers (server_group, ip)"
@@ -551,6 +589,79 @@ def _migrate_probe_servers(connection: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_probe_servers_ip_sort_id "
             "ON probe_servers (ip_sort, id)"
         )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_servers_speed_sort_id "
+            "ON probe_servers (speed_sort, id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_servers_current_host "
+            f"ON probe_servers ({_probe_asset_host_sql('ip')})"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_servers_time_sort_asc "
+            "ON probe_servers ((time_sort IS NULL) ASC, time_sort ASC, id ASC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_probe_servers_time_sort_desc "
+            "ON probe_servers ((time_sort IS NULL) ASC, time_sort DESC, id DESC)"
+        )
+
+        # Current results are the canonical source. These triggers keep derived
+        # sort keys in the same transaction as projection and asset mutations.
+        current_asset_host = _probe_asset_host_sql("ip")
+        new_asset_host = _probe_asset_host_sql("NEW.ip")
+        connection.execute(f"""CREATE TRIGGER IF NOT EXISTS probe_servers_speed_insert
+            AFTER INSERT ON probe_current_results
+            WHEN NEW.kind='speed' AND NEW.port=7000
+            BEGIN
+                UPDATE probe_servers SET
+                    speed_sort=COALESCE(json_extract(NEW.data,'$.dl_speed_bps'),0)*8.0/1048576,
+                    time_sort=NEW.test_time
+                WHERE {current_asset_host}=NEW.server_ip;
+            END""")
+        connection.execute(f"""CREATE TRIGGER IF NOT EXISTS probe_servers_speed_update
+            AFTER UPDATE ON probe_current_results
+            BEGIN
+                UPDATE probe_servers SET speed_sort=0,time_sort=NULL
+                WHERE OLD.kind='speed' AND OLD.port=7000
+                  AND {current_asset_host}=OLD.server_ip;
+                UPDATE probe_servers SET
+                    speed_sort=COALESCE(json_extract(NEW.data,'$.dl_speed_bps'),0)*8.0/1048576,
+                    time_sort=NEW.test_time
+                WHERE NEW.kind='speed' AND NEW.port=7000
+                  AND {current_asset_host}=NEW.server_ip;
+            END""")
+        connection.execute(f"""CREATE TRIGGER IF NOT EXISTS probe_servers_speed_delete
+            AFTER DELETE ON probe_current_results
+            WHEN OLD.kind='speed' AND OLD.port=7000
+            BEGIN
+                UPDATE probe_servers SET speed_sort=0,time_sort=NULL
+                WHERE {current_asset_host}=OLD.server_ip;
+            END""")
+        connection.execute(f"""CREATE TRIGGER IF NOT EXISTS probe_servers_ip_sort_refresh
+            AFTER UPDATE OF ip ON probe_servers
+            BEGIN
+                UPDATE probe_servers SET
+                    speed_sort=COALESCE((SELECT COALESCE(json_extract(r.data,'$.dl_speed_bps'),0)*8.0/1048576
+                        FROM probe_current_results r WHERE r.kind='speed' AND r.port=7000
+                        AND r.server_ip={new_asset_host}),0),
+                    time_sort=(SELECT r.test_time FROM probe_current_results r
+                        WHERE r.kind='speed' AND r.port=7000
+                        AND r.server_ip={new_asset_host})
+                WHERE id=NEW.id;
+            END""")
+        connection.execute(f"""CREATE TRIGGER IF NOT EXISTS probe_servers_speed_asset_insert
+            AFTER INSERT ON probe_servers
+            BEGIN
+                UPDATE probe_servers SET
+                    speed_sort=COALESCE((SELECT COALESCE(json_extract(r.data,'$.dl_speed_bps'),0)*8.0/1048576
+                        FROM probe_current_results r WHERE r.kind='speed' AND r.port=7000
+                        AND r.server_ip={new_asset_host}),0),
+                    time_sort=(SELECT r.test_time FROM probe_current_results r
+                        WHERE r.kind='speed' AND r.port=7000
+                        AND r.server_ip={new_asset_host})
+                WHERE id=NEW.id;
+            END""")
     except Exception:
         connection.rollback()
         raise
