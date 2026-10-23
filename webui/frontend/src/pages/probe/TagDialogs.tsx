@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowRightLeft, FolderPlus, Pencil, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { probeApi } from '../../lib/api';
+import { batchTagDialogTitle, canRemoveLegacyLabels } from './serverBulkUi';
 import type { ManagedTag, TagCategory } from '../../lib/types';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
@@ -79,14 +80,15 @@ export function TagManagementDialog({ open, onOpenChange, onChanged }: {
   </Dialog>;
 }
 
-export function BatchTagDialog({ open, onOpenChange, ids, onSaved }: {
-  open: boolean; onOpenChange: (open: boolean) => void; ids: number[]; onSaved: () => void;
+export function BatchTagDialog({ open, onOpenChange, ids, count, snapshotMode, onSubmitBulk, onSaved }: {
+  open: boolean; onOpenChange: (open: boolean) => void; ids: number[]; count?: number; snapshotMode?: boolean; onSubmitBulk?: (payload: Record<string, unknown>) => Promise<unknown>; onSaved: () => void;
 }) {
   const [categories, setCategories] = useState<TagCategory[]>([]);
   const [tags, setTags] = useState<ManagedTag[]>([]);
   const [addIds, setAddIds] = useState<string[]>([]);
   const [removeIds, setRemoveIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const targetCount = count ?? ids.length;
   useEffect(() => { if (open) void loadCatalog().then((data) => { setCategories(data.categories); setTags(data.tags); }).catch((error) => toast.error(error instanceof Error ? error.message : '标签加载失败')); }, [open]);
   const toggle = (id: string, intent: 'add' | 'remove') => {
     const setter = intent === 'add' ? setAddIds : setRemoveIds;
@@ -96,12 +98,18 @@ export function BatchTagDialog({ open, onOpenChange, ids, onSaved }: {
   };
   const save = async () => {
     setBusy(true);
-    try { const result = await probeApi.batchUpdateServers(ids, { addTagIds: addIds, removeTagIds: removeIds }); toast.success(`已更新 ${result.updated} 台`); onSaved(); }
+    try {
+      const result = onSubmitBulk
+        ? await onSubmitBulk({ addTagIds: addIds, removeTagIds: snapshotMode ? [] : removeIds })
+        : await probeApi.batchUpdateServers(ids, { addTagIds: addIds, removeTagIds: removeIds });
+      toast.success(onSubmitBulk ? `分类标签任务已提交（${snapshotMode ? `冻结快照 ${targetCount} 台` : `${targetCount} 台`}）` : `已更新 ${(result as { updated: number }).updated} 台`);
+      onSaved();
+    }
     catch (error) { toast.error(error instanceof Error ? error.message : '更新失败'); }
     finally { setBusy(false); }
   };
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-xl"><DialogHeader><DialogTitle>批量调整分类标签（{ids.length} 台）</DialogTitle><DialogDescription>选择要添加或移除的标签，操作按标签 ID 应用。</DialogDescription></DialogHeader>
-    <div className="flex flex-col gap-4">{categories.map((category) => <section key={category.id} className="flex flex-col gap-2"><Label>{category.name}</Label><div className="flex flex-wrap gap-2">{tags.filter((tag) => tag.categoryId === category.id).map((tag) => <div key={tag.id} className="flex items-center gap-1 rounded-md border px-2 py-1"><span className="text-xs">{tag.name}</span><Button size="sm" variant={addIds.includes(tag.id) ? 'default' : 'outline'} onClick={() => toggle(tag.id, 'add')}>添加</Button><Button size="sm" variant={removeIds.includes(tag.id) ? 'destructive' : 'outline'} onClick={() => toggle(tag.id, 'remove')}>移除</Button></div>)}</div></section>)}{!tags.length && <p className="text-sm text-muted-foreground">暂无标签，请先在分类标签管理中创建。</p>}</div>
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-xl"><DialogHeader><DialogTitle>{batchTagDialogTitle(targetCount)}</DialogTitle><DialogDescription>{snapshotMode ? '选择要添加的标签，操作按标签 ID 应用。' : '选择要添加或移除的标签，操作按标签 ID 应用。'}</DialogDescription></DialogHeader>
+    <div className="flex flex-col gap-4">{categories.map((category) => <section key={category.id} className="flex flex-col gap-2"><Label>{category.name}</Label><div className="flex flex-wrap gap-2">{tags.filter((tag) => tag.categoryId === category.id).map((tag) => <div key={tag.id} className="flex items-center gap-1 rounded-md border px-2 py-1"><span className="text-xs">{tag.name}</span><Button size="sm" variant={addIds.includes(tag.id) ? 'default' : 'outline'} onClick={() => toggle(tag.id, 'add')}>添加</Button>{canRemoveLegacyLabels(!!snapshotMode) && <Button size="sm" variant={removeIds.includes(tag.id) ? 'destructive' : 'outline'} onClick={() => toggle(tag.id, 'remove')}>移除</Button>}</div>)}</div></section>)}{!tags.length && <p className="text-sm text-muted-foreground">暂无标签，请先在分类标签管理中创建。</p>}</div>
     <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button disabled={busy || (!addIds.length && !removeIds.length)} onClick={save}>保存</Button></DialogFooter>
   </DialogContent></Dialog>;
 }

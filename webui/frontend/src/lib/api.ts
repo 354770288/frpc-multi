@@ -35,6 +35,9 @@ import type {
   ServerQuery,
   ManagedTag,
   TagCategory,
+  ServerSelection,
+  ServerBulkJob,
+  ServerBulkFailure,
   SystemInfo,
   ValidationData
 } from './types';
@@ -222,6 +225,16 @@ export const probeApi = {
     api<{ total: number }>(`/api/probe/servers/count?${serverFilterParams(query).toString()}`, { signal }),
   serverFacets: (signal?: AbortSignal) =>
     api<ServerFacets>('/api/probe/servers/facets', { signal }),
+  createServerSelection: (payload: { ids?: number[]; allMatching?: boolean; q?: string; group?: string; label?: string; groupIds?: string[]; tagId?: string; includeTagIds?: string[]; excludeTagIds?: string[]; tagMode?: 'any' | 'all'; conn?: ServerQuery['conn'] }) =>
+    api<ServerSelection>('/api/probe/server-selections', { method: 'POST', body: JSON.stringify(payload) }),
+  serverSelection: (id: string) => api<ServerSelection>(`/api/probe/server-selections/${encodeURIComponent(id)}`),
+  createServerBulkJob: (payload: { selectionId: string; operation: 'update' | 'delete'; payload?: Record<string, unknown>; idempotencyKey: string }) =>
+    api<ServerBulkJob>('/api/probe/server-bulk-jobs', { method: 'POST', body: JSON.stringify(payload) }),
+  serverBulkJob: (id: string) => api<ServerBulkJob>(`/api/probe/server-bulk-jobs/${encodeURIComponent(id)}`),
+  serverBulkFailures: (id: string, cursor = 0, limit = 100) =>
+    api<{ items: ServerBulkFailure[]; nextCursor: number | null }>(`/api/probe/server-bulk-jobs/${encodeURIComponent(id)}/failures?${new URLSearchParams({ cursor: String(cursor), limit: String(limit) })}`),
+  retryServerBulkFailures: (id: string, idempotencyKey: string) =>
+    api<ServerBulkJob>(`/api/probe/server-bulk-jobs/${encodeURIComponent(id)}/retry-failed`, { method: 'POST', body: JSON.stringify({ idempotencyKey }) }),
   tagCategories: () => api<{ items: TagCategory[] }>('/api/probe/tags/categories'),
   createTagCategory: (name: string) => api<TagCategory>('/api/probe/tags/categories', {
     method: 'POST', body: JSON.stringify({ name }),

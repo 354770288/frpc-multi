@@ -33,7 +33,7 @@ def _stamp_after(hours=SELECTION_TTL_HOURS):
 
 def _filters_query(filters):
     return ServerPageQuery(
-        q=filters.get("q", ""), group=filters.get("group"),
+        q=filters.get("q", ""), group=filters.get("group"), label=filters.get("label"),
         group_ids=tuple(filters.get("groupIds", ())), tag_id=filters.get("tagId"),
         include_tag_ids=tuple(filters.get("includeTagIds", ())),
         exclude_tag_ids=tuple(filters.get("excludeTagIds", ())),
@@ -93,7 +93,7 @@ class ServerBulkStore:
                              (count, count, max_id, now_iso(), selection_id))
             else:
                 query = _filters_query(filters or {})
-                normalized = {"q": query.q.strip(), "group": query.group,
+                normalized = {"q": query.q.strip(), "group": query.group, "label": query.label,
                               "groupIds": list(dict.fromkeys(query.group_ids)), "tagId": query.tag_id,
                               "includeTagIds": list(dict.fromkeys(query.include_tag_ids)),
                               "excludeTagIds": list(dict.fromkeys(query.exclude_tag_ids)),

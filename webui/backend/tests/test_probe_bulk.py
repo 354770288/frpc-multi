@@ -59,6 +59,26 @@ class ProbeBulkTests(unittest.TestCase):
         self.assertEqual(lease["owner"], "")
         self.assertEqual(lease["lease_until"], 0)
 
+    def test_all_matching_label_matches_server_list_and_count(self):
+        included = [self.add("192.0.2.41", labels=("north",)),
+                    self.add("192.0.2.42", labels=("north", "transit"))]
+        self.add("192.0.2.43", labels=("south",))
+        query = ServerPageQuery(label="north")
+        expected_list = self.assets.query_servers(query)
+        expected_count = self.assets.count_servers(query)
+        selection = self.bulk.create_selection("alice", filters={"label": "north"})
+        while self.bulk.get_selection("alice", selection["selectionId"])["state"] in {"queued", "building"}:
+            self.assertTrue(self.bulk.run_once("label-worker"))
+        ready = self.bulk.get_selection("alice", selection["selectionId"])
+        with self.bulk._db() as c:
+            members = [row[0] for row in c.execute(
+                "SELECT server_id FROM probe_server_selection_members WHERE selection_id=? ORDER BY server_id",
+                (selection["selectionId"],))]
+        list_ids = sorted(row["id"] for row in expected_list["items"])
+        self.assertEqual(ready["count"], expected_count)
+        self.assertEqual(members, list_ids)
+        self.assertEqual(members, sorted(included))
+
     def test_all_matching_freezes_high_water_and_fails_on_prior_asset_mutation(self):
         first = self.add("192.0.2.31", "edge")
         selection = self.bulk.create_selection("alice", filters={"group": "edge"})

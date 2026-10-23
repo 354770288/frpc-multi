@@ -254,6 +254,7 @@ class ServerSelectionCreate(BaseModel):
     allMatching: bool = False
     q: str = ""
     group: str | None = None
+    label: str | None = None
     groupIds: list[str] = []
     tagId: str | None = None
     includeTagIds: list[str] = []
@@ -285,7 +286,8 @@ def create_server_selection(payload: ServerSelectionCreate, user: Annotated[str,
         raise HTTPException(status_code=400, detail="须提供 ids 或 allMatching=true")
     if sum(len(values) for values in (payload.groupIds, payload.includeTagIds, payload.excludeTagIds)) > MAX_FILTER_IDS:
         raise HTTPException(status_code=400, detail="ID 筛选总数不能超过 300")
-    filters = {"q": payload.q, "group": payload.group, "groupIds": payload.groupIds,
+    filters = {"q": payload.q, "group": payload.group, "label": payload.label,
+               "groupIds": payload.groupIds,
                "tagId": payload.tagId, "includeTagIds": payload.includeTagIds,
                "excludeTagIds": payload.excludeTagIds, "tagMode": payload.tagMode,
                "conn": payload.conn}

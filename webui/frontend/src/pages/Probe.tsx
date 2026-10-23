@@ -21,6 +21,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { ConnBadge, ProbeStatCards, SpeedText } from './probe/ProbeParts';
 import { useDiscovery } from './probe/useDiscovery';
 import { useServers } from './probe/useServers';
+import { useServerBulk } from './probe/useServerBulk';
+import { batchTagDialogTitle, canFreezeServerSelection, canRemoveLegacyLabels, canSubmitServerBatch, legacyServerBatchPayload } from './probe/serverBulkUi';
 import { TestNodesDialog } from './probe/TestNodesDialog';
 import { ProbeJobsPanel } from './probe/ProbeJobsPanel';
 import { ScanDialog } from './probe/ScanDialog';
@@ -138,6 +140,8 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
   const discovery = useDiscovery(tab === 'discover', nodeId);
   // 服务器库同样走服务端分页（数据/轮询/跨页勾选由 hook 统一持有）
   const servers = useServers(tab === 'servers');
+  const serverBulk = useServerBulk(tab === 'servers');
+  const refreshedBulkJob = useRef<string | null>(null);
   const serverRows = servers.page.items;
   // 服务器表搜索框：本地受控 + 300ms 防抖
   const [serverSearch, setServerSearch] = useState('');
@@ -167,6 +171,10 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
   const [tagsOpen, setTagsOpen] = useState(false);
   const [batchTagsOpen, setBatchTagsOpen] = useState(false);
   const [batchEdit, setBatchEdit] = useState<'group' | 'label' | null>(null);
+  const [batchEditSnapshot, setBatchEditSnapshot] = useState<'group' | 'label' | null>(null);
+  const [batchTagsSnapshotOpen, setBatchTagsSnapshotOpen] = useState(false);
+  const [deletingSnapshot, setDeletingSnapshot] = useState(false);
+  const [freezingSelection, setFreezingSelection] = useState(false);
 
   // 网段发现（分页数据、跨页勾选与轮询由 useDiscovery 统一持有）
   const [scanOpen, setScanOpen] = useState(false);
@@ -213,6 +221,12 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
       /* 分组加载失败不阻塞页面 */
     }
   }, []);
+  useEffect(() => {
+    if (!serverBulk.job || !['done', 'partial', 'failed'].includes(serverBulk.job.state) || refreshedBulkJob.current === serverBulk.job.jobId) return;
+    refreshedBulkJob.current = serverBulk.job.jobId;
+    void servers.refreshAll({ recoverOutOfRange: true }).catch(() => {});
+    void loadGroups();
+  }, [serverBulk.job?.jobId, serverBulk.job?.state]);
 
   useEffect(() => {
     if(section==='test')return;
@@ -303,6 +317,9 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
     () => Array.from(servers.selected.values()).filter((ip): ip is string => typeof ip === 'string'),
     [servers.selected],
   );
+  const bulkActionBusy = !!serverBulk.pending || !!serverBulk.job && ['queued', 'running'].includes(serverBulk.job.state);
+  const manualBulkDisabled = bulkActionBusy || servers.selected.size > 5000;
+  const freezeReady = canFreezeServerSelection(serverSearch, servers.query.q, servers.totalCount, servers.countLoading, servers.countError, servers.pageLoading, servers.pageError);
 
   function quickTest(mode: 'connectivity' | 'speed' | 'full') {
     if (!selectedIps.length) return;
@@ -328,20 +345,31 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
   async function deleteSelected() {
     const targets = [...servers.selected.entries()];
     setDeletingSelected(false);
-    let failed = 0;
-    const removed: number[] = [];
-    for (const [id] of targets) {
-      try {
-        await probeApi.deleteServer(id);
-        removed.push(id);
-      } catch {
-        failed += 1;
-      }
-    }
-    servers.removeSelected(removed);
-    if (failed) toast.warning(`已删除 ${targets.length - failed} 台，${failed} 台失败`);
-    else toast.success(`已删除 ${targets.length} 台`);
-    servers.refreshAll({ recoverOutOfRange: true }).catch(() => {});
+    try {
+      const next = await serverBulk.submit('delete', {}, targets.map(([id]) => id));
+      toast.success(`删除任务已提交（${next.total} 台）`);
+    } catch (err) { toast.error(err instanceof Error ? err.message : '删除任务提交失败'); }
+  }
+
+  async function freezeMatchingServers() {
+    setFreezingSelection(true);
+    try {
+      const next = await serverBulk.freezeAllMatching(servers.query);
+      toast.success(next.state === 'ready' ? `已冻结 ${next.count} 台匹配服务器` : '正在生成服务器选择快照');
+    } catch (err) { toast.error(err instanceof Error ? err.message : '创建选择快照失败'); }
+    finally { setFreezingSelection(false); }
+  }
+
+  async function submitSnapshotUpdate(payload: Record<string, unknown>) {
+    return serverBulk.submit('update', payload);
+  }
+
+  async function submitSnapshotDelete() {
+    setDeletingSnapshot(false);
+    try {
+      const next = await serverBulk.submit('delete', {});
+      toast.success(`批量删除任务已提交（${next.total} 台）`);
+    } catch (err) { toast.error(err instanceof Error ? err.message : '批量删除提交失败'); }
   }
 
   async function clearHistory() {
@@ -604,6 +632,47 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
               {servers.countError && <span>服务器总数读取失败：{servers.countError}</span>}
               {servers.countError && <Button size="sm" variant="outline" onClick={() => servers.refreshCount().catch(() => {})}>重试总数</Button>}
             </div>}
+            {servers.totalCount !== null && servers.totalCount > 0 && <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
+              <Button size="sm" variant="outline" disabled={freezingSelection || !!serverBulk.pending || !freezeReady} onClick={() => void freezeMatchingServers()}>
+                {freezingSelection ? '正在冻结…' : `冻结全部匹配 (${servers.totalCount})`}
+              </Button>
+              <span className="text-[11px] text-muted-foreground">固定当前筛选结果；之后更改筛选条件不会改变快照。</span>
+            </div>}
+            {serverBulk.selection && <div className="border-b bg-primary/5 px-4 py-3 text-xs" aria-label="服务器选择快照">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={serverBulk.selection.state === 'ready' ? 'muted' : serverBulk.selection.state === 'failed' || serverBulk.selection.state === 'expired' ? 'muted' : 'warning'}>
+                  {serverBulk.selection.state === 'ready' ? `冻结快照 ${serverBulk.selection.count} 台` : serverBulk.selection.state === 'failed' ? '快照生成失败' : serverBulk.selection.state === 'expired' ? '快照已过期' : `快照生成中 ${serverBulk.selection.processed}/${serverBulk.selection.count || '…'}`}
+                </Badge>
+                {serverBulk.selection.error && <span role="alert" className="text-destructive">{serverBulk.selection.error}</span>}
+                {serverBulk.selection.state === 'ready' && <>
+                  <Button size="sm" variant="outline" disabled={bulkActionBusy} onClick={() => setBatchEditSnapshot('group')}>改分组</Button>
+                  <Button size="sm" variant="outline" disabled={bulkActionBusy} onClick={() => setBatchEditSnapshot('label')}>改旧标签</Button>
+                  <Button size="sm" variant="outline" disabled={bulkActionBusy} onClick={() => setBatchTagsSnapshotOpen(true)}>分类标签</Button>
+                  <Button size="sm" variant="destructive" disabled={bulkActionBusy} onClick={() => setDeletingSnapshot(true)}>删除</Button>
+                </>}
+                {(serverBulk.selection.state === 'failed' || serverBulk.selection.state === 'expired') && <Button size="sm" variant="outline" onClick={() => serverBulk.clearSelection()}>清除快照</Button>}
+              </div>
+              {serverBulk.selection.state === 'ready' && <p className="mt-1 text-[11px] text-muted-foreground">快照固定于 {new Date(serverBulk.selection.createdAt).toLocaleString()}，有效期至 {new Date(serverBulk.selection.expiresAt).toLocaleString()}。</p>}
+            </div>}
+            {serverBulk.pending && <div className="flex flex-wrap items-center gap-2 border-b bg-destructive/5 px-4 py-2 text-xs">
+              <span role="alert">批量任务提交结果尚未确认。重试会沿用原幂等键。</span>
+              <Button size="sm" variant="outline" onClick={() => void serverBulk.retryPending().catch((err) => toast.error(err instanceof Error ? err.message : '重试提交失败'))}>重试提交</Button>
+            </div>}
+            {serverBulk.job && <div className="border-b bg-muted/30 px-4 py-3 text-xs" aria-label="批量任务进度" aria-live="polite">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={serverBulk.job.state === 'done' ? 'success' : serverBulk.job.state === 'partial' || serverBulk.job.state === 'failed' ? 'warning' : 'muted'}>
+                  {serverBulk.job.operation === 'delete' ? '删除' : '更新'}任务：{serverBulk.job.state === 'done' ? '完成' : serverBulk.job.state === 'partial' ? '部分失败' : serverBulk.job.state === 'failed' ? '失败' : `${serverBulk.job.processed}/${serverBulk.job.total}`}
+                </Badge>
+                <span>成功 {serverBulk.job.succeeded} · 失败 {serverBulk.job.failed} · 共 {serverBulk.job.total}</span>
+                {serverBulk.job.error && <span role="alert" className="text-destructive">{serverBulk.job.error}</span>}
+                {['partial', 'failed'].includes(serverBulk.job.state) && serverBulk.job.failed > 0 && <Button size="sm" variant="outline" onClick={() => void serverBulk.retryFailed().catch((err) => toast.error(err instanceof Error ? err.message : '重试失败项失败'))}>仅重试失败项</Button>}
+                {serverBulk.failureCursor !== null && <Button size="sm" variant="ghost" onClick={() => void serverBulk.loadMoreFailures().catch((err) => toast.error(err instanceof Error ? err.message : '失败明细读取失败'))}>加载更多失败项</Button>}
+              </div>
+              {serverBulk.failures.length > 0 && <ul className="mt-2 max-h-24 overflow-y-auto text-[11px] text-destructive">
+                {serverBulk.failures.map((failure) => <li key={`${failure.serverId}-${failure.ip}`}>{failure.ip}: {failure.error}</li>)}
+              </ul>}
+              {serverBulk.error && <p role="alert" className="mt-1 text-destructive">{serverBulk.error}</p>}
+            </div>}
             {selectedIps.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 border-b bg-primary/5 px-4 py-2">
                 <Badge tone="muted">已选 {selectedIps.length} 台（跨页保持）</Badge>
@@ -616,21 +685,22 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                 <Button size="sm" onClick={() => quickTest('full')} disabled={starting}>
                   <Zap size={13} />完整测试
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => setBatchEdit('group')}>
+                <Button size="sm" variant="outline" disabled={manualBulkDisabled} onClick={() => setBatchEdit('group')}>
                   <FolderCog size={13} />改分组
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => setBatchEdit('label')}>
+                <Button size="sm" variant="outline" disabled={manualBulkDisabled} onClick={() => setBatchEdit('label')}>
                   <Tag size={13} />改旧标签
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => setBatchTagsOpen(true)}>
+                <Button size="sm" variant="outline" disabled={manualBulkDisabled} onClick={() => setBatchTagsOpen(true)}>
                   <Tag size={13} />分类标签
                 </Button>
-                <Button size="sm" variant="destructive" onClick={() => setDeletingSelected(true)}>
+                <Button size="sm" variant="destructive" disabled={manualBulkDisabled} onClick={() => setDeletingSelected(true)}>
                   <Trash2 size={13} />删除
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => servers.setSelected(new Map())}>
                   <X size={13} />清除勾选
                 </Button>
+                {servers.selected.size > 5000 && <span className="text-[11px] text-muted-foreground">显式勾选最多支持 5000 台；请使用上方“冻结全部匹配”。</span>}
                 <span className="ml-auto text-[11px] text-muted-foreground">启动后自动跳转测试进度</span>
               </div>
             )}
@@ -857,7 +927,13 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
         />
       )}
       <TagManagementDialog open={tagsOpen} onOpenChange={setTagsOpen} onChanged={() => servers.refreshAll().catch(() => {})} />
-      <BatchTagDialog open={batchTagsOpen} onOpenChange={setBatchTagsOpen} ids={[...servers.selected.keys()]} onSaved={() => { setBatchTagsOpen(false); servers.refreshAll({ recoverOutOfRange: true }).catch(() => {}); }} />
+      <BatchTagDialog open={batchTagsOpen} onOpenChange={setBatchTagsOpen} ids={[...servers.selected.keys()]}
+        onSubmitBulk={(payload) => serverBulk.submit('update', payload, [...servers.selected.keys()]).then(() => {})}
+        onSaved={() => { setBatchTagsOpen(false); servers.refreshAll({ recoverOutOfRange: true }).catch(() => {}); }} />
+      <BatchTagDialog open={batchTagsSnapshotOpen} onOpenChange={setBatchTagsSnapshotOpen} ids={[]}
+        count={serverBulk.selection?.count ?? 0} snapshotMode
+        onSubmitBulk={(payload) => serverBulk.submit('update', payload).then(() => {})}
+        onSaved={() => { setBatchTagsSnapshotOpen(false); }} />
       {batchEdit && (
         <BatchEditDialog
           kind={batchEdit}
@@ -865,12 +941,26 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
           count={servers.selected.size}
           groups={groups.map((group) => group.name)}
           cloudLabels={servers.facets.labels}
+          onSubmitBulk={(payload) => serverBulk.submit('update', payload, [...servers.selected.keys()]).then(() => {})}
           onClose={() => setBatchEdit(null)}
           onSaved={() => {
             setBatchEdit(null);
             servers.refreshAll({ recoverOutOfRange: true }).catch(() => {});
             loadGroups();
           }}
+        />
+      )}
+      {batchEditSnapshot && serverBulk.selection && (
+        <BatchEditDialog
+          kind={batchEditSnapshot}
+          ids={[]}
+          count={serverBulk.selection.count}
+          groups={groups.map((group) => group.name)}
+          cloudLabels={servers.facets.labels}
+          snapshotMode
+          onSubmitBulk={submitSnapshotUpdate}
+          onClose={() => setBatchEditSnapshot(null)}
+          onSaved={() => { setBatchEditSnapshot(null); servers.refreshAll({ recoverOutOfRange: true }).catch(() => {}); loadGroups(); }}
         />
       )}
       {dBatchEdit && (
@@ -928,6 +1018,14 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
           description="只移除清单记录，历史测试结果保留。"
           confirmLabel="删除" variant="destructive"
           onCancel={() => setDeletingSelected(false)} onConfirm={deleteSelected}
+        />
+      )}
+      {deletingSnapshot && serverBulk.selection && (
+        <ConfirmOverlay
+          title={`删除冻结快照中的 ${serverBulk.selection.count} 台服务器`}
+          description="任务将按该快照固定的服务器列表执行，并显示进度及失败明细。"
+          confirmLabel="提交删除任务" variant="destructive"
+          onCancel={() => setDeletingSnapshot(false)} onConfirm={submitSnapshotDelete}
         />
       )}
       {clearing && (
@@ -1214,7 +1312,7 @@ function GroupDialog({ groups, groupCounts, onClose, onChanged }: {
 
 /** 勾选批量修改弹窗：改分组（必选）或改标签（可空=清除）；服务器表改组成功后引导去负载均衡绑域名。
  * applyDiscover=true 时作用于网段发现结果表。 */
-function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover, onClose, onSaved }: {
+function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover, snapshotMode, onSubmitBulk, onClose, onSaved }: {
   kind: 'group' | 'label';
   ids: number[];
   count: number;
@@ -1222,6 +1320,8 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
   /** 标签云（facets 全局标签，供快选） */
   cloudLabels: LabelCount[];
   applyDiscover?: boolean;
+  snapshotMode?: boolean;
+  onSubmitBulk?: (payload: Record<string, unknown>) => Promise<unknown>;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -1236,13 +1336,14 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
   // 所选行已贴标签聚合（跨页由服务端预览接口聚合）；ids 序列化做依赖，避免父组件渲染重复请求
   const idsKey = ids.join(',');
   useEffect(() => {
+    if (snapshotMode && kind === 'label') { setAttached([]); return; }
     if (kind !== 'label' || !idsKey) return;
     let cancelled = false;
     const idList = idsKey.split(',').map(Number).filter(Number.isFinite);
     const preview = applyDiscover ? probeApi.discoverLabelsPreview(idList) : probeApi.serversLabelsPreview(idList);
     preview.then((res) => { if (!cancelled) setAttached(res.labels); }).catch(() => { if (!cancelled) setAttached([]); });
     return () => { cancelled = true; };
-  }, [kind, idsKey, applyDiscover]);
+  }, [kind, idsKey, applyDiscover, snapshotMode, cloudLabels]);
 
   const toggleAdd = (label: string) => {
     setAddLabels((current) => current.includes(label)
@@ -1264,9 +1365,9 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
   };
 
   const submit = async () => {
-    if (!ids.length) return;
+    if (!canSubmitServerBatch(ids.length, !!onSubmitBulk, !!applyDiscover)) return;
     if (kind === 'group' && !group) { toast.error('请选择分组'); return; }
-    if (kind === 'label' && !addLabels.length && !removeLabels.length) {
+    if (kind === 'label' && !addLabels.length && (snapshotMode || !removeLabels.length)) {
       toast.error('请至少选择要添加或移除的标签');
       return;
     }
@@ -1280,17 +1381,15 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
         });
         toast.success(`已更新 ${result.updated} 条`);
       } else {
-        const changes = kind === 'group'
-          ? { group }
-          : { addLabels, removeLabels };
-        const result = await probeApi.batchUpdateServers(ids, changes);
+        const changes = legacyServerBatchPayload(kind, group, addLabels, removeLabels, !!snapshotMode);
+        const result = onSubmitBulk ? await onSubmitBulk(changes) : await probeApi.batchUpdateServers(ids, changes);
         if (kind === 'group') {
-          toast.success(`已更新 ${result.updated} 台（入组 ${group}）`, {
+          toast.success(onSubmitBulk ? `批量更新任务已提交（入组 ${group}）` : `已更新 ${(result as { updated: number }).updated} 台（入组 ${group}）`, {
             duration: 6000,
             action: { label: '去负载均衡绑域名', onClick: () => navigate('/lb') },
           });
         } else {
-          toast.success(`已更新 ${result.updated} 台`);
+          toast.success(onSubmitBulk ? '批量标签更新任务已提交' : `已更新 ${(result as { updated: number }).updated} 台`);
         }
       }
       onSaved();
@@ -1327,7 +1426,7 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
           </div>
         ) : (
           <>
-            <div className="flex flex-col gap-1.5">
+            {canRemoveLegacyLabels(!!snapshotMode) && <div className="flex flex-col gap-1.5">
               <Label className="text-xs">已贴标签（点击 = 从所选行移除）</Label>
               {attached.length ? (
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -1339,7 +1438,7 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
                   ))}
                 </div>
               ) : <span className="text-[11px] text-muted-foreground">所选行还没有标签</span>}
-            </div>
+            </div>}
             <div className="flex flex-col gap-1.5">
               <Label className="text-xs">标签云（点击 = 添加到所选行）</Label>
               {cloudLabels.length ? (

@@ -10,7 +10,20 @@
 
 Selection snapshots now bind an owner, max server ID, filter set, and catalog revision at request acceptance. The background worker builds memberships in bounded 10,000-ID ranges and rejects the snapshot if filter-relevant catalog data changes during construction. Update/delete jobs materialize targets in bounded ranges, execute at most 250 server mutations per transaction, expose progress and cursor-paged failures, and retry failed rows from terminal source jobs. A lease token fences selection builds, bulk mutations, and outcome writes; deleted update targets become explicit failures. Cleanup advances in bounded pages and preserves source failure rows while queued/running retries depend on them. Retry remains possible after selection expiry during the seven-day terminal retention window.
 
-Uncovered: desktop UI does not yet use the snapshot/progress APIs; bulk probe-test creation is deferred to a separate bounded task-producer slice; the 100k fixture verifies membership materialization, not full mutation completion under concurrent load; 1M capacity and production migration/deployment were not tested.
+At this backend-only slice boundary, the desktop had not yet consumed these APIs. Bulk probe-test creation remains deferred to a separate bounded task-producer slice; the 100k fixture verifies membership materialization, not full mutation completion under concurrent load; 1M capacity and production migration/deployment were not tested.
+
+## Slice: desktop fixed selection and batch progress integration
+
+- `npm run build` — exit 0; TypeScript and Vite production bundle passed.
+- `npm test` — exit 0; 4 test files and 9 tests passed.
+- `./.venv/bin/python -m unittest tests.test_probe_bulk tests.test_probe tests.test_probe_jobs tests.test_lb tests.test_lb_selection tests.test_database` — coordinator fresh run: 240 tests passed.
+- `git diff --check` — exit 0.
+- Spec compliance review: no remaining findings after adding label-filter parity, stale-search blocking, snapshot counts, and add-only snapshot tag controls.
+- Code-quality review: no actionable correctness findings. Remaining test limitation: hook lifecycle is not mounted in tests, and no Playwright E2E was run for this slice.
+
+The desktop sends the current filter snapshot (including legacy labels) without paging/sort values or expanded IP lists. Explicit selections remain separate and are capped at 5,000 IDs. Existing group, legacy-label, category-tag, and delete actions submit durable jobs; the page shows snapshot/job progress, paged failures, and failed-only retries. Freeze is disabled until the visible search, applied query, list, and count are current. Snapshot tag actions are add-only because the current UI lacks a snapshot-scoped attached-tag preview. Quick-test actions continue to use only manually selected IPs.
+
+Uncovered: no E2E browser run for the new batch UI; no selection-backed probe-job creation or saved views; no full 100k mutation/concurrent-write benchmark or 1M capacity test; no production deployment.
 
 ## Slice: fixed target port
 

@@ -390,6 +390,32 @@ export type ServerTagFacet = { tagId: string; categoryId: string; category: stri
 export type TagCategory = { id: string; name: string; createdAt?: string };
 export type ManagedTag = { id: string; categoryId: string; category: string; name: string; createdAt?: string; serverCount: number };
 
+export type ServerSelection = {
+  selectionId: string;
+  state: 'queued' | 'building' | 'ready' | 'failed' | 'expired';
+  count: number;
+  processed: number;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  error: string | null;
+};
+export type ServerBulkJob = {
+  jobId: string;
+  selectionId: string;
+  operation: 'update' | 'delete';
+  state: 'queued' | 'running' | 'done' | 'partial' | 'failed';
+  total: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  createdAt: string;
+  updatedAt: string;
+  error: string | null;
+  retryOf: string | null;
+};
+export type ServerBulkFailure = { serverId: number; ip: string; error: string };
+
 // ---- CN2 路由追踪（节点轮询模型） ----
 
 export type RouteStatusView = {
