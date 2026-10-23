@@ -97,6 +97,88 @@ class ProbeJobStore:
         with self._db() as c:
             return [self._node_view(r) for r in c.execute('SELECT * FROM probe_nodes ORDER BY created_at,id')]
 
+    @staticmethod
+    def _eligible_policy_node(row):
+        if not row or row['kind'] != 'worker':
+            return False
+        try:
+            capabilities = json.loads(row['capabilities'])
+        except (TypeError, ValueError):
+            return False
+        return (isinstance(capabilities, list)
+                and all(isinstance(capability, str) for capability in capabilities)
+                and set(CAPABILITIES).issubset(capabilities))
+
+    @staticmethod
+    def _stored_execution_policy(c):
+        row = c.execute("SELECT value FROM probe_settings WHERE key='probe_execution_policy'").fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(row['value'])
+        except (ValueError, TypeError) as exc:
+            raise ValueError('已保存的主备测试策略 JSON 损坏') from exc
+        if (not isinstance(value, dict) or not isinstance(value.get('primaryNodeId'), str)
+                or not value['primaryNodeId'] or not isinstance(value.get('backupNodeIds'), list)
+                or not all(isinstance(node_id, str) and node_id for node_id in value['backupNodeIds'])):
+            raise ValueError('已保存的主备测试策略结构无效')
+        backup_node_ids = value['backupNodeIds']
+        if len(set(backup_node_ids)) != len(backup_node_ids):
+            raise ValueError('已保存的主备测试策略包含重复备用节点')
+        if value['primaryNodeId'] in backup_node_ids:
+            raise ValueError('已保存的主备测试策略将主用节点重复列为备用节点')
+        policy = {'primaryNodeId': value['primaryNodeId'], 'backupNodeIds': backup_node_ids}
+        for node_id in [policy['primaryNodeId'], *backup_node_ids]:
+            node = c.execute('SELECT * FROM probe_nodes WHERE id=?', (node_id,)).fetchone()
+            if node is None:
+                raise ValueError('已保存的主备测试策略引用了不存在的节点: ' + node_id)
+            if not ProbeJobStore._eligible_policy_node(node):
+                raise ValueError('已保存的主备测试策略引用了不符合要求的节点: ' + node_id)
+        return policy
+
+    def get_execution_policy(self):
+        with self._db() as c:
+            policy = self._stored_execution_policy(c)
+            suggested = None
+            selection = c.execute("SELECT value FROM lb_settings WHERE key='selection_config'").fetchone()
+            try:
+                selection_config = json.loads(selection['value']) if selection else {}
+                candidate = selection_config.get('nodeId') if isinstance(selection_config, dict) else None
+            except (ValueError, TypeError):
+                candidate = None
+            if isinstance(candidate, str):
+                node = c.execute('SELECT * FROM probe_nodes WHERE id=?', (candidate,)).fetchone()
+                if self._eligible_policy_node(node):
+                    suggested = candidate
+            return {
+                'configured': policy is not None,
+                'primaryNodeId': policy['primaryNodeId'] if policy else None,
+                'backupNodeIds': policy['backupNodeIds'] if policy else [],
+                'suggestedPrimaryNodeId': suggested,
+            }
+
+    def set_execution_policy(self, primary_node_id, backup_node_ids):
+        if not isinstance(primary_node_id, str) or not primary_node_id:
+            raise ValueError('必须设置一个主用测试节点')
+        if not isinstance(backup_node_ids, list) or not all(isinstance(node_id, str) and node_id for node_id in backup_node_ids):
+            raise ValueError('备用节点须为节点 ID 列表')
+        if len(set(backup_node_ids)) != len(backup_node_ids):
+            raise ValueError('备用节点不能重复')
+        if primary_node_id in backup_node_ids:
+            raise ValueError('主用节点不能同时列为备用节点')
+        node_ids = [primary_node_id, *backup_node_ids]
+        with self._db() as c:
+            for node_id in node_ids:
+                node = c.execute('SELECT * FROM probe_nodes WHERE id=?', (node_id,)).fetchone()
+                if node is None:
+                    raise ValueError('测试节点不存在: ' + node_id)
+                if not self._eligible_policy_node(node):
+                    raise ValueError('节点须为具备完整测试能力的 worker: ' + node['name'])
+            value = {'primaryNodeId': primary_node_id, 'backupNodeIds': backup_node_ids}
+            c.execute("INSERT INTO probe_settings(key,value) VALUES('probe_execution_policy',?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (_json(value),))
+        return self.get_execution_policy()
+
     def get_node(self, node_id):
         with self._db() as c:
             row = c.execute('SELECT * FROM probe_nodes WHERE id=?', (node_id,)).fetchone()
@@ -117,6 +199,9 @@ class ProbeJobStore:
         if node_id == 'console':
             raise ValueError('Console 为内置节点')
         with self._db() as c:
+            policy = self._stored_execution_policy(c)
+            if policy and node_id in [policy['primaryNodeId'], *policy['backupNodeIds']]:
+                raise ValueError('节点仍被主备测试策略引用，请先从策略中移除')
             if not c.execute('DELETE FROM probe_nodes WHERE id=?',(node_id,)).rowcount:
                 raise KeyError(node_id)
             c.execute("UPDATE probe_tasks SET state=CASE WHEN state='running' THEN 'cancelling' ELSE 'stopped' END,error='stopped' WHERE node_id=? AND state IN ('pending','running')",(node_id,))

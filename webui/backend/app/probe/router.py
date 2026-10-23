@@ -886,7 +886,10 @@ def route_nodes_create(payload: RouteNodeCreate, user: Annotated[str, Depends(re
 def route_nodes_delete(name: str, user: Annotated[str, Depends(require_auth)]):
     node=next((n for n in job_store().list_nodes() if n['name']==name),None)
     if not node:raise HTTPException(404,'节点不存在')
-    job_store().delete_node(node['id']);return {'ok':True}
+    try:job_store().delete_node(node['id'])
+    except KeyError as exc:raise HTTPException(404,'节点不存在') from exc
+    except ValueError as exc:raise HTTPException(400,str(exc)) from exc
+    return {'ok':True}
 
 
 class NodeCreate(BaseModel):
@@ -927,6 +930,24 @@ def nodes_list(request: Request):
         if node['id'] != 'console':
             node['installCommand'] = _installer_command(str(request.base_url).rstrip('/'))
     return {'items': nodes}
+
+
+@router.get('/nodes/execution-policy')
+def nodes_execution_policy_get():
+    try:
+        return job_store().get_execution_policy()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.put('/nodes/execution-policy')
+def nodes_execution_policy_put(payload: dict[str, object]):
+    try:
+        return job_store().set_execution_policy(
+            payload.get('primaryNodeId'), payload.get('backupNodeIds'),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post('/nodes')

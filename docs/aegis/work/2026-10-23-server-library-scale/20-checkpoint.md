@@ -4,7 +4,10 @@
 
 - [x] Baseline and execution contract: inspect discovery, task leasing, result ownership, schema, API, and UI; record current evidence and lock first implementation slice.
 - [x] Fixed IP:7000 task semantics and current-result lookup; legacy non-7000 history remains readable.
-- [ ] Durable scan recovery, bounded retries, and primary/backup task assignment.
+- [x] Persisted primary/backup policy API with validation and deletion guard.
+- [ ] Desktop test-node management for explicit primary/backup ordering.
+- [ ] New task creation automatically assigns only to configured primary.
+- [ ] Durable scan recovery, fenced failover, bounded retries, and unified current results.
 - [ ] Domestic primary/backup scheduler and unified result projection.
 - [ ] Classification schema, scalable query APIs, and reversible migration.
 - [ ] Desktop server-library UI, saved views, and server-side bulk snapshots.
@@ -12,10 +15,10 @@
 
 ## ResumeStateHint
 
-- Current status: first coherent slice is verified; broader plan remains active.
-- Active slice: inspect persisted discovery chunk leases/progress and define the smallest durable resume and domestic primary/backup scheduler contract.
-- Completed: fixed target port 7000 across task creation paths; server result projection matches fixed port regardless of frps_port setting; HTTP validation maps to 400 including compatibility and route-start paths; historical alternate-port record remains retrievable.
-- Next: capture evidence and review outcomes, commit only task-owned paths, then start the scan recovery/failover slice.
+- Current status: fixed-port slice committed; node-policy backend API verified; broader plan remains active.
+- Active slice: add desktop controls for selecting one primary and ordered eligible backups, using the persisted policy API and suggestion only as an unsaved draft.
+- Completed: fixed target port 7000 across task creation paths; server result projection matches fixed port regardless of frps_port setting; HTTP validation maps to 400 including compatibility and route-start paths; historical alternate-port record remains retrievable; persisted policy validates stable worker IDs, preserves backup order, permits offline nodes, fails closed on corrupt state, and protects referenced-node deletion.
+- Next: complete the test-node policy UI, then update task creation to use only the saved primary before implementing lease failover.
 
 ## Execution Readiness View
 
@@ -32,5 +35,5 @@
 
 - Decision: continue after source-of-truth audit.
 - Scope/compatibility: aligned with revised plan; old plan remains a historical baseline pending comparison with current code.
-- Open unknowns: current production domestic primary; result consumers that assume multi-node results; feasibility of 1M target data under existing SQLite deployment.
-- Slice result: 10万/100万 capacity and performance remain unverified; no production writes or deployment occurred.
+- Open unknowns: current production domestic primary must be explicitly selected; result consumers that assume multi-node results; feasibility of 1M target data under existing SQLite deployment.
+- Slice result: 10万/100万 capacity and performance remain unverified; policy is not yet wired to task assignment; no production writes or deployment occurred.

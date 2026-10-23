@@ -5,7 +5,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault('PROJECT_DIR',tempfile.mkdtemp(prefix='probe-jobs-env-'))
 from app.probe.jobs import ProbeJobStore
@@ -44,6 +44,95 @@ class ProbeJobsTests(unittest.TestCase):
             self.job(port=True)
         with self.assertRaisesRegex(ValueError, '端口固定为 7000'):
             self.job(ips=['192.0.2.1:7001'])
+
+    def test_execution_policy_validation_offline_nodes_and_order(self):
+        legacy = self.store.create_node('legacy-policy', kind='legacy')['id']
+        with self.assertRaisesRegex(ValueError, '不存在'):
+            self.store.set_execution_policy('missing-node', [])
+        with self.assertRaisesRegex(ValueError, '完整测试能力'):
+            self.store.set_execution_policy('console', [])
+        with self.assertRaisesRegex(ValueError, '完整测试能力'):
+            self.store.set_execution_policy(legacy, [])
+        with self.store._db() as c:
+            c.execute('UPDATE probe_nodes SET capabilities=? WHERE id=?', ('["discover","route","connectivity"]', self.b))
+        with self.assertRaisesRegex(ValueError, '完整测试能力'):
+            self.store.set_execution_policy(self.a, [self.b])
+        with self.store._db() as c:
+            c.execute('UPDATE probe_nodes SET capabilities=?,last_seen=0 WHERE id=?', ('["discover","route","connectivity","speed"]', self.b))
+        self.assertFalse(self.store.get_node(self.b)['online'])
+        saved = self.store.set_execution_policy(self.a, [self.b])
+        self.assertTrue(saved['configured'])
+        self.assertEqual(saved['primaryNodeId'], self.a)
+        self.assertEqual(saved['backupNodeIds'], [self.b])
+        with self.assertRaisesRegex(ValueError, '不能重复'):
+            self.store.set_execution_policy(self.a, [self.b, self.b])
+        with self.assertRaisesRegex(ValueError, '不能同时列为备用'):
+            self.store.set_execution_policy(self.a, [self.a])
+
+    def test_execution_policy_suggestion_is_hint_and_not_persisted(self):
+        with self.store._db() as c:
+            c.execute("INSERT INTO lb_settings(key,value) VALUES('selection_config',?)", (json.dumps({'nodeId': self.a}),))
+        current = self.store.get_execution_policy()
+        self.assertEqual(current, {
+            'configured': False, 'primaryNodeId': None, 'backupNodeIds': [],
+            'suggestedPrimaryNodeId': self.a,
+        })
+        with self.store._db() as c:
+            self.assertIsNone(c.execute("SELECT value FROM probe_settings WHERE key='probe_execution_policy'").fetchone())
+            c.execute("UPDATE probe_nodes SET kind='legacy' WHERE id=?", (self.a,))
+        self.assertIsNone(self.store.get_execution_policy()['suggestedPrimaryNodeId'])
+
+        with self.store._db() as c:
+            c.execute("UPDATE probe_nodes SET kind='worker',capabilities=? WHERE id=?", ('not-json', self.a))
+        with self.assertRaisesRegex(ValueError, '完整测试能力'):
+            self.store.set_execution_policy(self.a, [])
+        self.assertIsNone(self.store.get_execution_policy()['suggestedPrimaryNodeId'])
+
+    def test_execution_policy_corruption_fails_closed_and_put_repairs(self):
+        cases = [
+            ('{', 'JSON'),
+            (json.dumps({'primaryNodeId': self.a, 'backupNodeIds': [self.b, self.b]}), '重复备用'),
+            (json.dumps({'primaryNodeId': self.a, 'backupNodeIds': [self.a]}), '重复列为备用'),
+            (json.dumps({'primaryNodeId': 'missing-node', 'backupNodeIds': []}), '不存在的节点'),
+            (json.dumps({'primaryNodeId': 'console', 'backupNodeIds': []}), '不符合要求的节点'),
+        ]
+        for raw, error in cases:
+            with self.subTest(error=error):
+                with self.store._db() as c:
+                    c.execute("INSERT INTO probe_settings(key,value) VALUES('probe_execution_policy',?) "
+                              "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (raw,))
+                with self.assertRaisesRegex(ValueError, error):
+                    self.store.get_execution_policy()
+                with self.assertRaises(ValueError):
+                    self.store.delete_node(self.a)
+                self.assertEqual(self.store.get_node(self.a)['id'], self.a)
+                repaired = self.store.set_execution_policy(self.b, [])
+                self.assertEqual(repaired['primaryNodeId'], self.b)
+                self.assertEqual(repaired['backupNodeIds'], [])
+
+    def test_execution_policy_deletion_guard_and_job_snapshot(self):
+        job = self.job(nodes=[self.a], ips=['192.0.2.1'])
+        before = self.store.get_job(job['id'])
+        self.store.set_execution_policy(self.a, [self.b])
+        after = self.store.get_job(job['id'])
+        self.assertEqual(after, before)
+        with self.assertRaisesRegex(ValueError, '仍被主备测试策略引用'):
+            self.store.delete_node(self.a)
+        self.store.set_execution_policy(self.b, [])
+        self.store.delete_node(self.a)
+        self.assertEqual(self.store.get_execution_policy()['primaryNodeId'], self.b)
+
+    def test_legacy_route_delete_maps_concurrent_missing_node_to_404(self):
+        from fastapi import HTTPException
+        from app.probe import router as probe_router
+
+        store = Mock()
+        store.list_nodes.return_value = [{'id': self.a, 'name': 'node-a'}]
+        store.delete_node.side_effect = KeyError(self.a)
+        with patch.object(probe_router, 'job_store', return_value=store):
+            with self.assertRaises(HTTPException) as raised:
+                probe_router.route_nodes_delete('node-a', user='test')
+        self.assertEqual(raised.exception.status_code, 404)
     def test_latest_failure_overrides_success_then_ttl(self):
         self.job();t=self.store.claim(self.a);self.finish(self.a,t,{'frps_reachable':True})
         self.job();t=self.store.claim(self.a);self.finish(self.a,t,{'frps_reachable':False})

@@ -23,3 +23,13 @@
 - The historical `/api/probe/compare` compatibility endpoint remains and is scheduled for review when its UI/API retirement slice is implemented.
 
 Confidence for this slice: A for fixed-port behavior and directly affected probe regressions; C for the overall plan and scale capacity.
+
+## Slice: persisted primary/backup policy API
+
+- `./.venv/bin/python -m unittest tests.test_probe_jobs` — exit 0; 40 tests passed.
+- `git diff --check` — exit 0.
+- Spec review: no remaining findings after fail-closed corruption handling.
+- Code-quality review: one concurrent-delete status inconsistency was fixed and independently rechecked; no remaining findings.
+- Regression coverage: eligible/ineligible and offline nodes, order and uniqueness, non-persisted suggestion, corrupt policy repair, fail-closed deletion, unchanged in-flight jobs, and concurrent legacy deletion mapping.
+
+The UI does not yet consume this endpoint and task creation does not yet assign by this policy. Capacity, lease failover, unified results, and production node selection remain unverified.
