@@ -39,6 +39,8 @@ import type {
   ServerSelection,
   ServerBulkJob,
   ServerBulkFailure,
+  ServerImportJob,
+  ServerImportFailuresPage,
   SystemInfo,
   ValidationData
 } from './types';
@@ -302,6 +304,17 @@ export const probeApi = {
       method: 'POST',
       body: JSON.stringify(payload)
     }),
+  createServerImportJob: (payload: { text: string; group?: string; idempotencyKey: string }) =>
+    api<ServerImportJob>('/api/probe/server-import-jobs', { method: 'POST', body: JSON.stringify(payload) }),
+  serverImportJob: (jobId: string) =>
+    api<ServerImportJob>(`/api/probe/server-import-jobs/${encodeURIComponent(jobId)}`),
+  serverImportFailures: (jobId: string, cursor?: string, limit = 100) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (cursor !== undefined) params.set('cursor', cursor);
+    return api<ServerImportFailuresPage>(`/api/probe/server-import-jobs/${encodeURIComponent(jobId)}/failures?${params.toString()}`);
+  },
+  retryServerImportFailures: (jobId: string, idempotencyKey: string) =>
+    api<ServerImportJob>(`/api/probe/server-import-jobs/${encodeURIComponent(jobId)}/retry-failed`, { method: 'POST', body: JSON.stringify({ idempotencyKey }) }),
   startTest: (payload: { mode: 'connectivity' | 'speed' | 'full'; ips?: string[]; group?: string }) =>
     api<{ ok: boolean; mode: string; count: number }>('/api/probe/test', {
       method: 'POST',

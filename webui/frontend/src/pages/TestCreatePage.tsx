@@ -49,7 +49,9 @@ export function TestCreatePage() {
   const [group,setGroup] = useState(params.get('group') || '');
   const [manual,setManual] = useState(params.get('target') || '');
   const [selected] = useState(savedTargets);
-  const [mode,setMode] = useState<Exclude<ProbeMode,'discover'>>(() => MODES.includes(params.get('mode') as Exclude<ProbeMode,'discover'>) ? params.get('mode') as Exclude<ProbeMode,'discover'> : 'full');
+  const mode = MODES.includes(params.get('mode') as Exclude<ProbeMode,'discover'>)
+    ? params.get('mode') as Exclude<ProbeMode,'discover'>
+    : 'full';
   const [nodes,setNodes] = useState<TestNode[]>([]);
   const [nodesError,setNodesError] = useState('');
   const [policy,setPolicy] = useState<TestNodeExecutionPolicy | null>(null);
@@ -87,10 +89,8 @@ export function TestCreatePage() {
     const nextScope:Scope=requestedScope==='group' || requestedScope==='all' || requestedScope==='manual' || requestedScope==='selected' || requestedScope==='selection'
       ? requestedScope
       : deepLinkSelectionId ? 'selection' : params.has('group') ? 'group' : params.get('selected')==='1' ? 'selected' : '';
-    const requestedMode=params.get('mode') as Exclude<ProbeMode,'discover'> | null;
     setScope((current)=>current===nextScope ? current : nextScope);
     setGroup((current)=>current===(params.get('group') || '') ? current : (params.get('group') || ''));
-    setMode((current)=>current===(requestedMode && MODES.includes(requestedMode) ? requestedMode : 'full') ? current : (requestedMode && MODES.includes(requestedMode) ? requestedMode : 'full'));
   }, [paramsKey]);
   const changeScope = (nextScope: Scope) => {
     selectionCreation.current=null;
@@ -109,7 +109,6 @@ export function TestCreatePage() {
     setParams((current) => {const next=new URLSearchParams(current);next.delete('selectionId');if(nextGroup)next.set('group',nextGroup);else next.delete('group');return next;});
   };
   const changeMode = (nextMode: Exclude<ProbeMode,'discover'>) => {
-    setMode(nextMode);
     setParams((current) => {const next=new URLSearchParams(current);next.set('mode',nextMode);return next;});
   };
   useEffect(() => {

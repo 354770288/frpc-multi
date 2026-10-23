@@ -1,9 +1,11 @@
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
-from app.probe.bulk import LeaseLostError, ServerBulkStore
+from app.probe.bulk import LeaseLostError, ServerBulkStore, _parsed_import_pages
 from app.probe.store import ProbeStore, ServerPageQuery
 
 
@@ -58,6 +60,145 @@ class ProbeBulkTests(unittest.TestCase):
             lease = c.execute("SELECT owner,lease_until FROM probe_server_bulk_lease WHERE id=1").fetchone()
         self.assertEqual(lease["owner"], "")
         self.assertEqual(lease["lease_until"], 0)
+
+    def test_async_import_idempotency_invalid_and_duplicate_inputs(self):
+        self.add("192.0.2.90")
+        text = "192.0.2.90\n192.0.2.91\n192.0.2.91\nbad!invalid\n"
+        job = self.bulk.create_import("alice", text, "edge", "import-once")
+        replay = self.bulk.create_import("alice", text, "edge", "import-once")
+        self.assertEqual(job["jobId"], replay["jobId"])
+        with self.assertRaises(ValueError):
+            self.bulk.create_import("alice", text + "192.0.2.92\n", "edge", "import-once")
+        while self.bulk.get_import("alice", job["jobId"])["state"] in {"queued", "running"}:
+            self.assertTrue(self.bulk.run_once("import-worker"))
+        result = self.bulk.get_import("alice", job["jobId"])
+        self.assertEqual(result["state"], "partial")
+        self.assertEqual((result["total"], result["inserted"], result["skipped"], result["failed"]), (4, 1, 2, 1))
+        failure = self.bulk.import_failures("alice", job["jobId"])
+        self.assertEqual(failure["items"][0]["line"], 4)
+        self.assertIn("地址", failure["items"][0]["error"])
+
+    def test_async_import_json_page_parse_and_existing_asset_skip(self):
+        self.add("198.51.100.10")
+        job = self.bulk.create_import("alice", '{"servers":[{"ip":"198.51.100.10"},{"ip":"198.51.100.11","label":"edge"}]}', "", "json-import")
+        while self.bulk.get_import("alice", job["jobId"])["state"] in {"queued", "running"}:
+            self.assertTrue(self.bulk.run_once("json-worker"))
+        result = self.bulk.get_import("alice", job["jobId"])
+        self.assertEqual((result["state"], result["inserted"], result["skipped"]), ("done", 1, 1))
+        row = self.assets.query_servers(ServerPageQuery(q="198.51.100.11"))["items"][0]
+        self.assertEqual(self.assets.get_server(row["id"]).labels, ["edge"])
+
+    def test_streamed_import_parser_rejects_repeated_or_non_array_servers(self):
+        for text, message in (
+            ('{"servers":["192.0.2.1"],"servers":null}', "重复"),
+            ('{"servers":"192.0.2.1"}', "须为数组"),
+            ('{"servers":null,"servers":["192.0.2.1"]}', None),
+        ):
+            with self.subTest(text=text):
+                if message:
+                    with self.assertRaisesRegex(ValueError, message):
+                        list(_parsed_import_pages(text, ""))
+                else:
+                    with self.assertRaises(ValueError):
+                        list(_parsed_import_pages(text, ""))
+
+    def test_async_import_existing_asset_skip_preserves_existing_tag_relations(self):
+        server_id = self.add("198.51.100.12", labels=("keep-tag",))
+        before = {row[0] for row in self.assets._with_connection(
+            lambda c: c.execute("SELECT tag_id FROM probe_server_tags WHERE server_id=?", (server_id,)).fetchall()
+        )}
+        job = self.bulk.create_import("alice", "198.51.100.12 incoming-label\n", "", "skip-tagged")
+        while self.bulk.get_import("alice", job["jobId"])["state"] in {"queued", "running"}:
+            self.assertTrue(self.bulk.run_once("tag-skip-worker"))
+        after_server = self.assets.get_server(server_id)
+        after = {row[0] for row in self.assets._with_connection(
+            lambda c: c.execute("SELECT tag_id FROM probe_server_tags WHERE server_id=?", (server_id,)).fetchall()
+        )}
+        self.assertEqual(after_server.labels, ["keep-tag"])
+        self.assertEqual(after, before)
+        self.assertEqual(self.bulk.get_import("alice", job["jobId"])["skipped"], 1)
+
+    def test_async_import_group_limits_and_max_group_staging_compaction(self):
+        with self.assertRaises(ValueError):
+            self.bulk.create_import("alice", "192.0.2.1", "x" * 129, "group-too-long")
+        max_group = "😀" * 128
+        self.assertEqual(len(max_group.encode("utf-8")), 512)
+        job = self.bulk.create_import("alice", "192.0.2.1\n", max_group, "group-at-limit")
+        self.assertTrue(self.bulk.run_once("group-worker"))
+        with self.bulk._db() as c:
+            stored_job = c.execute("SELECT default_group FROM probe_server_import_jobs WHERE id=?", (job["jobId"],)).fetchone()
+            staged_group = c.execute("SELECT group_name FROM probe_server_import_items WHERE job_id=?", (job["jobId"],)).fetchone()
+        self.assertEqual(stored_job[0], max_group)
+        self.assertEqual(staged_group[0], "")
+        while self.bulk.get_import("alice", job["jobId"])["state"] in {"queued", "running"}:
+            self.assertTrue(self.bulk.run_once("group-worker"))
+        self.assertEqual(self.assets.get_server(1).server_group, max_group)
+
+    def test_async_import_permanent_failure_has_no_retry_job(self):
+        job = self.bulk.create_import("alice", "bad!\n", "", "invalid-import")
+        while self.bulk.get_import("alice", job["jobId"])["state"] in {"queued", "running"}:
+            self.assertTrue(self.bulk.run_once("invalid-worker"))
+        source = self.bulk.get_import("alice", job["jobId"])
+        self.assertEqual(source["retryableFailed"], 0)
+        with self.assertRaisesRegex(ValueError, "没有可重试"):
+            self.bulk.retry_import_failures("alice", job["jobId"], "retry-invalid")
+        self.assertEqual(self.bulk.import_failures("alice", job["jobId"])["items"][0]["retryable"], False)
+
+    def test_async_import_retry_copies_only_retryable_rows(self):
+        job = self.bulk.create_import("alice", "bad!\n192.0.2.44\n", "", "mixed-import-errors")
+        self.assertTrue(self.bulk.run_once("mixed-import-worker"))
+        with patch.object(ProbeStore, "import_servers_chunk", side_effect=RuntimeError("transient db error")):
+            self.assertTrue(self.bulk.run_once("mixed-import-worker"))
+        source = self.bulk.get_import("alice", job["jobId"])
+        self.assertEqual((source["failed"], source["retryableFailed"]), (2, 1))
+        failures = self.bulk.import_failures("alice", job["jobId"])["items"]
+        self.assertEqual([row["retryable"] for row in failures], [False, True])
+
+        retry = self.bulk.retry_import_failures("alice", job["jobId"], "retry-mixed-errors")
+        again = self.bulk.retry_import_failures("alice", job["jobId"], "retry-mixed-errors")
+        self.assertEqual(retry["jobId"], again["jobId"])
+        with self.bulk._db() as c:
+            rows = [dict(row) for row in c.execute("SELECT ordinal,ip,retryable FROM probe_server_import_items WHERE job_id=? ORDER BY ordinal",
+                                                   (retry["jobId"],))]
+        self.assertEqual(rows, [{"ordinal": 2, "ip": "192.0.2.44", "retryable": 1}])
+        while self.bulk.get_import("alice", retry["jobId"])["state"] in {"queued", "running"}:
+            self.assertTrue(self.bulk.run_once("mixed-import-retry-worker"))
+        self.assertEqual((self.bulk.get_import("alice", retry["jobId"])["inserted"],
+                          self.bulk.get_import("alice", retry["jobId"])["failed"]), (1, 0))
+        self.assertEqual(len(self.bulk.import_failures("alice", job["jobId"])["items"]), 2)
+
+    def test_async_import_recovers_durable_staging_after_worker_lease_expiry(self):
+        job = self.bulk.create_import("alice", "203.0.113.80\n203.0.113.81\n", "", "recover-import")
+        claimed = self.bulk._claim("dead-import-worker")
+        self.assertEqual(claimed[0:2], ("import", job["jobId"]))
+        self.bulk._stage_import(job["jobId"], "dead-import-worker", claimed[2])
+        self.assertFalse(self.bulk.run_once("concurrent-import-worker"))
+        with self.bulk._db() as c:
+            c.execute("UPDATE probe_server_bulk_lease SET lease_until=0 WHERE id=1")
+        while self.bulk.get_import("alice", job["jobId"])["state"] in {"queued", "running"}:
+            self.assertTrue(self.bulk.run_once("replacement-import-worker"))
+        result = self.bulk.get_import("alice", job["jobId"])
+        self.assertEqual((result["state"], result["inserted"], result["failed"]), ("done", 2, 0))
+
+    def test_async_import_100k_uses_bounded_asset_batches(self):
+        text = "\n".join(
+            f"10.{1 + i // 65024}.{(i // 254) % 256}.{i % 254 + 1}" for i in range(100_000)
+        )
+        max_group = "😀" * 128
+        job = self.bulk.create_import("alice", text, max_group, "import-100k")
+        runs = 0
+        while self.bulk.get_import("alice", job["jobId"])["state"] in {"queued", "running"}:
+            self.assertTrue(self.bulk.run_once("large-import-worker"))
+            runs += 1
+        result = self.bulk.get_import("alice", job["jobId"])
+        self.assertEqual((result["state"], result["total"], result["inserted"], result["failed"]),
+                         ("done", 100_000, 100_000, 0))
+        self.assertGreater(runs, 300)
+        with self.bulk._db() as c:
+            staged_groups = c.execute("SELECT COUNT(*) FROM probe_server_import_items WHERE job_id=? AND group_name!=''",
+                                       (job["jobId"],)).fetchone()[0]
+        self.assertEqual(staged_groups, 0)
+        self.assertEqual(self.assets.get_server(1).server_group, max_group)
 
     def test_all_matching_label_matches_server_list_and_count(self):
         included = [self.add("192.0.2.41", labels=("north",)),
@@ -284,6 +425,30 @@ class ProbeBulkTests(unittest.TestCase):
             retry_items = [dict(row) for row in c.execute("SELECT server_id,state FROM probe_server_bulk_items WHERE job_id=?",
                                                            (retry["jobId"],))]
         self.assertEqual(retry_items, [{"server_id": ids[1], "state": "done"}])
+
+    def test_import_cleanup_expires_terminal_history_and_protects_active_retry_chain(self):
+        source = self.bulk.create_import("alice", "192.0.2.70\n", "", "cleanup-import-source")
+        self.assertTrue(self.bulk.run_once("cleanup-import-worker"))
+        with patch.object(ProbeStore, "import_servers_chunk", side_effect=RuntimeError("temporary insert error")):
+            self.assertTrue(self.bulk.run_once("cleanup-import-worker"))
+        old = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        with self.bulk._db() as c:
+            c.execute("UPDATE probe_server_import_jobs SET updated_at=? WHERE id=?", (old, source["jobId"]))
+        retry = self.bulk.retry_import_failures("alice", source["jobId"], "cleanup-import-retry")
+
+        self.bulk.cleanup_once()
+        with self.bulk._db() as c:
+            self.assertIsNotNone(c.execute("SELECT 1 FROM probe_server_import_jobs WHERE id=?", (source["jobId"],)).fetchone())
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM probe_server_import_items WHERE job_id=?", (source["jobId"],)).fetchone()[0], 1)
+            self.assertIsNotNone(c.execute("SELECT 1 FROM probe_server_import_jobs WHERE id=?", (retry["jobId"],)).fetchone())
+
+        with self.bulk._db() as c:
+            c.execute("UPDATE probe_server_import_jobs SET state='done',updated_at=? WHERE id=?", (old, retry["jobId"]))
+        self.bulk.cleanup_once()
+        with self.bulk._db() as c:
+            for job_id in (source["jobId"], retry["jobId"]):
+                self.assertIsNone(c.execute("SELECT 1 FROM probe_server_import_jobs WHERE id=?", (job_id,)).fetchone())
+                self.assertEqual(c.execute("SELECT COUNT(*) FROM probe_server_import_items WHERE job_id=?", (job_id,)).fetchone()[0], 0)
 
     def test_100k_selection_uses_sql_materialization(self):
         with self.bulk._db() as c:

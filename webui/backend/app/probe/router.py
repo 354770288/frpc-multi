@@ -29,7 +29,9 @@ from .store import (
     MAX_SERVER_IMPORT_ITEMS, MAX_SERVER_IMPORT_TEXT_BYTES, DiscoverPageQuery,
     ProbeStore, ServerImportLimitError, ServerPageQuery, unpack_labels, validate_probe_addr,
 )
-from .bulk import MAX_FILTER_IDS, MAX_SELECTION_IDS, ServerBulkStore
+from .import_parser import parse_batch_text, reject_nonstandard_json_constant
+from .bulk import (MAX_ASYNC_IMPORT_BYTES, MAX_FILTER_IDS, MAX_SELECTION_IDS,
+                   AsyncImportPayloadTooLarge, ServerBulkStore)
 from .saved_views import (
     DEFAULT_SERVER_VIEW_COLUMNS, ServerViewNameConflictError, ServerViewStore,
 )
@@ -377,54 +379,6 @@ class ServerPatch(BaseModel):
 class ServerBatchImport(BaseModel):
     text: str
     group: str = ""
-
-
-def _json_entry_to_item(entry: object, default_group: str = "") -> dict | None:
-    """JSON 对象/字符串 → 导入条目；不合法返回 None。"""
-    if isinstance(entry, str):
-        return {"ip": entry, "label": "", "group": default_group}
-    if isinstance(entry, dict):
-        return {
-            "ip": str(entry.get("ip", "")),
-            "label": str(entry.get("label", "") or ""),
-            "group": str(entry.get("group", "") or "") or default_group,
-        }
-    return None
-
-
-def parse_batch_text(text: str, default_group: str = "") -> list[dict]:
-    """解析批量导入文本：每行「IP」或「IP 标签」；行内或整体为 JSON 时走 JSON 解析。"""
-    stripped = (text or "").lstrip()
-    if stripped.startswith("[") or stripped.startswith("{"):
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            data = None
-        if data is not None:
-            if isinstance(data, dict):
-                data = data.get("servers", [])
-            if isinstance(data, list):
-                items = [item for item in (_json_entry_to_item(entry, default_group) for entry in data) if item]
-                if items:
-                    return items
-            # JSON 解析结果为空/结构不符时落到逐行，继续报出具体哪行非法
-    items: list[dict] = []
-    for line in text.splitlines():
-        parts = line.replace(",", " ").replace(";", " ").split()
-        if not parts:
-            continue
-        if parts[0].startswith("{"):
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                entry = None
-            if entry is not None:
-                item = _json_entry_to_item(entry, default_group)
-                if item is not None:
-                    items.append(item)
-                    continue
-        items.append({"ip": parts[0], "label": parts[1] if len(parts) > 1 else "", "group": default_group})
-    return items
 
 
 @router.get("/servers")
@@ -866,6 +820,68 @@ def batch_import(payload: ServerBatchImport, user: Annotated[str, Depends(requir
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(user, "probe_import_servers", message=f"新增 {inserted} 台，跳过已存在 {skipped} 台")
     return {"inserted": inserted, "skipped": skipped}
+
+
+@router.post("/server-import-jobs")
+async def create_server_import_job(request: Request, user: Annotated[str, Depends(require_auth)]):
+    """Persist a bounded import request and let the shared bulk worker apply it."""
+    max_request_bytes = MAX_ASYNC_IMPORT_BYTES + 1_048_576
+    try:
+        declared = int(request.headers.get("content-length", "0") or 0)
+    except ValueError:
+        declared = 0
+    if declared > max_request_bytes:
+        raise HTTPException(status_code=413, detail="异步导入请求体过大")
+    chunks = bytearray()
+    async for chunk in request.stream():
+        chunks.extend(chunk)
+        if len(chunks) > max_request_bytes:
+            raise HTTPException(status_code=413, detail="异步导入请求体过大")
+    try:
+        payload = json.loads(chunks, parse_constant=reject_nonstandard_json_constant)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="请求 JSON 无效") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+        raise HTTPException(status_code=400, detail="text 须为字符串")
+    group = str(payload.get("group", "") or "")
+    try:
+        result = server_bulk_store().create_import(user, payload["text"], group,
+                                                   str(payload.get("idempotencyKey", "")))
+    except AsyncImportPayloadTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit(user, "probe_import_servers_async", message=f"导入任务 {result['jobId']} 已排队")
+    return result
+
+
+@router.get("/server-import-jobs/{job_id}")
+def get_server_import_job(job_id: str, user: Annotated[str, Depends(require_auth)]):
+    try:
+        return server_bulk_store().get_import(user, job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="导入任务不存在") from exc
+
+
+@router.get("/server-import-jobs/{job_id}/failures")
+def get_server_import_failures(job_id: str, user: Annotated[str, Depends(require_auth)],
+                               cursor: str = "0", limit: int = Query(default=100, ge=1, le=500)):
+    try:
+        return server_bulk_store().import_failures(user, job_id, cursor=cursor, limit=limit)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="导入任务不存在") from exc
+
+
+@router.post("/server-import-jobs/{job_id}/retry-failed")
+def retry_server_import_failures(job_id: str, payload: dict, user: Annotated[str, Depends(require_auth)]):
+    try:
+        result = server_bulk_store().retry_import_failures(user, job_id, str(payload.get("idempotencyKey", "")))
+        audit(user, "probe_import_servers_async_retry", message=f"重试导入任务 {result['jobId']}")
+        return result
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="导入任务不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

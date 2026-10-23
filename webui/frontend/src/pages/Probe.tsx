@@ -22,6 +22,7 @@ import { ConnBadge, ProbeStatCards, SpeedText } from './probe/ProbeParts';
 import { useDiscovery } from './probe/useDiscovery';
 import { useServers } from './probe/useServers';
 import { useServerBulk } from './probe/useServerBulk';
+import { useServerImport } from './probe/useServerImport';
 import { batchTagDialogTitle, canFreezeServerSelection, canRemoveLegacyLabels, canSubmitServerBatch, legacyServerBatchPayload } from './probe/serverBulkUi';
 import { TestNodesDialog } from './probe/TestNodesDialog';
 import { ProbeJobsPanel } from './probe/ProbeJobsPanel';
@@ -344,6 +345,11 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
     void servers.refreshAll({ recoverOutOfRange: true }).catch(() => {});
     void loadGroups();
   }, [serverBulk.job?.jobId, serverBulk.job?.state]);
+  const serverImport = useServerImport(() => {
+    void servers.refreshAll({ recoverOutOfRange: true }).catch(() => {});
+    void loadGroups();
+    void loadDashboard();
+  });
 
   useEffect(() => {
     if(section==='test')return;
@@ -736,8 +742,8 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                 <Button size="sm" variant="outline" onClick={() => setTagsOpen(true)}>
                   <Tag size={13} />标签管理
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
-                  <ListPlus size={13} />批量导入
+                <Button size="sm" variant="outline" onClick={() => setImportOpen(true)} disabled={!serverImport.canStartNew && !serverImport.hasPendingSubmission}>
+                  <ListPlus size={13} />{serverImport.hasPendingSubmission ? '恢复待提交导入' : serverImport.hasPendingRetry ? '先恢复失败项重试' : '批量导入'}
                 </Button>
                 <Button size="sm" onClick={() => setEditing('new')}><Plus size={13} />添加</Button>
               </div>
@@ -1054,6 +1060,10 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
         </TabsContent>}
       </Tabs>
 
+      {serverImport.job && (
+        <ServerImportStatus task={serverImport} />
+      )}
+
       {editing && (
         <ServerDialog
           server={editing === 'new' ? null : editing}
@@ -1071,12 +1081,8 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
         <ImportDialog
           groups={groups.map((group) => group.name)}
           onClose={() => setImportOpen(false)}
-          onImported={() => {
-            setImportOpen(false);
-            loadDashboard();
-            servers.refreshAll().catch(() => {});
-            loadGroups();
-          }}
+          task={serverImport}
+          onSubmitted={() => setImportOpen(false)}
         />
       )}
       {deleting && (
@@ -1288,28 +1294,89 @@ function ServerDialog({ server, groups, onClose, onSaved }: {
   );
 }
 
+type ServerImportTask = ReturnType<typeof useServerImport>;
+
+function ServerImportStatus({ task }: { task: ServerImportTask }) {
+  const { job } = task;
+  if (!job) return null;
+  const terminal = ['done', 'partial', 'failed'].includes(job.state);
+  const percent = job.total ? Math.min(100, Math.round(job.processed / job.total * 100)) : (terminal ? 100 : 0);
+  const stateLabel: Record<typeof job.state, string> = {
+    queued: '排队中', running: '导入中', done: '已完成', partial: '部分完成', failed: '失败',
+  };
+  return (
+    <Card className="mt-4 border-primary/30" aria-label="服务器导入任务">
+      <CardContent className="p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="font-medium text-sm">服务器导入 · {stateLabel[job.state]}</div>
+          <span className="text-xs text-muted-foreground">{job.processed}/{job.total} 条（{percent}%）</span>
+          <div className="ml-auto flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => task.refreshJob()} disabled={task.submitting || task.retrying}>
+              <RefreshCw size={13} />刷新状态
+            </Button>
+            {terminal && <Button size="sm" variant="ghost" onClick={task.clearJob} disabled={task.unresolvedRequest}>关闭</Button>}
+          </div>
+        </div>
+        <div className="mt-2 h-2 overflow-hidden rounded bg-muted" role="progressbar" aria-label="导入进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+          <div className="h-full bg-primary transition-[width]" style={{ width: `${percent}%` }} />
+        </div>
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <span>新增 {job.inserted}</span><span>跳过 {job.skipped}</span><span>失败 {job.failed}（可重试 {job.retryableFailed ?? 0}）</span>
+          {job.error && <span className="text-destructive">{job.error}</span>}
+          {task.error && <span role="alert" className="text-destructive">{task.error}</span>}
+          {task.hasPendingSubmission && <span role="status" className="text-warning-foreground">有一项新导入等待确认，请先恢复待提交请求。</span>}
+          {task.pendingRetry?.jobId === job.jobId && <span role="status">失败项重试等待确认；重试会复用原幂等键。</span>}
+        </div>
+        {terminal && !!job.failed && (
+          <div className="mt-3">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium">失败明细（已载入 {task.failures.length} 条）</span>
+              {Number(job.retryableFailed) > 0 && <Button size="sm" variant="outline" onClick={() => task.retryFailed()} disabled={task.retrying || task.hasPendingSubmission || (!!task.pendingRetry && task.pendingRetry.jobId !== job.jobId)}>
+                {task.retrying ? '提交重试中…' : task.pendingRetry?.jobId === job.jobId ? '恢复失败项重试' : `重试失败项（${job.retryableFailed}）`}
+              </Button>}
+              {task.failureCursor !== null && <Button size="sm" variant="ghost" onClick={() => task.loadMoreFailures()} disabled={task.loadingFailures}>{task.loadingFailures ? '加载中…' : '加载更多'}</Button>}
+              {task.failureLoadError && <><span role="alert" className="text-xs text-destructive">{task.failureLoadError}</span><Button size="sm" variant="outline" onClick={() => task.retryLoadFailures()} disabled={task.loadingFailures}>{task.loadingFailures ? '正在重试…' : '重试加载失败明细'}</Button></>}
+            </div>
+            <div className="max-h-52 overflow-auto rounded border">
+              <table className="w-full text-left text-xs">
+                <thead className="sticky top-0 bg-muted"><tr><th className="p-2">行</th><th className="p-2">输入</th><th className="p-2">原因</th><th className="p-2">处理</th></tr></thead>
+                <tbody>{task.failures.map((failure, index) => <tr key={`${failure.line}-${index}`} className="border-t"><td className="p-2 font-mono">{failure.line}</td><td className="max-w-64 truncate p-2 font-mono" title={failure.input}>{failure.input}</td><td className="p-2">{failure.error}</td><td className="p-2">{failure.retryable ? '可重试' : '永久失败'}</td></tr>)}</tbody>
+              </table>
+              {!task.failures.length && <div className="p-3 text-xs text-muted-foreground">{task.loadingFailures ? '正在加载失败明细…' : '暂无失败明细'}</div>}
+              {task.failures.length > 0 && !(Number(job.retryableFailed) > 0) && <div className="border-t p-3 text-xs text-muted-foreground">这些失败项均不可重试。</div>}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 /** 批量导入弹窗：粘贴 IP 行（每行「IP」或「IP 标签」）或 JSON 数组；分组必选。 */
-function ImportDialog({ groups, onClose, onImported }: {
+function ImportDialog({ groups, onClose, onSubmitted, task }: {
   groups: string[];
   onClose: () => void;
-  onImported: () => void;
+  onSubmitted: () => void;
+  task: ServerImportTask;
 }) {
-  const [text, setText] = useState('');
-  const [group, setGroup] = useState('');
-  const [importing, setImporting] = useState(false);
+  const [text, setText] = useState(() => task.pendingRequest?.text ?? '');
+  const [group, setGroup] = useState(() => task.pendingRequest?.group ?? '');
+  const [sizeError, setSizeError] = useState('');
 
   const submit = async () => {
     if (!text.trim()) { toast.error('请粘贴要导入的内容'); return; }
     if (!group) { toast.error('请选择导入分组'); return; }
-    setImporting(true);
+    if (new TextEncoder().encode(text).length > 16 * 1024 * 1024) {
+      setSizeError('内容超过 16 MiB 上限，请拆分后导入');
+      return;
+    }
+    setSizeError('');
     try {
-      const result = await probeApi.importServers({ text, group });
-      toast.success(`导入完成：新增 ${result.inserted} 台，跳过已存在 ${result.skipped} 台`);
-      onImported();
+      await task.submit(text, group);
+      toast.success('导入任务已提交，可在任务进度中查看结果');
+      onSubmitted();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '导入失败');
-    } finally {
-      setImporting(false);
     }
   };
 
@@ -1318,7 +1385,7 @@ function ImportDialog({ groups, onClose, onImported }: {
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
           <Label className="text-xs">导入分组（必选）</Label>
-          <Select value={group} onValueChange={setGroup}>
+          <Select value={group} onValueChange={setGroup} disabled={task.hasPendingSubmission}>
             <SelectTrigger><SelectValue placeholder="选择分组（可在「分组管理」中提前创建）" /></SelectTrigger>
             <SelectContent>
               <SelectGroup>
@@ -1332,16 +1399,20 @@ function ImportDialog({ groups, onClose, onImported }: {
         <div className="flex flex-col gap-1.5">
           <Label className="text-xs">导入内容</Label>
           <Textarea
-            rows={10} value={text} onChange={(e) => setText(e.target.value)}
+            rows={10} value={text} onChange={(e) => setText(e.target.value)} readOnly={task.hasPendingSubmission}
             placeholder={'每行一台：IP 或「IP 标签」\n1.2.3.4\n5.6.7.8 香港VPS\n\n也支持 JSON：[{"ip":"1.2.3.4","label":"A","group":"g"}]'}
             className="max-h-56 min-h-36 overflow-y-auto font-mono text-xs"
           />
+          {sizeError && <p role="alert" className="text-xs text-destructive">{sizeError}</p>}
         </div>
-        <p className="text-[11px] leading-4 text-muted-foreground">已存在的 IP 自动跳过；JSON 行自带分组时以行内分组优先；原「FRPC穿透测试」项目导出的 JSON 可直接粘贴。</p>
+        <p className="text-[11px] leading-4 text-muted-foreground">已存在的 IP 自动跳过；JSON 行自带分组时以行内分组优先；支持最多 100,000 项、16 MiB。任务提交后可关闭弹窗，状态会在页面切换和刷新后恢复。</p>
+        {task.hasPendingSubmission && <p className="text-xs text-muted-foreground">已恢复待确认的提交；原内容已锁定，重试会沿用原幂等键。</p>}
+        {task.hasPendingRetry && <p className="text-xs text-destructive">有失败项重试请求等待确认，请先在任务卡恢复该请求。</p>}
+        {task.error && <p role="alert" className="text-xs text-destructive">{task.error}</p>}
       </div>
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>取消</Button>
-        <Button onClick={submit} disabled={importing}>{importing ? '导入中…' : '导入'}</Button>
+        <Button onClick={task.hasPendingSubmission ? () => task.retrySubmit().then(() => { toast.success('导入任务已提交'); onSubmitted(); }).catch(() => {}) : submit} disabled={task.submitting || task.isActive || task.hasPendingRetry}>{task.submitting ? '提交中…' : task.hasPendingSubmission ? '重试提交' : '导入'}</Button>
       </div>
     </Overlay>
   );

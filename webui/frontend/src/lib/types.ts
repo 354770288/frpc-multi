@@ -431,6 +431,21 @@ export type ServerBulkJob = {
   retryOf: string | null;
 };
 export type ServerBulkFailure = { serverId: number; ip: string; error: string };
+export type ServerImportJob = {
+  jobId: string;
+  state: 'queued' | 'running' | 'done' | 'partial' | 'failed';
+  total: number;
+  processed: number;
+  inserted: number;
+  skipped: number;
+  failed: number;
+  retryableFailed: number;
+  createdAt: string;
+  updatedAt: string;
+  error: string | null;
+};
+export type ServerImportFailure = { line: number; input: string; error: string; retryable: boolean };
+export type ServerImportFailuresPage = { items: ServerImportFailure[]; nextCursor: string | null };
 
 // ---- CN2 路由追踪（节点轮询模型） ----
 

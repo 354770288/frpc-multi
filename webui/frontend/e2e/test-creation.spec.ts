@@ -1031,3 +1031,492 @@ test('primary pages fit a narrow viewport',async ({page})=>{
     expect(sizes.content,`${path} overflows document`).toBeLessThanOrEqual(sizes.viewport);
   }
 });
+
+test('server import tracks delayed progress, restores after reload, pages failures and retries them', async ({ page }) => {
+  let currentJob = 'import-qa-job';
+  let polls = 0;
+  let retrySubmitted = false;
+  const failureRequests: string[] = [];
+  let assetPageRequests = 0;
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === '/api/probe/servers/cursor' || path === '/api/probe/servers') assetPageRequests++;
+  });
+  const json = (value: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
+  await page.route('**/api/probe/server-import-jobs**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/probe/server-import-jobs' && request.method() === 'POST') {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return route.fulfill(json({ jobId: currentJob, state: 'queued', total: 3, processed: 0, inserted: 0, skipped: 0, failed: 0, retryableFailed: 0, createdAt: 'now', updatedAt: 'now', error: null }));
+    }
+    if (url.pathname.endsWith('/retry-failed') && request.method() === 'POST') {
+      retrySubmitted = true;
+      currentJob = 'import-qa-retry';
+      polls = 0;
+      return route.fulfill(json({ jobId: currentJob, state: 'queued', total: 2, processed: 0, inserted: 0, skipped: 0, failed: 0, retryableFailed: 0, createdAt: 'now', updatedAt: 'now', error: null }));
+    }
+    if (url.pathname.endsWith('/failures')) {
+      failureRequests.push(url.search);
+      const cursor = url.searchParams.get('cursor');
+      return route.fulfill(json({
+        items: [cursor ? { line: 3, input: 'bad-row-2', error: 'invalid address', retryable: true } : { line: 2, input: 'bad-row-1', error: 'invalid address', retryable: true }],
+        nextCursor: cursor ? null : '2',
+      }));
+    }
+    if (url.pathname === `/api/probe/server-import-jobs/${currentJob}`) {
+      polls++;
+      if (currentJob === 'import-qa-retry') {
+        return route.fulfill(json({ jobId: currentJob, state: polls < 2 ? 'running' : 'done', total: 2, processed: polls < 2 ? 1 : 2, inserted: polls < 2 ? 1 : 2, skipped: 0, failed: 0, retryableFailed: 0, createdAt: 'now', updatedAt: 'now', error: null }));
+      }
+      if (polls === 1) return route.fulfill(json({ jobId: currentJob, state: 'running', total: 3, processed: 1, inserted: 1, skipped: 0, failed: 0, createdAt: 'now', updatedAt: 'now', error: null }));
+      return route.fulfill(json({ jobId: currentJob, state: 'partial', total: 3, processed: 3, inserted: 1, skipped: 0, failed: 2, retryableFailed: 2, createdAt: 'now', updatedAt: 'now', error: null }));
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/servers');
+  await page.getByRole('button', { name: '批量导入' }).click();
+  await page.getByPlaceholder(/每行一台/).fill('192.0.2.1\nbad-row-1\nbad-row-2');
+  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('option', { name: 'QA' }).click();
+  await page.getByRole('button', { name: '导入', exact: true }).click();
+  await expect(page.getByText('导入任务已提交，可在任务进度中查看结果')).toBeVisible();
+  await expect(page.getByText('服务器导入 · 部分完成')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText('失败明细（已载入 1 条）')).toBeVisible();
+  await expect(page.getByText('bad-row-1')).toBeVisible();
+  await page.getByRole('button', { name: '加载更多' }).click();
+  await expect(page.getByText('bad-row-2')).toBeVisible();
+  expect(failureRequests.some((query) => query.includes('cursor=2'))).toBe(true);
+
+  await page.reload();
+  await expect(page.getByText('服务器导入 · 部分完成')).toBeVisible();
+  await expect(page.getByText('bad-row-1')).toBeVisible();
+  await page.getByRole('button', { name: '重试失败项' }).click();
+  expect(retrySubmitted).toBe(true);
+  await expect(page.getByText('服务器导入 · 已完成')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText('新增 2', { exact: true })).toBeVisible();
+  expect(assetPageRequests).toBeGreaterThan(1);
+  expect(await page.evaluate(() => sessionStorage.getItem('probe_server_import_job'))).toContain('import-qa-retry');
+});
+
+test('server import restores and replays an uncertain submission with the same body and key', async ({ page }) => {
+  const submissions: Record<string, unknown>[] = [];
+  const json = (value: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
+  await page.route('**/api/probe/server-import-jobs**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/probe/server-import-jobs' && request.method() === 'POST') {
+      submissions.push(request.postDataJSON());
+      if (submissions.length === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 900));
+        return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'response lost after acceptance' }) });
+      }
+      return route.fulfill(json({ jobId: 'recovered-import', state: 'queued', total: 2, processed: 0, inserted: 0, skipped: 0, failed: 0, retryableFailed: 0, createdAt: 'now', updatedAt: 'now', error: null }));
+    }
+    if (url.pathname === '/api/probe/server-import-jobs/recovered-import') {
+      return route.fulfill(json({ jobId: 'recovered-import', state: 'running', total: 2, processed: 1, inserted: 0, skipped: 0, failed: 1, retryableFailed: 0, createdAt: 'now', updatedAt: 'now', error: null }));
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/servers');
+  await page.getByRole('button', { name: '批量导入' }).click();
+  const importText = '198.51.100.10\n198.51.100.11';
+  await page.getByPlaceholder(/每行一台/).fill(importText);
+  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('option', { name: 'QA' }).click();
+  const postStarted = page.waitForRequest((request) => request.url().endsWith('/api/probe/server-import-jobs') && request.method() === 'POST');
+  await page.getByRole('button', { name: '导入', exact: true }).click();
+  await postStarted;
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('probe_server_import_pending'))).toContain('198.51.100.10');
+  const persistedBeforeLeave = await page.evaluate(() => JSON.parse(sessionStorage.getItem('probe_server_import_pending') || 'null')) as Record<string, unknown>;
+  await page.goto('/tests/new');
+  await page.goto('/servers');
+
+  await page.getByRole('button', { name: '恢复待提交导入' }).click();
+  const restoredTextarea = page.getByPlaceholder(/每行一台/);
+  await expect(restoredTextarea).toHaveValue(importText);
+  await expect(restoredTextarea).toHaveAttribute('readonly', '');
+  await page.getByRole('button', { name: '重试提交' }).click();
+  await expect(page.getByText('服务器导入 · 导入中')).toBeVisible();
+  expect(submissions).toHaveLength(2);
+  expect(submissions[1]).toEqual(submissions[0]);
+  expect(submissions[1].idempotencyKey).toBe(persistedBeforeLeave.idempotencyKey);
+  await expect(page.getByRole('button', { name: '批量导入' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '重试失败项' })).toHaveCount(0);
+  await expect(page.getByText(/失败明细/)).toHaveCount(0);
+});
+
+test('server import failure retry reuses its persisted key after an uncertain response', async ({ page }) => {
+  const retryBodies: Record<string, unknown>[] = [];
+  let retryPosts = 0;
+  let retryState = false;
+  let failureReads = 0;
+  const json = (value: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
+  await page.route('**/api/probe/server-import-jobs**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/probe/server-import-jobs' && request.method() === 'POST') {
+      return route.fulfill(json({ jobId: 'failed-import', state: 'partial', total: 1, processed: 1, inserted: 0, skipped: 0, failed: 1, retryableFailed: 1, createdAt: 'now', updatedAt: 'now', error: null }));
+    }
+    if (url.pathname.endsWith('/retry-failed') && request.method() === 'POST') {
+      retryPosts++;
+      retryBodies.push(request.postDataJSON());
+      if (retryPosts === 1) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'retry response lost' }) });
+      retryState = true;
+      return route.fulfill(json({ jobId: 'retried-import', state: 'queued', total: 1, processed: 0, inserted: 0, skipped: 0, failed: 0, retryableFailed: 0, createdAt: 'now', updatedAt: 'now', error: null }));
+    }
+    if (url.pathname.endsWith('/failures')) {
+      failureReads++;
+      if (failureReads === 1) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'failure page unavailable' }) });
+      return route.fulfill(json({ items: [{ line: 1, input: 'bad-row', error: 'invalid address', retryable: true }], nextCursor: null }));
+    }
+    if (url.pathname.endsWith('/retried-import')) return route.fulfill(json({ jobId: 'retried-import', state: 'done', total: 1, processed: 1, inserted: 1, skipped: 0, failed: 0, retryableFailed: 0, createdAt: 'now', updatedAt: 'now', error: null }));
+    if (url.pathname.endsWith('/failed-import')) return route.fulfill(json({ jobId: 'failed-import', state: 'partial', total: 1, processed: 1, inserted: 0, skipped: 0, failed: 1, retryableFailed: 1, createdAt: 'now', updatedAt: 'now', error: null }));
+    return route.fallback();
+  });
+
+  await page.goto('/servers');
+  await page.getByRole('button', { name: '批量导入' }).click();
+  await page.getByPlaceholder(/每行一台/).fill('bad-row');
+  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('option', { name: 'QA' }).click();
+  await page.getByRole('button', { name: '导入', exact: true }).click();
+  await expect(page.getByText('failure page unavailable')).toBeVisible();
+  await page.getByRole('button', { name: '重试加载失败明细' }).click();
+  await expect(page.getByText('bad-row')).toBeVisible();
+  await page.getByRole('button', { name: '重试失败项' }).click();
+  await expect(page.getByText('retry response lost')).toBeVisible();
+  const persistedRetry = await page.evaluate(() => JSON.parse(sessionStorage.getItem('probe_server_import_retry') || 'null')) as Record<string, unknown>;
+  expect(persistedRetry.idempotencyKey).toBe(retryBodies[0].idempotencyKey);
+  await page.getByRole('button', { name: '恢复失败项重试', exact: true }).click();
+  await expect(page.getByText('服务器导入 · 已完成')).toBeVisible();
+  expect(retryState).toBe(true);
+  expect(retryBodies).toHaveLength(2);
+  expect(retryBodies[1]).toEqual(retryBodies[0]);
+  expect(await page.evaluate(() => sessionStorage.getItem('probe_server_import_retry'))).toBeNull();
+});
+
+test('an uncertain new import keeps its key and blocks old retry/close actions', async ({ page }) => {
+  let importPosts = 0;
+  const json = (value: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
+  await page.route('**/api/probe/server-import-jobs**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/probe/server-import-jobs' && request.method() === 'POST') {
+      importPosts++;
+      if (importPosts === 1) return route.fulfill(json({ jobId: 'older-partial-import', state: 'partial', total: 1, processed: 1, inserted: 0, skipped: 0, failed: 1, retryableFailed: 1, createdAt: 'now', updatedAt: 'now', error: null }));
+      return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'uncertain new submission' }) });
+    }
+    if (url.pathname.endsWith('/failures')) return route.fulfill(json({ items: [{ line: 1, input: 'bad-row', error: 'invalid address', retryable: true }], nextCursor: null }));
+    if (url.pathname.endsWith('/older-partial-import')) return route.fulfill(json({ jobId: 'older-partial-import', state: 'partial', total: 1, processed: 1, inserted: 0, skipped: 0, failed: 1, retryableFailed: 1, createdAt: 'now', updatedAt: 'now', error: null }));
+    return route.fallback();
+  });
+
+  await page.goto('/servers');
+  await page.getByRole('button', { name: '批量导入' }).click();
+  await page.getByPlaceholder(/每行一台/).fill('bad-row');
+  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('option', { name: 'QA' }).click();
+  await page.getByRole('button', { name: '导入', exact: true }).click();
+  await expect(page.getByText('失败明细（已载入 1 条）')).toBeVisible();
+
+  await page.getByRole('button', { name: '批量导入' }).click();
+  const pendingText = '198.51.100.21\n198.51.100.22';
+  await page.getByPlaceholder(/每行一台/).fill(pendingText);
+  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('option', { name: 'QA' }).click();
+  await page.getByRole('button', { name: '导入', exact: true }).click();
+  await expect(page.getByLabel('服务器导入任务').getByText('uncertain new submission')).toBeVisible();
+  const pendingBeforeClose = await page.evaluate(() => JSON.parse(sessionStorage.getItem('probe_server_import_pending') || 'null')) as Record<string, unknown>;
+  await page.getByRole('button', { name: '取消' }).click();
+
+  await expect(page.getByRole('button', { name: '重试失败项' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '关闭' })).toBeDisabled();
+  await expect(page.getByText('有一项新导入等待确认，请先恢复待提交请求。')).toBeVisible();
+  await page.getByRole('button', { name: '恢复待提交导入' }).click();
+  await expect(page.getByPlaceholder(/每行一台/)).toHaveValue(pendingText);
+  await page.getByRole('button', { name: '取消' }).click();
+  const pendingAfter = await page.evaluate(() => JSON.parse(sessionStorage.getItem('probe_server_import_pending') || 'null')) as Record<string, unknown>;
+  expect(pendingAfter.idempotencyKey).toBe(pendingBeforeClose.idempotencyKey);
+  expect(pendingAfter.text).toBe(pendingText);
+  expect(importPosts).toBe(2);
+});
+
+test('a delayed status read for an old import cannot overwrite a newly accepted job', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('probe_server_import_job', JSON.stringify({
+    jobId: 'old-terminal-job', state: 'done', total: 1, processed: 1, inserted: 1, skipped: 0, failed: 0, retryableFailed: 0,
+    createdAt: 'old', updatedAt: 'old', error: null,
+  })));
+  let oldReadStarted = false;
+  let oldReadFinished = false;
+  const json = (value: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
+  await page.route('**/api/probe/server-import-jobs**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/probe/server-import-jobs/old-terminal-job') {
+      oldReadStarted = true;
+      await new Promise((resolve) => setTimeout(resolve, 1800));
+      oldReadFinished = true;
+      return route.fulfill(json({ jobId: 'old-terminal-job', state: 'done', total: 1, processed: 1, inserted: 1, skipped: 0, failed: 0, retryableFailed: 0, createdAt: 'old', updatedAt: 'old', error: null }));
+    }
+    if (url.pathname === '/api/probe/server-import-jobs' && request.method() === 'POST') {
+      return route.fulfill(json({ jobId: 'new-running-job', state: 'queued', total: 2, processed: 0, inserted: 0, skipped: 0, failed: 0, retryableFailed: 0, createdAt: 'new', updatedAt: 'new', error: null }));
+    }
+    if (url.pathname === '/api/probe/server-import-jobs/new-running-job') {
+      return route.fulfill(json({ jobId: 'new-running-job', state: 'partial', total: 2, processed: 2, inserted: 1, skipped: 0, failed: 1, retryableFailed: 0, createdAt: 'new', updatedAt: 'new', error: null }));
+    }
+    if (url.pathname.endsWith('/failures')) return route.fulfill(json({ items: [{ line: 2, input: 'new-job-failure', error: 'permanent', retryable: false }], nextCursor: null }));
+    return route.fallback();
+  });
+
+  await page.goto('/servers');
+  await expect.poll(() => oldReadStarted).toBe(true);
+  await page.getByRole('button', { name: '批量导入' }).click();
+  await page.getByPlaceholder(/每行一台/).fill('192.0.2.31\n192.0.2.32');
+  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('option', { name: 'QA' }).click();
+  await page.getByRole('button', { name: '导入', exact: true }).click();
+  await expect(page.getByLabel('服务器导入任务').getByText('new-job-failure')).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('probe_server_import_job') || 'null').jobId)).toBe('new-running-job');
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('probe_server_import_job') || 'null').state)).toBe('partial');
+
+  await expect.poll(() => oldReadFinished).toBe(true);
+  await expect(page.getByLabel('服务器导入任务').getByText('new-job-failure')).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('probe_server_import_job') || 'null').jobId)).toBe('new-running-job');
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('probe_server_import_job') || 'null').state)).toBe('partial');
+});
+
+test('a delayed failure page for an old import does not block a new quick failure page', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('probe_server_import_job', JSON.stringify({
+    jobId: 'old-failed-job', state: 'partial', total: 1, processed: 1, inserted: 0, skipped: 0, failed: 1, retryableFailed: 1,
+    createdAt: 'old', updatedAt: 'old', error: null,
+  })));
+  let oldFailureStarted = false;
+  let oldFailureFinished = false;
+  let failureRequests = 0;
+  const json = (value: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
+  await page.route('**/api/probe/server-import-jobs**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/probe/server-import-jobs/old-failed-job') {
+      return route.fulfill(json({ jobId: 'old-failed-job', state: 'partial', total: 1, processed: 1, inserted: 0, skipped: 0, failed: 1, retryableFailed: 1, createdAt: 'old', updatedAt: 'old', error: null }));
+    }
+    if (url.pathname === '/api/probe/server-import-jobs' && request.method() === 'POST') {
+      return route.fulfill(json({ jobId: 'new-failed-job', state: 'queued', total: 1, processed: 0, inserted: 0, skipped: 0, failed: 0, retryableFailed: 0, createdAt: 'new', updatedAt: 'new', error: null }));
+    }
+    if (url.pathname === '/api/probe/server-import-jobs/new-failed-job') {
+      return route.fulfill(json({ jobId: 'new-failed-job', state: 'partial', total: 2, processed: 2, inserted: 0, skipped: 0, failed: 2, retryableFailed: 1, createdAt: 'new', updatedAt: 'new', error: null }));
+    }
+    if (url.pathname.endsWith('/failures')) {
+      failureRequests++;
+      if (url.pathname.includes('/old-failed-job/')) {
+        oldFailureStarted = true;
+        await new Promise((resolve) => setTimeout(resolve, 1800));
+        oldFailureFinished = true;
+        return route.fulfill(json({ items: [{ line: 1, input: 'old-row', error: 'old failure', retryable: true }], nextCursor: null }));
+      }
+      return route.fulfill(json({ items: [{ line: 1, input: 'new-row', error: 'new failure', retryable: true }, { line: 2, input: 'permanent-row', error: 'permanent failure', retryable: false }], nextCursor: null }));
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/servers');
+  await expect.poll(() => oldFailureStarted).toBe(true);
+  await page.getByRole('button', { name: '批量导入' }).click();
+  await page.getByPlaceholder(/每行一台/).fill('new-row');
+  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('option', { name: 'QA' }).click();
+  await page.getByRole('button', { name: '导入', exact: true }).click();
+
+  await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('probe_server_import_job') || 'null').jobId)).toBe('new-failed-job');
+  await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('probe_server_import_job') || 'null').state)).toBe('partial');
+  await expect(page.getByLabel('服务器导入任务').getByText('new-row')).toBeVisible();
+  await expect(page.getByLabel('服务器导入任务').getByText('permanent-row')).toBeVisible();
+  await expect(page.getByLabel('服务器导入任务').getByText('失败 2（可重试 1）')).toBeVisible();
+  await expect(page.getByRole('button', { name: '重试失败项（1）' })).toBeVisible();
+  expect(failureRequests).toBeGreaterThanOrEqual(2);
+  await expect.poll(() => oldFailureFinished).toBe(true);
+  await expect(page.getByLabel('服务器导入任务').getByText('new-row')).toBeVisible();
+  await expect(page.getByLabel('服务器导入任务').getByText('old-row')).toHaveCount(0);
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('probe_server_import_job') || 'null').jobId)).toBe('new-failed-job');
+});
+
+test('permanent import failures stay visible without a retry action', async ({ page }) => {
+  const json = (value: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
+  await page.route('**/api/probe/server-import-jobs**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/probe/server-import-jobs' && request.method() === 'POST') {
+      return route.fulfill(json({ jobId: 'permanent-only-job', state: 'partial', total: 1, processed: 1, inserted: 0, skipped: 0, failed: 1, retryableFailed: 0, createdAt: 'now', updatedAt: 'now', error: null }));
+    }
+    if (url.pathname.endsWith('/failures')) return route.fulfill(json({ items: [{ line: 1, input: 'unusable-row', error: 'permanent parse error', retryable: false }], nextCursor: null }));
+    if (url.pathname.endsWith('/permanent-only-job')) return route.fulfill(json({ jobId: 'permanent-only-job', state: 'partial', total: 1, processed: 1, inserted: 0, skipped: 0, failed: 1, retryableFailed: 0, createdAt: 'now', updatedAt: 'now', error: null }));
+    return route.fallback();
+  });
+
+  await page.goto('/servers');
+  await page.getByRole('button', { name: '批量导入' }).click();
+  await page.getByPlaceholder(/每行一台/).fill('unusable-row');
+  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('option', { name: 'QA' }).click();
+  await page.getByRole('button', { name: '导入', exact: true }).click();
+  const taskCard = page.getByLabel('服务器导入任务');
+  await expect(taskCard.getByText('unusable-row')).toBeVisible();
+  await expect(taskCard.getByText('永久失败')).toBeVisible();
+  await expect(taskCard.getByText('失败 1（可重试 0）')).toBeVisible();
+  await expect(page.getByRole('button', { name: /重试失败项/ })).toHaveCount(0);
+});
+
+test('all-matching snapshot update reports progress, pages failures, and retries them into a new job', async ({ page }) => {
+  const selectionRequests: Record<string, unknown>[] = [];
+  const jobRequests: Record<string, unknown>[] = [];
+  const retryRequests: Record<string, unknown>[] = [];
+  const failureQueries: string[] = [];
+  let updatePolls = 0;
+  let retryPolls = 0;
+  const json = (value: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
+  const selection = (selectionId: string) => ({ selectionId, state: 'ready', count: 120, processed: 120, createdAt: '2026-10-24T00:00:00Z', updatedAt: '2026-10-24T00:00:00Z', expiresAt: '2026-10-25T00:00:00Z', error: null });
+  const bulkJob = (jobId: string, state: string, total: number, processed: number, succeeded: number, failed: number, retryOf: string | null = null) => ({
+    jobId, selectionId: 'bulk-update-selection', operation: 'update', state, total, processed, succeeded, failed,
+    createdAt: '2026-10-24T00:00:00Z', updatedAt: '2026-10-24T00:00:00Z', error: null, retryOf,
+  });
+  await page.route('**/api/probe/server-selections**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'POST') {
+      selectionRequests.push(request.postDataJSON());
+      return route.fulfill(json(selection('bulk-update-selection')));
+    }
+    if (url.pathname.endsWith('/bulk-update-selection')) return route.fulfill(json(selection('bulk-update-selection')));
+    return route.fallback();
+  });
+  await page.route('**/api/probe/server-bulk-jobs**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/probe/server-bulk-jobs' && request.method() === 'POST') {
+      const body = request.postDataJSON() as Record<string, unknown>;
+      jobRequests.push(body);
+      return route.fulfill(json(bulkJob('bulk-update-job', 'queued', 120, 0, 0, 0)));
+    }
+    if (url.pathname.endsWith('/retry-failed') && request.method() === 'POST') {
+      retryRequests.push(request.postDataJSON());
+      return route.fulfill(json(bulkJob('bulk-update-retry-job', 'queued', 1, 0, 0, 0, 'bulk-update-job')));
+    }
+    if (url.pathname.endsWith('/failures')) {
+      failureQueries.push(url.search);
+      const cursor = Number(url.searchParams.get('cursor') || 0);
+      return route.fulfill(json({
+        items: cursor === 0
+          ? [{ serverId: 41, ip: '198.51.100.41', error: 'group update conflict' }]
+          : [{ serverId: 42, ip: '198.51.100.42', error: 'server changed during update' }],
+        nextCursor: cursor === 0 ? 41 : null,
+      }));
+    }
+    if (url.pathname.endsWith('/bulk-update-job')) {
+      updatePolls++;
+      return route.fulfill(json(updatePolls === 1
+        ? bulkJob('bulk-update-job', 'running', 120, 54, 54, 0)
+        : bulkJob('bulk-update-job', 'partial', 120, 120, 119, 1)));
+    }
+    if (url.pathname.endsWith('/bulk-update-retry-job')) {
+      retryPolls++;
+      return route.fulfill(json(retryPolls === 1
+        ? bulkJob('bulk-update-retry-job', 'running', 1, 0, 0, 0, 'bulk-update-job')
+        : bulkJob('bulk-update-retry-job', 'done', 1, 1, 1, 0, 'bulk-update-job')));
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/servers');
+  await page.getByRole('button', { name: /冻结全部匹配/ }).click();
+  await expect(page.getByLabel('服务器选择快照').getByText('冻结快照 120 台')).toBeVisible();
+  await page.getByRole('button', { name: '改分组', exact: true }).click();
+  const editDialog = page.getByRole('dialog', { name: '更改分组（120 台）' });
+  await editDialog.getByRole('combobox').click();
+  await page.getByRole('option', { name: 'West' }).click();
+  await editDialog.getByRole('button', { name: '更新', exact: true }).click();
+
+  await expect(page.getByLabel('批量任务进度').getByText('更新任务：54/120')).toBeVisible();
+  await expect(page.getByLabel('批量任务进度').getByText('更新任务：部分失败')).toBeVisible();
+  await expect(page.getByText('198.51.100.41: group update conflict')).toBeVisible();
+  await page.getByRole('button', { name: '加载更多失败项' }).click();
+  await expect(page.getByText('198.51.100.42: server changed during update')).toBeVisible();
+  expect(failureQueries.some((query) => query.includes('cursor=41'))).toBe(true);
+  await page.getByRole('button', { name: '仅重试失败项' }).click();
+  await expect(page.getByLabel('批量任务进度').getByText('更新任务：完成')).toBeVisible();
+
+  expect(selectionRequests).toHaveLength(1);
+  expect(selectionRequests[0]).toMatchObject({ allMatching: true, conn: 'all' });
+  expect(selectionRequests[0]).not.toHaveProperty('ids');
+  expect(jobRequests).toHaveLength(1);
+  expect(jobRequests[0]).toMatchObject({
+    selectionId: 'bulk-update-selection', operation: 'update', payload: { group: 'West' }, idempotencyKey: expect.any(String),
+  });
+  expect(jobRequests[0]).not.toHaveProperty('ids');
+  expect(retryRequests).toHaveLength(1);
+  expect(retryRequests[0]).toMatchObject({ idempotencyKey: expect.any(String) });
+  expect(Object.keys(retryRequests[0]).sort()).toEqual(['idempotencyKey']);
+  expect(retryRequests[0].idempotencyKey).not.toBe(jobRequests[0].idempotencyKey);
+  expect(retryPolls).toBeGreaterThan(0);
+});
+
+test('frozen selection deletion completes and refreshes the server list', async ({ page }) => {
+  const selectionRequests: Record<string, unknown>[] = [];
+  const jobRequests: Record<string, unknown>[] = [];
+  let deletePolls = 0;
+  let assetListRequests = 0;
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === '/api/probe/servers/cursor' || path === '/api/probe/servers') assetListRequests++;
+  });
+  const json = (value: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
+  const selection = { selectionId: 'bulk-delete-selection', state: 'ready', count: 120, processed: 120, createdAt: '2026-10-24T00:00:00Z', updatedAt: '2026-10-24T00:00:00Z', expiresAt: '2026-10-25T00:00:00Z', error: null };
+  const job = (state: string, processed: number, succeeded: number) => ({
+    jobId: 'bulk-delete-job', selectionId: 'bulk-delete-selection', operation: 'delete', state, total: 120, processed, succeeded, failed: 0,
+    createdAt: '2026-10-24T00:00:00Z', updatedAt: '2026-10-24T00:00:00Z', error: null, retryOf: null,
+  });
+  await page.route('**/api/probe/server-selections**', async (route) => {
+    if (route.request().method() === 'POST') {
+      selectionRequests.push(route.request().postDataJSON());
+      return route.fulfill(json(selection));
+    }
+    if (new URL(route.request().url()).pathname.endsWith('/bulk-delete-selection')) return route.fulfill(json(selection));
+    return route.fallback();
+  });
+  await page.route('**/api/probe/server-bulk-jobs**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/probe/server-bulk-jobs' && request.method() === 'POST') {
+      jobRequests.push(request.postDataJSON());
+      return route.fulfill(json(job('queued', 0, 0)));
+    }
+    if (url.pathname.endsWith('/failures')) return route.fulfill(json({ items: [], nextCursor: null }));
+    if (url.pathname.endsWith('/bulk-delete-job')) {
+      deletePolls++;
+      return route.fulfill(json(deletePolls === 1 ? job('running', 64, 64) : job('done', 120, 120)));
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/servers');
+  await expect.poll(() => assetListRequests).toBeGreaterThan(0);
+  const beforeDeleteRefreshes = assetListRequests;
+  await page.getByRole('button', { name: /冻结全部匹配/ }).click();
+  await expect(page.getByLabel('服务器选择快照').getByText('冻结快照 120 台')).toBeVisible();
+  await page.getByLabel('服务器选择快照').getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '提交删除任务' }).click();
+  await expect(page.getByLabel('批量任务进度').getByText('删除任务：64/120')).toBeVisible();
+  await expect.poll(() => deletePolls).toBeGreaterThanOrEqual(2);
+  await expect(page.getByLabel('批量任务进度').getByText('删除任务：完成')).toBeVisible();
+  await expect.poll(() => assetListRequests).toBeGreaterThan(beforeDeleteRefreshes);
+
+  expect(selectionRequests).toHaveLength(1);
+  expect(selectionRequests[0]).toMatchObject({ allMatching: true, conn: 'all' });
+  expect(selectionRequests[0]).not.toHaveProperty('ids');
+  expect(jobRequests).toHaveLength(1);
+  expect(jobRequests[0]).toMatchObject({ selectionId: 'bulk-delete-selection', operation: 'delete', payload: {}, idempotencyKey: expect.any(String) });
+  expect(jobRequests[0]).not.toHaveProperty('ids');
+  expect(deletePolls).toBeGreaterThanOrEqual(2);
+});

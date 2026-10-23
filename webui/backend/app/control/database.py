@@ -147,6 +147,25 @@ CREATE TABLE IF NOT EXISTS probe_server_bulk_lease (
     token TEXT NOT NULL DEFAULT ''
 );
 INSERT OR IGNORE INTO probe_server_bulk_lease(id) VALUES(1);
+CREATE TABLE IF NOT EXISTS probe_server_import_jobs (
+    id TEXT PRIMARY KEY, owner TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+    source_text TEXT NOT NULL, default_group TEXT NOT NULL DEFAULT '', state TEXT NOT NULL,
+    total INTEGER NOT NULL DEFAULT 0, processed INTEGER NOT NULL DEFAULT 0,
+    inserted INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0, parse_ready INTEGER NOT NULL DEFAULT 0,
+    parse_cursor INTEGER NOT NULL DEFAULT 0, process_cursor INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, error TEXT NOT NULL DEFAULT '',
+    retry_of TEXT, UNIQUE(owner,idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_probe_server_import_jobs_state ON probe_server_import_jobs(state,created_at);
+CREATE TABLE IF NOT EXISTS probe_server_import_items (
+    job_id TEXT NOT NULL REFERENCES probe_server_import_jobs(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL, ip TEXT, label TEXT NOT NULL DEFAULT '', group_name TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'pending', error TEXT NOT NULL DEFAULT '',
+    retryable INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY(job_id,ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_probe_server_import_items_state ON probe_server_import_items(job_id,state,ordinal);
 CREATE INDEX IF NOT EXISTS idx_probe_server_tags_tag_server
     ON probe_server_tags (tag_id, server_id);
 
@@ -862,6 +881,19 @@ def _migrate_probe_server_bulk(connection: sqlite3.Connection) -> None:
         connection.execute(sql)
 
 
+def _migrate_probe_server_import(connection: sqlite3.Connection) -> None:
+    """Keep async import retry metadata available across schema upgrades."""
+    columns = _column_names(connection, "probe_server_import_items")
+    if columns and "retryable" not in columns:
+        connection.execute(
+            "ALTER TABLE probe_server_import_items ADD COLUMN retryable INTEGER NOT NULL DEFAULT 1"
+        )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_probe_server_import_items_state "
+        "ON probe_server_import_items(job_id,state,ordinal)"
+    )
+
+
 def initialize_database(path: Path) -> None:
     """Initialize one database path once per process, retrying after failures."""
     resolved_path = _resolved_path(path)
@@ -882,6 +914,7 @@ def initialize_database(path: Path) -> None:
                 )
             connection.executescript(SCHEMA)
             _migrate_probe_server_bulk(connection)
+            _migrate_probe_server_import(connection)
             _migrate_probe_failover(connection)
             _migrate_probe_current_results(connection)
             _migrate_nodes(connection)

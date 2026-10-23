@@ -766,6 +766,42 @@ class ProbeStore:
         inserted = self._with_connection(write)
         return inserted, len(items) - inserted
 
+    def import_servers_chunk(self, connection: sqlite3.Connection, items: list[dict]) -> set[str]:
+        """Insert one bounded async-import page inside the caller's lease transaction."""
+        if len(items) > 250:
+            raise ValueError("async import chunk exceeds 250 items")
+        if not items:
+            return set()
+        created_at = now_iso()
+        candidates = {}
+        groups = {}
+        for item in items:
+            ip = validate_probe_addr(str(item.get("ip", "")))
+            group = str(item.get("group", "") or "").strip()
+            candidates.setdefault(ip, (_ip_sort_for(ip), _asset_labels([str(item.get("label", "") or "")]), group))
+        ips = list(candidates)
+        placeholders = ",".join("?" for _ in ips)
+        before = {row["ip"] for row in connection.execute(
+            f"SELECT ip FROM probe_servers WHERE ip IN ({placeholders})", ips
+        )}
+        for _, _, group in candidates.values():
+            if group not in groups:
+                canonical = _canonical_group_name(connection, group)
+                groups[group] = (canonical, _ensure_group_id(connection, canonical))
+        connection.executemany(
+            "INSERT OR IGNORE INTO probe_servers (ip,ip_sort,label,server_group,group_id,created_at) VALUES (?,?,?,?,?,?)",
+            [(ip, candidates[ip][0], _pack_labels(candidates[ip][1]), groups[candidates[ip][2]][0],
+              groups[candidates[ip][2]][1], created_at) for ip in ips],
+        )
+        inserted = set(ips) - before
+        if inserted:
+            inserted_placeholders = ",".join("?" for _ in inserted)
+            rows = connection.execute(
+                f"SELECT id,ip FROM probe_servers WHERE ip IN ({inserted_placeholders})", list(inserted)
+            ).fetchall()
+            _sync_server_tags_many(connection, [(row["id"], candidates[row["ip"]][1]) for row in rows], preserve_existing=False)
+        return inserted
+
     def list_tag_categories(self) -> list[dict]:
         def read(connection):
             return [dict(row) for row in connection.execute(
