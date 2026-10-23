@@ -33,6 +33,7 @@ ServerConn = Literal["all", "pass", "partial", "fail", "untested"]
 ServerSort = Literal["ip", "group", "conn", "speed", "time"]
 SortOrder = Literal["asc", "desc"]
 _SQL_VARIABLE_HEADROOM = 8
+MAX_TAG_FACET_PAGE = 1_000_000
 _TAG_UUID_NAMESPACE = uuid.UUID("895bfb47-4ce4-4b5f-a8fd-266ef7129031")
 SERVER_IMPORT_BATCH_SIZE = 500
 MAX_SERVER_IMPORT_ITEMS = 5_000
@@ -1812,10 +1813,25 @@ class ProbeStore:
             return {"items": items, "nextCursor": next_cursor, "hasMore": has_more}
         return self._with_connection(read)
 
-    def server_facets(self, query: ServerPageQuery | None = None) -> dict:
+    def server_facets(self, query: ServerPageQuery | None = None, *, tag_search: str = "",
+                      tag_page: int | None = None, tag_page_size: int | None = None) -> dict:
         """Return group counts contextualized without group filters and tag counts
-        contextualized without tag filters. The no-argument shape remains global.
+        contextualized without tag filters. Tag candidates are searched and paged
+        independently; their counts use the full contextual server set.
         """
+        tag_search = str(tag_search or "").strip()
+        paged = bool(tag_search) or tag_page is not None or tag_page_size is not None
+        if paged:
+            tag_page = 1 if tag_page is None else int(tag_page)
+            tag_page_size = 50 if tag_page_size is None else int(tag_page_size)
+            if tag_page < 1:
+                raise ValueError("tag_page 必须大于等于 1")
+            if tag_page > MAX_TAG_FACET_PAGE:
+                raise ValueError(f"tag_page 不能超过 {MAX_TAG_FACET_PAGE}")
+            if not 1 <= tag_page_size <= 100:
+                raise ValueError("tag_page_size 必须在 1-100")
+        escaped_search = tag_search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        search_pattern = f"%{escaped_search}%"
         query = query or ServerPageQuery()
         group_query = replace(query, group=None, group_ids=())
         tag_query = replace(query, label=None, tag_id=None, include_tag_ids=(),
@@ -1842,23 +1858,35 @@ class ProbeStore:
 
             tag_where, tag_params = self._server_where(tag_query)
             tag_source = self._server_count_from_sql(tag_query)
-            # One aggregate statement yields both stable tag/category counts and
-            # the legacy name projection, with the filtered server set kept in SQL.
+            tag_page_limit = " LIMIT ? OFFSET ?" if paged else ""
+            tag_page_params = (tag_page_size, (tag_page - 1) * tag_page_size) if paged else ()
+            # One aggregate statement yields the bounded, stable candidate page,
+            # total candidate count, and legacy name projection.
             tag_rows = connection.execute(
-                "WITH facet_servers AS (SELECT s.id " + tag_source + tag_where + ") "
-                "SELECT 'tag' AS facet,t.id AS tag_id,c.id AS category_id,c.name AS category,"
-                "t.name AS name,COUNT(DISTINCT fs.id) AS count "
+                "WITH facet_servers AS (SELECT s.id " + tag_source + tag_where + "), "
+                "tag_counts AS ("
+                "SELECT t.id AS tag_id,c.id AS category_id,c.name AS category,t.name AS name,"
+                "COUNT(DISTINCT fs.id) AS count "
                 "FROM facet_servers fs JOIN probe_server_tags st ON st.server_id=fs.id "
                 "JOIN probe_tags t ON t.id=st.tag_id "
                 "JOIN probe_tag_categories c ON c.id=t.category_id "
-                "GROUP BY t.id,c.id,c.name,t.name "
+                "WHERE (?='' OR c.name LIKE ? ESCAPE '\\' COLLATE NOCASE "
+                "OR t.name LIKE ? ESCAPE '\\' COLLATE NOCASE) "
+                "GROUP BY t.id,c.id,c.name,t.name), "
+                "tag_page AS (SELECT * FROM tag_counts "
+                "ORDER BY category COLLATE BINARY,name COLLATE BINARY,tag_id COLLATE BINARY" + tag_page_limit + "), "
+                "tag_total AS (SELECT COUNT(*) AS total FROM tag_counts), "
+                "legacy_labels AS ("
+                "SELECT t.name AS name,COUNT(DISTINCT fs.id) AS count "
+                "FROM facet_servers fs JOIN probe_server_tags st ON st.server_id=fs.id "
+                "JOIN probe_tags t ON t.id=st.tag_id GROUP BY t.name) "
+                "SELECT 'tag' AS facet,p.tag_id,p.category_id,p.category,p.name,p.count,total.total AS tag_total "
+                "FROM tag_total total LEFT JOIN tag_page p ON 1=1 "
                 "UNION ALL "
                 "SELECT 'label' AS facet,NULL AS tag_id,NULL AS category_id,NULL AS category,"
-                "t.name AS name,COUNT(DISTINCT fs.id) AS count "
-                "FROM facet_servers fs JOIN probe_server_tags st ON st.server_id=fs.id "
-                "JOIN probe_tags t ON t.id=st.tag_id GROUP BY t.name "
+                "labels.name,labels.count,NULL AS tag_total FROM legacy_labels labels "
                 "ORDER BY facet,category,name",
-                tag_params,
+                (*tag_params, tag_search, search_pattern, search_pattern, *tag_page_params),
             ).fetchall()
             labels = [{"label": row["name"], "count": row["count"]}
                       for row in tag_rows if row["facet"] == "label"]
@@ -1866,12 +1894,16 @@ class ProbeStore:
             tag_items = [{"tagId": row["tag_id"], "categoryId": row["category_id"],
                           "category": row["category"], "name": row["name"],
                           "count": row["count"]}
-                         for row in tag_rows if row["facet"] == "tag"]
-            return {
+                         for row in tag_rows if row["facet"] == "tag" and row["tag_id"] is not None]
+            tag_total = next((int(row["tag_total"]) for row in tag_rows if row["facet"] == "tag"), 0)
+            result = {
                 "labels": labels,
                 "tagItems": tag_items,
                 "groups": [{"group": row["server_group"], "count": row["count"]} for row in groups],
             }
+            if paged:
+                result.update(tagPage=tag_page, tagPageSize=tag_page_size, tagTotal=tag_total)
+            return result
 
         return self._with_connection(read)
 

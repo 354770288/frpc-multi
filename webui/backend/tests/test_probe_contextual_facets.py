@@ -85,10 +85,24 @@ class ContextualServerFacetTests(unittest.TestCase):
                          {"red": 3, "blue": 2, "shared": 2})
 
     def test_empty_context_and_no_argument_compatibility(self):
-        self.add("203.0.113.11", "east", ["one"])
+        server = self.add("203.0.113.11", "east", ["one"])
+        connection = connect_database(self.path)
+        try:
+            connection.execute("INSERT INTO probe_tag_categories(id,name,created_at) VALUES('unpaged-cat','unpaged','2026-10-24')")
+            for index in range(55):
+                tag_id = f"unpaged-{index:02d}"
+                connection.execute("INSERT INTO probe_tags(id,category_id,name,created_at) VALUES(?,?,?,?)",
+                                   (tag_id, "unpaged-cat", f"candidate-{index:02d}", "2026-10-24"))
+                connection.execute("INSERT INTO probe_server_tags(server_id,tag_id) VALUES(?,?)",
+                                   (server.id, tag_id))
+            connection.commit()
+        finally:
+            connection.close()
         global_facets = self.store.server_facets()
         self.assertEqual(global_facets["groups"], [{"group": "east", "count": 1}])
-        self.assertEqual(global_facets["labels"], [{"label": "one", "count": 1}])
+        self.assertEqual({row["label"]: row["count"] for row in global_facets["labels"]}["one"], 1)
+        self.assertEqual(len(global_facets["labels"]), 56)
+        self.assertEqual(len(global_facets["tagItems"]), 56)
         self.assertEqual(set(global_facets), {"groups", "labels", "tagItems"})
         empty = self.store.server_facets(ServerPageQuery(q="no-such-asset", group_ids=("missing-group-id",)))
         self.assertEqual(empty, {"groups": [], "labels": [], "tagItems": []})
@@ -103,12 +117,69 @@ class ContextualServerFacetTests(unittest.TestCase):
             facets = router.server_facets(
                 q="203.0.113.", groupIds=groups["east"],
                 includeTagIds=tags["red"] + "," + tags["blue"],
-                tagMode="all", conn="pass",
+                tagMode="all", conn="pass", tagSearch="red", tagPage=1, tagPageSize=1,
             )
         # Group counts omit groupIds but keep query, all-tag, and conn filters.
         self.assertEqual(facets["groups"], [{"group": "east", "count": 1}, {"group": "west", "count": 1}])
-        self.assertEqual({row["name"]: row["count"] for row in facets["tagItems"]},
-                         {"red": 1, "blue": 1})
+        self.assertEqual({row["name"]: row["count"] for row in facets["tagItems"]}, {"red": 1})
+        self.assertEqual((facets["tagPage"], facets["tagPageSize"], facets["tagTotal"]), (1, 1, 1))
+
+    def test_tag_search_escaping_case_pagination_and_empty_page_total(self):
+        server = self.add("203.0.113.31", "east", [])
+        category_id = "facet-search-category"
+        tag_data = [
+            ("facet-search-1", "Alpha%One"),
+            ("facet-search-2", "Alpine"),
+            ("facet-search-3", "Beta_One"),
+            ("facet-search-4", "Gamma\\Slash"),
+        ]
+        connection = connect_database(self.path)
+        try:
+            connection.execute("INSERT INTO probe_tag_categories(id,name,created_at) VALUES(?,?,?)",
+                               (category_id, "Carrier Group", "2026-10-24"))
+            for tag_id, name in tag_data:
+                connection.execute("INSERT INTO probe_tags(id,category_id,name,created_at) VALUES(?,?,?,?)",
+                                   (tag_id, category_id, name, "2026-10-24"))
+                connection.execute("INSERT INTO probe_server_tags(server_id,tag_id) VALUES(?,?)",
+                                   (server.id, tag_id))
+            connection.commit()
+        finally:
+            connection.close()
+
+        first = self.store.server_facets(tag_page=1, tag_page_size=2)
+        second = self.store.server_facets(tag_page=2, tag_page_size=2)
+        first_ids = [row["tagId"] for row in first["tagItems"]]
+        second_ids = [row["tagId"] for row in second["tagItems"]]
+        self.assertEqual(first_ids, ["facet-search-1", "facet-search-2"])
+        self.assertEqual(second_ids, ["facet-search-3", "facet-search-4"])
+        self.assertEqual(len(set(first_ids + second_ids)), 4)
+        self.assertEqual(first["tagTotal"], second["tagTotal"])
+
+        matched_category = self.store.server_facets(tag_search="cArRiEr")
+        self.assertEqual([row["name"] for row in matched_category["tagItems"]],
+                         [name for _, name in tag_data])
+        self.assertEqual([row["name"] for row in self.store.server_facets(tag_search="%") ["tagItems"]],
+                         ["Alpha%One"])
+        self.assertEqual([row["name"] for row in self.store.server_facets(tag_search="_") ["tagItems"]],
+                         ["Beta_One"])
+        self.assertEqual([row["name"] for row in self.store.server_facets(tag_search="\\") ["tagItems"]],
+                         ["Gamma\\Slash"])
+        empty = self.store.server_facets(tag_page=3, tag_page_size=2)
+        self.assertEqual(empty["tagItems"], [])
+        self.assertEqual(empty["tagTotal"], 4)
+        with self.assertRaisesRegex(ValueError, "tag_page"):
+            self.store.server_facets(tag_page=10**20, tag_page_size=100)
+        import app.probe.router as router
+        from fastapi import HTTPException
+        with patch.object(router, "source_store", return_value=self.store):
+            with self.assertRaises(HTTPException) as invalid_page:
+                router.server_facets(tagPage=10**20, tagPageSize=50)
+        self.assertEqual(invalid_page.exception.status_code, 400)
+
+        searched = self.store.server_facets(tag_search="Alpha", tag_page_size=1)
+        self.assertEqual(searched["tagItems"][0]["count"], 1)
+        self.assertEqual(searched["labels"], first["labels"])
+        self.assertEqual(searched["groups"], first["groups"])
 
     def test_facets_are_sql_aggregates_and_use_current_projection_for_100k(self):
         c = connect_database(self.path)
@@ -179,6 +250,24 @@ class ContextualServerFacetTests(unittest.TestCase):
         self.assertIn("probe_current_results", plan_text)
         self.assertRegex(plan_text, r"SEARCH c USING (?:COVERING )?INDEX [^ ]*probe_current_results")
         self.assertNotIn("probe_results", plan_text)
+        statements.clear()
+        paged = TraceStore(self.path).server_facets(
+            ServerPageQuery(group_ids=("group-east",), include_tag_ids=("facet-red",), conn="pass"),
+            tag_page=1, tag_page_size=1,
+        )
+        paged_sql = next(sql for sql in statements if sql.lstrip().upper().startswith("WITH FACET_SERVERS"))
+        self.assertIn("LIMIT 1 OFFSET 0", paged_sql)
+        explain_connection = connect_database(self.path)
+        try:
+            explain_connection.create_function("probe_endpoint_host", 1, lambda value: value)
+            explain_connection.create_function("probe_endpoint_port", 1, lambda value: 7000)
+            paged_plan = explain_connection.execute("EXPLAIN QUERY PLAN " + paged_sql).fetchall()
+            paged_plan_text = " ".join(str(row["detail"]) for row in paged_plan)
+        finally:
+            explain_connection.close()
+        self.assertRegex(paged_plan_text, r"SEARCH c USING (?:COVERING )?INDEX [^ ]*probe_current_results")
+        self.assertEqual(len(paged["tagItems"]), 1)
+        self.assertEqual((paged["tagPage"], paged["tagPageSize"], paged["tagTotal"]), (1, 1, 2))
 
     def _seed_connectivity(self, values):
         connection = connect_database(self.path)

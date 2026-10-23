@@ -511,6 +511,8 @@ def server_facets(
     tagId: str | None = None, includeTagIds: str = "", excludeTagIds: str = "",
     tagMode: Literal["any", "all"] = "any",
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
+    tagSearch: str = "", tagPage: int | None = Query(default=None, ge=1, le=1_000_000),
+    tagPageSize: int | None = Query(default=None, ge=1, le=100),
     nodeId: str = "console",
 ):
     try:
@@ -523,7 +525,12 @@ def server_facets(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return source_store(nodeId).server_facets(query)
+    try:
+        return source_store(nodeId).server_facets(
+            query, tag_search=tagSearch, tag_page=tagPage, tag_page_size=tagPageSize,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/servers/groups")

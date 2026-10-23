@@ -62,7 +62,19 @@ Uncovered: E2E for asynchronous batch update/delete UI progress and failure retr
 
 The facets endpoint now accepts q, legacy label, group, group IDs, tag ID, include/exclude IDs, any/all tag mode, and connectivity state. Group counts omit group constraints but retain all other filters; tag/category and legacy label counts omit tag constraints but retain search, grouping, and connectivity constraints. The 100k SQL aggregate test confirms one statement per facet dimension, indexed lookup of `probe_current_results` on `(server_ip, kind, port)`, and no read of history tables.
 
-Uncovered: the frontend has not yet exposed multi-group/include-any/include-all/exclude controls; indexed measurement sort modes and saved views remain planned; the query-plan assertion was checked on a synthetic 100k fixture but no latency SLA or concurrent-write result is claimed; no production deployment.
+At the end of the backend contextual-facet slice, the frontend had not yet exposed multi-group/include-any/include-all/exclude controls; indexed measurement sort modes and saved views remained planned; the query-plan assertion used a synthetic 100k fixture without claiming a latency SLA or concurrent-write result; no production deployment was performed.
+
+## Slice: opt-in paged tag candidates
+
+- `./.venv/bin/python -m unittest tests.test_probe_contextual_facets tests.test_probe_selection_jobs tests.test_probe_jobs tests.test_probe_bulk tests.test_probe tests.test_database tests.test_lb tests.test_lb_selection` — coordinator fresh run: 258 tests passed.
+- `./.venv/bin/python -m py_compile app/probe/store.py app/probe/router.py tests/test_probe_contextual_facets.py` — exit 0.
+- `git diff --check` — exit 0.
+- Spec review: no-argument calls return the full previous facet result; explicit search/page requests return stable bounded candidates and unchanged contextual counts.
+- Code-quality review: query bounds, escaped search and empty-page totals passed; page overflow above one million is rejected before SQL.
+
+The facets API adds opt-in category/name search, page, and page-size parameters. It returns a 50-item first page by default only when paging/search is explicitly requested; no-argument callers preserve the prior unpaged candidate list and response keys. Results are stably ordered by category/name/tag ID, search escapes wildcard characters, and empty pages retain total metadata. The synthetic 100k EXPLAIN checks `LIMIT/OFFSET`, indexed search in the unified current-result projection, and no history-table scan.
+
+Uncovered: the frontend has not yet passed tag search/page state, so its advanced controls still use the no-argument full facet list. The immediately following desktop slice will connect candidate search/pagination; indexed measurement sorts, saved views, capacity benchmarks and production deployment remain pending.
 
 ## Slice: desktop multi-group and contextual tag filters
 
@@ -75,7 +87,7 @@ Uncovered: the frontend has not yet exposed multi-group/include-any/include-all/
 
 Advanced controls use server facets and stable IDs; no browser-side asset expansion was added. Facet requests follow active filters and cancel stale requests; the interface marks counts unavailable while loading and exposes retry on errors. Quick-tag chips, the single-group shortcut, and manual filtering remain usable.
 
-Uncovered: tag candidate lists are still returned as the full filtered facet response; search-and-pagination for large tag dictionaries remains a follow-up. Indexed measurement sort modes, saved views, large-data timing/load tests, browser E2E for async bulk update/delete progress, and production deployment remain unverified.
+Uncovered: the frontend has not yet connected candidate search/pagination, so large tag dictionaries are not yet bounded in the filter UI. Indexed measurement sort modes, saved views, large-data timing/load tests, browser E2E for async bulk update/delete progress, and production deployment remain unverified.
 
 ## Slice: fixed target port
 
