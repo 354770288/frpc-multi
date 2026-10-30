@@ -599,6 +599,5 @@ export type ProbeResultBase = { id: number; node_id: string; server_ip: string; 
 export type ProbeRouteResult = ProbeResultBase & { ok: boolean; isCn2: boolean; hops: { hop: number; host: string; loss: number; avg: number | null }[]; error: string };
 export type ProbeConnResult = ProbeResultBase & { frps_reachable: boolean; tunnel_established: boolean; firewall_open: boolean };
 export type ProbeSpeedResult = ProbeResultBase & { dl_ok: boolean; ul_ok: boolean; dl_speed_bps: number; ul_speed_bps: number; dl_speed_mbps: number; ul_speed_mbps: number };
-export type ProbeComparison = { node: TestNode; discovery: { latency_ms: number; discovered_at: string } | null; route: ProbeRouteResult | null; connectivity: ProbeConnResult | null; speed: ProbeSpeedResult | null };
 export type LbSelectionConfig = { nodeId: string; maxAgeHours: number; healthSource: 'console' };
 export type LbSelection = LbSelectionConfig & { observedAt: string | null; validCandidates: number; bestIp: string | null; reason: 'console_observation' | 'no_healthy_candidates' | 'keep_healthy_current' | 'node_observation' | 'healthy_ip_order' };

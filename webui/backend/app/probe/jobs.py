@@ -188,6 +188,13 @@ class ProbeJobStore:
                 raise ValueError('已保存的主备测试策略引用了不存在的节点: ' + node_id)
             if not ProbeJobStore._eligible_policy_node(node):
                 raise ValueError('已保存的主备测试策略引用了不符合要求的节点: ' + node_id)
+        all_external = [r['id'] for r in c.execute(
+            "SELECT * FROM probe_nodes WHERE kind='worker' ORDER BY created_at,id")
+            if ProbeJobStore._eligible_policy_node(r) and r['id'] != policy['primaryNodeId']]
+        requested = set(backup_node_ids)
+        policy['backupNodeIds'] = [*backup_node_ids,
+                                   *(node_id for node_id in all_external if node_id not in requested),
+                                   'console']
         return policy
 
     def get_execution_policy(self):
@@ -222,6 +229,8 @@ class ProbeJobStore:
             raise ValueError('主用节点不能同时列为备用节点')
         node_ids = [primary_node_id, *backup_node_ids]
         with self._db() as c:
+            if 'console' in backup_node_ids:
+                raise ValueError('Console 固定为最后备用节点')
             for node_id in node_ids:
                 node = c.execute('SELECT * FROM probe_nodes WHERE id=?', (node_id,)).fetchone()
                 if node is None:
@@ -339,9 +348,16 @@ class ProbeJobStore:
         if node_id == 'console':
             raise ValueError('Console 为内置节点')
         with self._db() as c:
-            policy = self._stored_execution_policy(c)
-            if policy and node_id in [policy['primaryNodeId'], *policy['backupNodeIds']]:
-                raise ValueError('节点仍被主备测试策略引用，请先从策略中移除')
+            policy_row = c.execute("SELECT value FROM probe_settings WHERE key='probe_execution_policy'").fetchone()
+            policy = None
+            if policy_row:
+                self._stored_execution_policy(c)  # validate before changing a policy owner
+                try:
+                    policy = json.loads(policy_row['value'])
+                except (ValueError, TypeError):
+                    raise AssertionError('validated execution policy failed to decode')
+            if policy and policy.get('primaryNodeId') == node_id:
+                raise ValueError('节点仍为主用测试节点，请先更换主用节点')
             retry_cutoff = (datetime.now(timezone.utc) - timedelta(days=SELECTION_PRODUCER_RETRY_DAYS)).isoformat()
             producers = c.execute(
                 "SELECT p.current_node_id,p.state,p.updated_at,j.execution_policy,j.state AS job_state "
@@ -357,6 +373,10 @@ class ProbeJobStore:
                     owners = [producer['current_node_id']]
                 if node_id == producer['current_node_id'] or node_id in owners:
                     raise ValueError('节点仍被未完成的选择快照任务引用，任务结束或重试窗口过期后再删除')
+            if policy and node_id in policy.get('backupNodeIds', []):
+                policy['backupNodeIds'] = [candidate for candidate in policy['backupNodeIds'] if candidate != node_id]
+                c.execute("UPDATE probe_settings SET value=? WHERE key='probe_execution_policy'",
+                          (_json(policy),))
             if not c.execute('DELETE FROM probe_nodes WHERE id=?',(node_id,)).rowcount:
                 raise KeyError(node_id)
             c.execute("UPDATE probe_tasks SET state=CASE WHEN state='running' THEN 'cancelling' ELSE 'stopped' END,error='stopped' WHERE node_id=? AND state IN ('pending','running')",(node_id,))
@@ -411,7 +431,14 @@ class ProbeJobStore:
             return None
         for node_id in later:
             node = c.execute('SELECT * FROM probe_nodes WHERE id=?', (node_id,)).fetchone()
-            if not node or not self._eligible_policy_node(node) or not self._owner_online(c, node_id, now):
+            console_capable = False
+            if node and node_id == 'console' and node['kind'] == 'console':
+                try:
+                    console_capable = set(CAPABILITIES).issubset(json.loads(node['capabilities']))
+                except (TypeError, ValueError):
+                    pass
+            eligible = bool(node and (self._eligible_policy_node(node) or console_capable))
+            if not eligible or not self._owner_online(c, node_id, now):
                 continue
             try:
                 features = json.loads(node['protocol_features'])
@@ -1001,12 +1028,16 @@ class ProbeJobStore:
 
     def history(self,node_id,kind,ip=None,limit=200):
         with self._db() as c:
-            rows=c.execute('SELECT * FROM probe_results WHERE node_id=? AND kind=?'+(' AND server_ip=?' if ip else '')+' ORDER BY id DESC LIMIT ?', (node_id,kind,*([ip] if ip else []),min(1000,max(1,limit))))
+            node_filter = 'node_id=? AND ' if node_id is not None else ''
+            args = (*([node_id] if node_id is not None else []), kind, *([ip] if ip else []), min(1000, max(1, limit)))
+            rows=c.execute('SELECT * FROM probe_results WHERE '+node_filter+'kind=?'+(' AND server_ip=?' if ip else '')+' ORDER BY id DESC LIMIT ?', args)
             return [self._flatten(r) for r in rows]
 
     def history_page(self,node_id,kind,page=1,page_size=50,*,ip=None,port=None,job_id=None,from_time=None,to_time=None):
         with self._db() as c:
-            filters=['node_id=?','kind=?'];args=[node_id,kind]
+            filters=['kind=?'];args=[kind]
+            if node_id is not None:
+                filters.insert(0, 'node_id=?'); args.insert(0, node_id)
             for column,value in (('server_ip',ip),('port',port),('job_id',job_id)):
                 if value is not None:filters.append(column+'=?');args.append(value)
             if from_time:filters.append('test_time>=?');args.append(from_time)
@@ -1089,12 +1120,14 @@ class ProbeJobStore:
     def clear_history(self,node_id,kind):
         with self._db() as c:
             # Canonical rows and legacy console history are one logical history.
-            canonical=c.execute("SELECT COUNT(*) FROM probe_results WHERE node_id=? AND kind=? AND task_id NOT LIKE 'legacy-%'",(node_id,kind)).fetchone()[0]
+            node_filter = 'node_id=? AND ' if node_id is not None else ''
+            args = (*([node_id] if node_id is not None else []), kind)
+            canonical=c.execute("SELECT COUNT(*) FROM probe_results WHERE "+node_filter+"kind=? AND task_id NOT LIKE 'legacy-%'",args).fetchone()[0]
             c.execute('DELETE FROM probe_current_results WHERE source_result_id IN '
-                      '(SELECT id FROM probe_results WHERE node_id=? AND kind=?)', (node_id, kind))
-            c.execute('DELETE FROM probe_results WHERE node_id=? AND kind=?',(node_id,kind))
+                      '(SELECT id FROM probe_results WHERE '+node_filter+'kind=?)', args)
+            c.execute('DELETE FROM probe_results WHERE '+node_filter+'kind=?',args)
             legacy=0
-            if node_id=='console' and kind in {'connectivity','speed'}:
+            if node_id in (None, 'console') and kind in {'connectivity','speed'}:
                 table='probe_connectivity_results' if kind=='connectivity' else 'probe_speed_results'
                 legacy=c.execute('DELETE FROM '+table).rowcount
             return canonical+legacy

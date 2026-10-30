@@ -173,7 +173,7 @@ export function LbPage() {
                           <span className="text-xs text-muted-foreground">未同步</span>
                         )}
                         {domainHealth?.selection && <div className="mt-2"><SelectionReason selection={domainHealth.selection} /></div>}
-                        <Link to={`/tests/new?${new URLSearchParams({ group: domain.group, nodeId: domainHealth?.selection.nodeId || 'console' })}`} className="mt-2 inline-block text-sm text-primary underline underline-offset-2">测量此分组 →</Link>
+                        <Link to={`/tests/new?${new URLSearchParams({ group: domain.group })}`} className="mt-2 inline-block text-sm text-primary underline underline-offset-2">测量此分组 →</Link>
                       </Td>
                       <Td>
                         <span className="font-mono text-sm tabular-nums" title={poolStates.map((s) => s ? `${s.ip} ${s.ok === false ? '失败' : s.ok === true ? '健康' : '待检查'}` : '').filter(Boolean).join('\n')}>

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { probeApi } from '../lib/api';
-import type { ProbeResultBase, TestNode } from '../lib/types';
+import type { ProbeResultBase } from '../lib/types';
 import { formatLastSeen } from '../lib/format';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -20,7 +20,6 @@ function result(row:Row,kind:Kind):string {
 export function ResultsPage() {
   const [params,setParams]=useSearchParams();
   const kind=(['route','connectivity','speed'].includes(params.get('kind') || '') ? params.get('kind') : 'connectivity') as Kind;
-  const nodeId=params.get('nodeId') || 'console';
   const ip=params.get('ip') || '';
   const port=params.get('port') || '';
   const jobId=params.get('jobId') || '';
@@ -29,15 +28,13 @@ export function ResultsPage() {
   const page=Math.max(1,Number(params.get('page') || 1) || 1);
   const [rows,setRows]=useState<Row[]>([]);
   const [total,setTotal]=useState<number|null>(null);
-  const [nodes,setNodes]=useState<TestNode[]>([]);
   const [error,setError]=useState('');
   const [loading,setLoading]=useState(true);
   const request=useRef(0);
   const change=(key:string,value:string)=>setParams((current)=>{const next=new URLSearchParams(current);if(value)next.set(key,value);else next.delete(key);next.delete('page');return next;});
-  useEffect(()=>{probeApi.testNodes().then((data)=>setNodes(data.items)).catch(()=>{});},[]);
   useEffect(()=>{
     const id=++request.current;
-    const query:Record<string,string|number>={nodeId,page,pageSize:50};
+    const query:Record<string,string|number>={page,pageSize:50};
     if(ip)query.ip=ip;
     if(port && Number(port)>0)query.port=Number(port);
     if(jobId)query.jobId=jobId;
@@ -51,11 +48,10 @@ export function ResultsPage() {
     }).catch((err)=>{if(id===request.current)setError(err instanceof Error ? err.message : '结果加载失败');})
       .finally(()=>{if(id===request.current)setLoading(false);});
     return()=>{request.current++;};
-  },[kind,nodeId,ip,port,jobId,from,to,page]);
+  },[kind,ip,port,jobId,from,to,page]);
   return <main className="mx-auto max-w-[1400px] space-y-4 px-4 py-6 sm:px-6">
-    <div><h2 className="text-xl font-semibold">测试结果</h2><p className="text-sm text-muted-foreground">按结果来源、端点和批次查看完整历史；0 是已测得的数值，— 表示缺少观测。</p></div>
+    <div><h2 className="text-xl font-semibold">测试结果</h2><p className="text-sm text-muted-foreground">按端点和批次查看完整历史；来源信息保留在每条记录中。0 是已测得的数值，— 表示缺少观测。</p></div>
     <Card><CardHeader><CardTitle>筛选结果</CardTitle></CardHeader><CardContent className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
-      <label>结果来源<select className="mt-1 w-full rounded-md border bg-background p-2" value={nodeId} onChange={(event)=>change('nodeId',event.target.value)}>{nodes.length ? nodes.map((node)=><option key={node.id} value={node.id}>{node.name}</option>) : <option value={nodeId}>{nodeId}</option>}</select></label>
       <label>测试项目<select className="mt-1 w-full rounded-md border bg-background p-2" value={kind} onChange={(event)=>change('kind',event.target.value)}>{(Object.keys(KIND_NAMES) as Kind[]).map((item)=><option key={item} value={item}>{KIND_NAMES[item]}</option>)}</select></label>
       <label>目标主机<input className="mt-1 w-full rounded-md border bg-background p-2" value={ip} onChange={(event)=>change('ip',event.target.value)} placeholder="IP 或域名" /></label>
       <label>端口<input className="mt-1 w-full rounded-md border bg-background p-2" type="number" min={1} max={65535} value={port} onChange={(event)=>change('port',event.target.value)} placeholder="全部端口" /></label>
@@ -67,7 +63,7 @@ export function ResultsPage() {
     <Card><CardHeader><CardTitle>{KIND_NAMES[kind]} · {total===null ? '加载中' : `共 ${total} 条`}</CardTitle></CardHeader><CardContent className="space-y-3">
       {loading && <p role="status" className="text-sm text-muted-foreground">正在加载…</p>}
       {rows.map((row)=><div key={row.id} className="rounded-lg border p-3 text-sm">
-        <div className="flex flex-wrap items-center gap-2"><strong className="font-mono">{row.server_ip}:{row.port}</strong><Badge tone="muted">{result(row,kind)}</Badge><span className="text-muted-foreground" title={row.test_time}>{formatLastSeen(row.test_time)}</span></div>
+        <div className="flex flex-wrap items-center gap-2"><strong className="font-mono">{row.server_ip}:{row.port}</strong><Badge tone="muted">{result(row,kind)}</Badge><span className="text-muted-foreground">来源 {row.node_id}</span><span className="text-muted-foreground" title={row.test_time}>{formatLastSeen(row.test_time)}</span></div>
         {kind==='route' && Array.isArray(row.hops) && <details className="mt-2 text-muted-foreground"><summary className="cursor-pointer">路由跳点（{row.hops.length}）</summary><ol className="mt-2 space-y-1 font-mono">{row.hops.map((hop,index)=><li key={index}>{index+1}. {String((hop as {host?:string}).host || '*')}</li>)}</ol></details>}
         {row.detail && <p className="mt-2 text-muted-foreground">{row.detail}</p>}
       </div>)}

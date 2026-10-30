@@ -257,6 +257,8 @@ CREATE TABLE IF NOT EXISTS probe_results (
 );
 CREATE INDEX IF NOT EXISTS idx_probe_results_source ON probe_results(node_id,kind,server_ip,port,id);
 CREATE INDEX IF NOT EXISTS idx_probe_results_history ON probe_results(node_id,kind,id DESC);
+CREATE INDEX IF NOT EXISTS idx_probe_results_kind_history ON probe_results(kind,id DESC);
+CREATE INDEX IF NOT EXISTS idx_probe_results_kind_endpoint ON probe_results(kind,server_ip,port,id DESC);
 CREATE TABLE IF NOT EXISTS probe_current_results (
     server_ip TEXT NOT NULL, kind TEXT NOT NULL, port INTEGER NOT NULL CHECK(port=7000),
     source_result_id INTEGER NOT NULL, node_id TEXT NOT NULL, job_id TEXT NOT NULL,

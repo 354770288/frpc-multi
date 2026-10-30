@@ -17,7 +17,7 @@ const EMPTY_FACETS: DiscoverFacets = { labels: [], groups: [], imported: 0, new:
 
 type PageRefreshOptions = { recoverOutOfRange?: boolean };
 
-export function useDiscovery(active: boolean, nodeId = 'console') {
+export function useDiscovery(active: boolean) {
   const [,setUrl] = useSearchParams();
   const [query, setQuery] = useState<DiscoverQuery>(() => {
     const p=new URLSearchParams(window.location.search);const pageSize=Number(p.get('pageSize'));
@@ -53,17 +53,6 @@ export function useDiscovery(active: boolean, nodeId = 'console') {
     sessionStorage.setItem('probe_discovery_targets', JSON.stringify([...selectedTargets].filter(([id])=>selected.has(id))));
   }, [selected, selectedTargets]);
 
-  const lastNode=useRef(nodeId);
-  useEffect(() => {
-    if(lastNode.current===nodeId)return;
-    lastNode.current=nodeId;
-    pageController.current?.abort(); facetController.current?.abort();
-    pageGeneration.current++; facetGeneration.current++;
-    setPage(EMPTY_PAGE);
-    setFacets(EMPTY_FACETS);
-    setQuery((current) => ({ ...current, page: 1 }));
-  }, [nodeId]);
-
   const pageController = useRef<AbortController | null>(null);
   const facetController = useRef<AbortController | null>(null);
   const pageGeneration = useRef(0);
@@ -81,7 +70,7 @@ export function useDiscovery(active: boolean, nodeId = 'console') {
     const generation = ++pageGeneration.current;
     const requested = queryRef.current;
     try {
-      const next = await probeApi.discoverResults(requested, controller.signal, nodeId);
+      const next = await probeApi.discoverResults(requested, controller.signal);
       if (controller.signal.aborted || generation !== pageGeneration.current) return;
       const lastPage = Math.max(1, Math.ceil(next.total / next.pageSize));
       if (options.recoverOutOfRange && requested.page > lastPage) {
@@ -93,7 +82,7 @@ export function useDiscovery(active: boolean, nodeId = 'console') {
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) throw error;
     }
-  }, [isVisible, nodeId]);
+  }, [isVisible]);
 
   const refreshFacets = useCallback(async () => {
     if (!isVisible()) return;
@@ -102,12 +91,12 @@ export function useDiscovery(active: boolean, nodeId = 'console') {
     facetController.current = controller;
     const generation = ++facetGeneration.current;
     try {
-      const next = await probeApi.discoverFacets(controller.signal, nodeId);
+      const next = await probeApi.discoverFacets(controller.signal);
       if (!controller.signal.aborted && generation === facetGeneration.current) setFacets(next);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) throw error;
     }
-  }, [isVisible, nodeId]);
+  }, [isVisible]);
 
   const refreshAll = useCallback(async (options: PageRefreshOptions = {}) => {
     await Promise.all([refreshPage(options), refreshFacets()]);

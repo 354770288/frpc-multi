@@ -212,7 +212,7 @@ class ProbeJobsTests(unittest.TestCase):
         saved = self.store.set_execution_policy(self.a, [self.b])
         self.assertTrue(saved['configured'])
         self.assertEqual(saved['primaryNodeId'], self.a)
-        self.assertEqual(saved['backupNodeIds'], [self.b])
+        self.assertEqual(saved['backupNodeIds'], [self.b, 'console'])
         with self.assertRaisesRegex(ValueError, '不能重复'):
             self.store.set_execution_policy(self.a, [self.b, self.b])
         with self.assertRaisesRegex(ValueError, '不能同时列为备用'):
@@ -257,7 +257,7 @@ class ProbeJobsTests(unittest.TestCase):
                 self.assertEqual(self.store.get_node(self.a)['id'], self.a)
                 repaired = self.store.set_execution_policy(self.b, [])
                 self.assertEqual(repaired['primaryNodeId'], self.b)
-                self.assertEqual(repaired['backupNodeIds'], [])
+                self.assertEqual(repaired['backupNodeIds'], [self.a, 'console'])
 
     def test_execution_policy_deletion_guard_and_job_snapshot(self):
         job = self.job(nodes=[self.a], ips=['192.0.2.1'])
@@ -265,11 +265,31 @@ class ProbeJobsTests(unittest.TestCase):
         self.store.set_execution_policy(self.a, [self.b])
         after = self.store.get_job(job['id'])
         self.assertEqual(after, before)
-        with self.assertRaisesRegex(ValueError, '仍被主备测试策略引用'):
+        with self.assertRaisesRegex(ValueError, '仍为主用测试节点'):
             self.store.delete_node(self.a)
         self.store.set_execution_policy(self.b, [])
         self.store.delete_node(self.a)
         self.assertEqual(self.store.get_execution_policy()['primaryNodeId'], self.b)
+
+    def test_idle_automatic_backup_can_be_deleted_and_policy_rebuilds(self):
+        self.store.set_execution_policy(self.a, [])
+        self.assertIn(self.b, self.store.get_execution_policy()['backupNodeIds'])
+        self.store.delete_node(self.b)
+        policy = self.store.get_execution_policy()
+        self.assertEqual(policy['primaryNodeId'], self.a)
+        self.assertEqual(policy['backupNodeIds'], ['console'])
+
+    def test_clear_history_without_node_clears_all_sources_and_projection(self):
+        with self.store._db() as c:
+            for node_id, ip in ((self.a, '192.0.2.61'), (self.b, '192.0.2.62')):
+                self.store._result(c, 'clear-' + node_id, 'clear-job', node_id, 'connectivity', ip, 7000,
+                                   {'frps_reachable': True, 'tunnel_established': True,
+                                    'firewall_open': True})
+        self.assertEqual(len(self.store.history(None, 'connectivity')), 2)
+        self.assertEqual(self.store.clear_history(None, 'connectivity'), 2)
+        self.assertEqual(self.store.history(None, 'connectivity'), [])
+        with self.store._db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM probe_current_results').fetchone()[0], 0)
 
     def test_public_job_assignment_requires_and_uses_saved_primary(self):
         from fastapi import HTTPException
@@ -1030,6 +1050,40 @@ class ProbeJobsTests(unittest.TestCase):
         self.assertEqual(after['node_id'], self.b)
         self.assertEqual(tuple(transfer), (self.a, self.b, 1, 'pending_owner_offline'))
 
+    def test_failover_chain_reaches_console_and_accepts_generation_progress_and_report(self):
+        self.set_primary(self.a)
+        self.store.set_execution_policy(self.a, [self.b])
+        self.online_generation_worker(self.a)
+        job = self.store.create_primary_job('connectivity', ips=['192.0.2.32'])
+        task_id = job['tasks'][0]['taskId']
+        first = self.store.claim(self.a)
+        self.assertEqual((first['taskId'], first['generation']), (task_id, 0))
+        with self.store._db() as c:
+            c.execute('UPDATE probe_tasks SET lease_until=0 WHERE id=?', (task_id,))
+            c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (self.a,))
+        self.online_generation_worker(self.b)
+        second = self.store.claim(self.b)
+        self.assertEqual((second['taskId'], second['generation']), (task_id, 1))
+
+        with self.store._db() as c:
+            c.execute('UPDATE probe_tasks SET lease_until=0 WHERE id=?', (task_id,))
+            c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (self.b,))
+        # Console's real worker protocol advertises the same generation feature.
+        self.store.heartbeat('console', 'test', ['discover', 'route', 'connectivity', 'speed'], [], ['task-generation-v1'])
+        fallback = self.store.claim('console')
+        self.assertEqual((fallback['taskId'], fallback['generation']), (task_id, 2))
+        progressed = self.store.progress('console', task_id, fallback['attemptId'], 1,
+                                          generation=2, progress={'phase': 'complete'})
+        self.assertTrue(progressed['accepted'])
+        reported = self.store.report('console', task_id, fallback['attemptId'], generation=2,
+                                     result={'frps_reachable': True, 'tunnel_established': True,
+                                             'firewall_open': True})
+        self.assertTrue(reported['accepted'])
+        with self.store._db() as c:
+            transfers = c.execute('SELECT from_node_id,to_node_id,generation FROM probe_task_transfers '
+                                  'WHERE task_id=? ORDER BY id', (task_id,)).fetchall()
+        self.assertEqual([tuple(row) for row in transfers], [(self.a, self.b, 1), (self.b, 'console', 2)])
+
     def test_failover_skips_online_old_backup_until_heartbeat_advertises_feature(self):
         cnode = self.store.create_node('generation-worker')['id']
         self.set_primary(self.a)
@@ -1202,7 +1256,7 @@ class ProbeJobsTests(unittest.TestCase):
         job = self.store.create_primary_job('connectivity', ips=['192.0.2.37'])
         with self.store._db() as c:
             snapshot = json.loads(c.execute('SELECT execution_policy FROM probe_jobs WHERE id=?', (job['id'],)).fetchone()[0])
-        self.assertEqual(snapshot, {'primaryNodeId': self.a, 'backupNodeIds': [self.b, cnode]})
+        self.assertEqual(snapshot, {'primaryNodeId': self.a, 'backupNodeIds': [self.b, cnode, 'console']})
 
         # Heartbeat B to transfer from A without claiming the task.
         self.online_generation_worker(self.b)

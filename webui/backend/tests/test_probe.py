@@ -1691,7 +1691,7 @@ class ProbeApiTests(unittest.TestCase):
         self.assertEqual(status["done"], 0)
         self.assertEqual(status["total"], 1)
         queued = client.get(f"/api/probe/jobs/{status['jobId']}", headers=headers).json()
-        self.assertEqual(queued["nodeIds"], [primary["id"]])
+        self.assertEqual(queued["nodeIds"], ["console"])
         # 结果只进入历史 after the primary worker executes the queued task.
         history = client.get("/api/probe/history/connectivity", headers=headers).json()
         self.assertEqual(len(history), 0)
@@ -1716,6 +1716,33 @@ class ProbeApiTests(unittest.TestCase):
         self.assertEqual(response.json()["deleted"], 0)
         self.assertEqual(client.get("/api/probe/history/connectivity", headers=headers).json(), [])
 
+    def test_history_api_defaults_to_all_nodes_and_keeps_explicit_scope(self):
+        client, headers = self.make_client(PROBE_FRPC_BIN="/bin/echo")
+        first = client.post('/api/probe/nodes', json={'name': 'history-first'}, headers=headers).json()
+        second = client.post('/api/probe/nodes', json={'name': 'history-second'}, headers=headers).json()
+        from app.probe.jobs import ProbeJobStore
+        store = ProbeJobStore(self.db_path)
+        with store._db() as c:
+            for node_id, ip in ((first['id'], '192.0.2.51'), (second['id'], '192.0.2.52')):
+                store._result(c, 'history-' + node_id, 'history-job', node_id, 'connectivity', ip, 7000,
+                              {'frps_reachable': True, 'tunnel_established': True, 'firewall_open': True})
+        aggregate = client.get('/api/probe/history/connectivity', headers=headers).json()
+        self.assertEqual({row['nodeId'] for row in aggregate}, {first['id'], second['id']})
+        scoped = client.get('/api/probe/history/connectivity?nodeId=' + first['id'], headers=headers).json()
+        self.assertEqual([row['nodeId'] for row in scoped], [first['id']])
+        page = client.get('/api/probe/history/connectivity/page?page=1&pageSize=10', headers=headers).json()
+        self.assertEqual(page['total'], 2)
+        with store._db() as c:
+            for sql, args, index in (
+                ('SELECT * FROM probe_results WHERE kind=? ORDER BY id DESC LIMIT 50',
+                 ('connectivity',), 'idx_probe_results_kind_history'),
+                ('SELECT * FROM probe_results WHERE kind=? AND server_ip=? AND port=? ORDER BY id DESC LIMIT 50',
+                 ('connectivity', '192.0.2.51', 7000), 'idx_probe_results_kind_endpoint'),
+            ):
+                plan = ' '.join(row['detail'] for row in c.execute('EXPLAIN QUERY PLAN ' + sql, args))
+                self.assertIn(index, plan)
+                self.assertNotIn('USE TEMP B-TREE', plan)
+
     def test_failover_history_api_filters_pages_and_orders_ties_stably(self):
         client, headers = self.make_client(PROBE_FRPC_BIN="/bin/echo")
         primary = client.post('/api/probe/nodes', json={'name': 'failover-primary'}, headers=headers).json()
@@ -1726,6 +1753,7 @@ class ProbeApiTests(unittest.TestCase):
 
         from app.probe.jobs import ProbeJobStore
         store = ProbeJobStore(self.db_path)
+        store.heartbeat('console', 'test', ['discover', 'route', 'connectivity', 'speed'], [], [])
         job = store.create_primary_job('connectivity', ips=['192.0.2.41', '192.0.2.42'])
         with store._db() as c:
             c.execute('UPDATE probe_nodes SET last_seen=0 WHERE id=?', (primary['id'],))
@@ -2401,7 +2429,7 @@ class DiscoverApiTests(unittest.TestCase):
         )
         self.assertEqual(
             set(body["items"][0]),
-            {"id", "ip", "port", "latencyMs", "group", "labels", "inLibrary", "discoveredAt", "nodeId", "nodeName", "latestRoute"},
+            {"id", "ip", "port", "latencyMs", "group", "labels", "inLibrary", "discoveredAt", "latestRoute"},
         )
         self.assertNotIn("labels", body)
         facets = client.get("/api/probe/discover/facets", headers=headers).json()

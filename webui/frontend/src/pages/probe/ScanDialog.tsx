@@ -171,7 +171,7 @@ export function ScanDialog({
               disabled={starting}
               className="size-3.5 accent-[var(--primary)]"
             />
-            <span className="text-xs">扫描命中后自动路由追踪（各来源独立测 CN2）</span>
+            <span className="text-xs">扫描命中后自动路由追踪（使用统一主备策略）</span>
           </label>
           <label className="flex items-center gap-2 rounded-md bg-muted px-3 py-2">
             <input

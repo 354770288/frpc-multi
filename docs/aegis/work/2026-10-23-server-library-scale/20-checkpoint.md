@@ -2,6 +2,8 @@
 
 ## TodoCheckpointDraft
 
+- [x] 2026-10-30 policy update: remove every daily execution/source selector and node filter; auto-order all external standby nodes and fix Console as the last fallback, including generation transport and source-free discovery/history reads.
+
 - [x] Baseline and execution contract: inspect discovery, task leasing, result ownership, schema, API, and UI; record current evidence and lock first implementation slice.
 - [x] Fixed IP:7000 task semantics and current-result lookup; legacy non-7000 history remains readable.
 - [x] Persisted primary/backup policy API with validation and deletion guard.

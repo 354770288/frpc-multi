@@ -1,7 +1,7 @@
 import { getAuthToken, notifyUnauthorized, AuthError } from './auth';
 import type {
   AuditLog,
-  TestNode, TestNodeExecutionPolicy, ProbeFailover, ProbeJobInput, ProbeJob, ProbeJobDetail, ProbeComparison, LbSelectionConfig,
+  TestNode, TestNodeExecutionPolicy, ProbeFailover, ProbeJobInput, ProbeJob, ProbeJobDetail, LbSelectionConfig,
   CloudflareInfo,
   CloudflareZone,
   DiscoverFacets,
@@ -202,7 +202,6 @@ export const probeApi = {
   jobFiltered: (id: string, query: Record<string,string|number>) => api<ProbeJobDetail>(`/api/probe/jobs/${encodeURIComponent(id)}?${new URLSearchParams(Object.entries(query).map(([k,v]) => [k,String(v)]))}`),
   historyPage: (kind: 'route' | 'connectivity' | 'speed', query: Record<string,string|number>) => api<{ items: ProbeResultBase[]; page: number; pageSize: number; total: number }>(`/api/probe/history/${kind}/page?${new URLSearchParams(Object.entries(query).map(([k,v]) => [k,String(v)]))}`),
   jobAction: (id: string, action: 'stop' | 'skip' | 'retry', taskIds?: string[]) => api<{ ok: boolean; changed: number }>(`/api/probe/jobs/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify({ taskIds }) }),
-  compare: (ip: string, port: number) => api<{ items: ProbeComparison[] }>(`/api/probe/compare?${new URLSearchParams({ ip, port: String(port) })}`),
   servers: (query: ServerQuery, signal?: AbortSignal) => {
     const params = new URLSearchParams({
       page: String(query.page),
@@ -323,18 +322,20 @@ export const probeApi = {
   testStatus: () => api<ProbeTestStatus>('/api/probe/test/status'),
   skipCurrent: () => api<{ ok: boolean }>('/api/probe/test/skip', { method: 'POST' }),
   stopTest: () => api<{ ok: boolean }>('/api/probe/test/stop', { method: 'POST' }),
-  connectivityHistory: (ip?: string, limit = 200, nodeId = 'console') => {
-    const params = new URLSearchParams({ limit: String(limit), nodeId });
+  connectivityHistory: (ip?: string, limit = 200, nodeId?: string) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (nodeId) params.set('nodeId', nodeId);
     if (ip) params.set('ip', ip);
     return api<ProbeConnectivityHistory[]>(`/api/probe/history/connectivity?${params.toString()}`);
   },
-  speedHistory: (ip?: string, limit = 200, nodeId = 'console') => {
-    const params = new URLSearchParams({ limit: String(limit), nodeId });
+  speedHistory: (ip?: string, limit = 200, nodeId?: string) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (nodeId) params.set('nodeId', nodeId);
     if (ip) params.set('ip', ip);
     return api<ProbeSpeedHistory[]>(`/api/probe/history/speed?${params.toString()}`);
   },
-  clearHistory: (kind: 'connectivity' | 'speed', nodeId = 'console') =>
-    api<{ deleted: number }>(`/api/probe/history/${kind}?nodeId=${encodeURIComponent(nodeId)}`, { method: 'DELETE' }),
+  clearHistory: (kind: 'connectivity' | 'speed', nodeId?: string) =>
+    api<{ deleted: number }>(`/api/probe/history/${kind}${nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : ''}`, { method: 'DELETE' }),
   getConfig: () => api<ProbeTestConfig>('/api/probe/config'),
   updateConfig: (values: Record<string, string | number>) =>
     api<ProbeTestConfig>('/api/probe/config', {
@@ -354,9 +355,8 @@ export const probeApi = {
   }),
   discoverStatus: () => api<DiscoverStatus>('/api/probe/discover/status'),
   discoverStop: () => api<{ stopped: boolean }>('/api/probe/discover/stop', { method: 'POST' }),
-  discoverResults: (query: DiscoverQuery, signal?: AbortSignal, nodeId = 'console') => {
+  discoverResults: (query: DiscoverQuery, signal?: AbortSignal, nodeId?: string) => {
     const params = new URLSearchParams({
-      nodeId,
       page: String(query.page),
       pageSize: String(query.pageSize),
       q: query.q?.trim() ?? '',
@@ -364,13 +364,14 @@ export const probeApi = {
       sort: query.sort,
       order: query.order,
     });
+    if (nodeId) params.set('nodeId', nodeId);
     // group/label 的显式空串是有意义的筛选（查空分组/空标签），undefined 才是不筛选——此时缺省参数
     if (query.group !== undefined) params.set('group', query.group);
     if (query.label !== undefined) params.set('label', query.label);
     return api<DiscoverPage>(`/api/probe/discover/results?${params.toString()}`, { signal });
   },
-  discoverFacets: (signal?: AbortSignal, nodeId = 'console') =>
-    api<DiscoverFacets>(`/api/probe/discover/facets?nodeId=${encodeURIComponent(nodeId)}`, { signal }),
+  discoverFacets: (signal?: AbortSignal, nodeId?: string) =>
+    api<DiscoverFacets>(`/api/probe/discover/facets${nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : ''}`, { signal }),
   discoverUpdateBatch: (ids: number[], changes: { group?: string; addLabels?: string[]; removeLabels?: string[] }) =>
     api<{ updated: number }>('/api/probe/discover/results/batch', {
       method: 'PATCH', body: JSON.stringify({ ids, group: changes.group ?? null, addLabels: changes.addLabels ?? [], removeLabels: changes.removeLabels ?? [] })

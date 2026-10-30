@@ -11,10 +11,8 @@ import {
 } from '../../components/ui/card';
 import { formatLastSeen } from '../../lib/format';
 export function ProbeRouteHistory({
-  nodeId,
   ip,
 }: {
-  nodeId: string;
   ip: string;
 }) {
   const [rows, setRows] = useState<ProbeRouteResult[]>([]);
@@ -23,7 +21,7 @@ export function ProbeRouteHistory({
     const controller = new AbortController();
     setRows([]);
     setError('');
-    const params = new URLSearchParams({ nodeId, limit: '200' });
+    const params = new URLSearchParams({ limit: '200' });
     if (ip.trim()) params.set('ip', ip.trim());
     api<ProbeRouteResult[]>(`/api/probe/history/route?${params}`, { signal: controller.signal })
       .then((next) => {
@@ -34,12 +32,12 @@ export function ProbeRouteHistory({
           setError(err instanceof Error ? err.message : '路由历史加载失败');
       });
     return () => controller.abort();
-  }, [nodeId, ip]);
+  }, [ip]);
   return (
     <Card>
       <CardHeader>
         <CardTitle>路由历史</CardTitle>
-        <CardDescription>当前来源最近 200 项路由观测</CardDescription>
+          <CardDescription>最近 200 项路由观测</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="max-h-96 overflow-auto">
@@ -52,6 +50,7 @@ export function ProbeRouteHistory({
             <thead>
               <tr className="border-b text-left">
                 <th className="p-2">目标</th>
+                <th className="p-2">来源</th>
                 <th className="p-2">路由</th>
                 <th className="p-2">跳数</th>
                 <th className="p-2">时间</th>
@@ -63,6 +62,7 @@ export function ProbeRouteHistory({
                   <td className="p-2 font-mono">
                     {row.server_ip}:{row.port}
                   </td>
+                  <td className="p-2">{row.node_id}</td>
                   <td className="p-2">
                     <Badge tone={row.ok ? (row.isCn2 ? 'success' : 'muted') : 'danger'}>
                       {row.ok ? (row.isCn2 ? 'CN2' : '非 CN2') : '失败'}

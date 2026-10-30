@@ -106,6 +106,11 @@ export function TestNodesPage() {
 
   const eligibleNodes = useMemo(() => nodes.filter(isEligibleRoleNode), [nodes]);
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const orderedBackupIds = useMemo(() => {
+    const eligibleIds = eligibleNodes.filter((node) => node.id !== primaryNodeId).map((node) => node.id);
+    const savedOrder = backupNodeIds.filter((id) => id !== primaryNodeId && eligibleIds.includes(id));
+    return [...savedOrder, ...eligibleIds.filter((id) => !savedOrder.includes(id))];
+  }, [eligibleNodes, primaryNodeId, backupNodeIds]);
   const markDirty = () => {
     dirty.current = true;
     setNotice('');
@@ -117,19 +122,12 @@ export function TestNodesPage() {
     setBackupNodeIds((current) => current.filter((id) => id !== nodeId));
   };
 
-  const toggleBackup = (nodeId: string, checked: boolean) => {
-    markDirty();
-    setBackupNodeIds((current) => checked
-      ? current.includes(nodeId) ? current : [...current, nodeId]
-      : current.filter((id) => id !== nodeId));
-  };
-
   const moveBackup = (index: number, offset: -1 | 1) => {
     const nextIndex = index + offset;
-    if (nextIndex < 0 || nextIndex >= backupNodeIds.length) return;
+    if (nextIndex < 0 || nextIndex >= orderedBackupIds.length) return;
     markDirty();
-    setBackupNodeIds((current) => {
-      const next = [...current];
+    setBackupNodeIds(() => {
+      const next = [...orderedBackupIds];
       [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
       return next;
     });
@@ -142,7 +140,7 @@ export function TestNodesPage() {
     setSaving(true);
     setNotice('');
     try {
-      const saved = await probeApi.saveExecutionPolicy(primaryNodeId, backupNodeIds);
+      const saved = await probeApi.saveExecutionPolicy(primaryNodeId, orderedBackupIds);
       applyPolicy(saved);
       setNotice('主备测试策略已保存。');
       if (!(await loadPolicy())) {
@@ -178,7 +176,7 @@ export function TestNodesPage() {
     <Card className="mb-6">
       <CardHeader>
         <CardTitle>测试节点主备策略</CardTitle>
-        <p className="text-sm text-muted-foreground">选择一个主用测试节点，并按顺序设置备用测试节点。保存后仅影响后续策略读取。</p>
+        <p className="text-sm text-muted-foreground">选择一个主用测试节点。其他具备完整能力的外部节点自动加入备用顺序，可调整先后；主控作为最后备用。</p>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
         {policyError && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
@@ -211,47 +209,28 @@ export function TestNodesPage() {
             </Field>
 
             <FieldSet className="gap-2">
-              <FieldLegend>备用测试节点</FieldLegend>
-              <FieldDescription>勾选后加入顺序列表；主用测试节点不能同时作为备用。</FieldDescription>
-              <FieldGroup className="grid gap-2 sm:grid-cols-2">
-                {eligibleNodes.filter((node) => node.id !== primaryNodeId).map((node) => {
-                  const checkboxId = `backup-node-${node.id}`;
-                  const selectedAsBackup = backupNodeIds.includes(node.id);
-                  return <Field key={node.id} orientation="horizontal" className="items-center rounded-md border p-3">
-                    <input
-                      id={checkboxId}
-                      type="checkbox"
-                      disabled={saving}
-                      checked={backupNodeIds.includes(node.id)}
-                      onChange={(event) => toggleBackup(node.id, event.target.checked)}
-                      className="size-4 accent-primary"
-                    />
-                    <FieldLabel htmlFor={checkboxId} className="min-w-0 flex-1 truncate">{node.name}</FieldLabel>
-                    <Badge tone={node.online ? 'success' : 'muted'}>{node.online ? '在线' : '离线'}</Badge>
-                    {selectedAsBackup && !supportsTaskGeneration(node) && <Badge tone="warning">需升级 · 等待协议能力</Badge>}
-                  </Field>;
+              <FieldLegend>备用顺序</FieldLegend>
+              <FieldDescription>所有其他具备完整能力的外部节点都会加入备用顺序。</FieldDescription>
+              <ol className="flex flex-col gap-2">
+                {orderedBackupIds.map((nodeId, index) => {
+                  const node = nodeById.get(nodeId);
+                  return <li key={nodeId} className="flex items-center gap-3 rounded-md border p-3 text-sm">
+                    <span className="w-6 text-center font-semibold">{index + 1}</span>
+                    <span className="min-w-0 flex-1 truncate">{node?.name ?? nodeId}</span>
+                    <Badge tone={node?.online ? 'success' : 'muted'}>{node ? node.online ? '在线' : '离线' : '节点不可用'}</Badge>
+                    {node && !supportsTaskGeneration(node) && <Badge tone="warning">需升级 · 等待协议能力</Badge>}
+                    <Button variant="outline" size="sm" disabled={saving || index === 0} aria-label={`上移备用节点 ${node?.name ?? nodeId}`} onClick={() => moveBackup(index, -1)}>上移</Button>
+                    <Button variant="outline" size="sm" disabled={saving || index === orderedBackupIds.length - 1} aria-label={`下移备用节点 ${node?.name ?? nodeId}`} onClick={() => moveBackup(index, 1)}>下移</Button>
+                  </li>;
                 })}
-                {eligibleNodes.length === (primaryNodeId ? 1 : 0) && <FieldDescription>没有其他可选的备用测试节点。</FieldDescription>}
-              </FieldGroup>
+                <li className="flex items-center gap-3 rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                  <span className="w-6 text-center font-semibold">{orderedBackupIds.length + 1}</span>
+                  <span className="min-w-0 flex-1">主控 Console（最终备用）</span>
+                  <Badge tone="muted">固定</Badge>
+                </li>
+              </ol>
             </FieldSet>
           </FieldGroup>
-
-          {backupNodeIds.length > 0 && <FieldSet className="gap-2">
-            <FieldLegend>备用顺序</FieldLegend>
-            <ol className="flex flex-col gap-2">
-              {backupNodeIds.map((nodeId, index) => {
-                const node = nodeById.get(nodeId);
-                return <li key={nodeId} className="flex items-center gap-3 rounded-md border p-3 text-sm">
-                  <span className="w-6 text-center font-semibold">{index + 1}</span>
-                  <span className="min-w-0 flex-1 truncate">{node?.name ?? nodeId}</span>
-                  <Badge tone={node?.online ? 'success' : 'muted'}>{node ? node.online ? '在线' : '离线' : '节点不可用'}</Badge>
-                  {node && !supportsTaskGeneration(node) && <Badge tone="warning">需升级 · 等待协议能力</Badge>}
-                  <Button variant="outline" size="sm" disabled={saving || index === 0} aria-label={`上移备用节点 ${node?.name ?? nodeId}`} onClick={() => moveBackup(index, -1)}>上移</Button>
-                  <Button variant="outline" size="sm" disabled={saving || index === backupNodeIds.length - 1} aria-label={`下移备用节点 ${node?.name ?? nodeId}`} onClick={() => moveBackup(index, 1)}>下移</Button>
-                </li>;
-              })}
-            </ol>
-          </FieldSet>}
 
           <Separator />
           <div className="flex flex-wrap items-center gap-3">

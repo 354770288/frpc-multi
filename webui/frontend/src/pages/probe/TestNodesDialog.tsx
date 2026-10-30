@@ -60,7 +60,7 @@ export function TestNodesDialog({
     <Overlay title="测试节点" onClose={onClose} wide>
       <div className="flex flex-col gap-4">
         <p className="text-xs leading-5 text-muted-foreground">
-          主控与外部节点均使用独立来源。节点主动领取自己的发现、路由、连通性和速率任务；离线期间排队等待。
+          测量统一使用主备策略；外部节点按测试节点设置中的顺序接替任务，主控作为最终备用。
         </p>
         <FieldGroup>
           <Field>

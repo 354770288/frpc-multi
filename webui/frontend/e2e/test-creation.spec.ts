@@ -9,8 +9,9 @@ test.beforeEach(async ({ page }) => {
       {id:'console',name:'Console',kind:'console',version:'qa',capabilities:['discover','route','connectivity','speed'],online:true},
       {id:'remote',name:'国内测试节点',kind:'worker',version:'qa',capabilities:['discover','route','connectivity','speed'],protocolFeatures:['task-generation-v1'],online:true},
       {id:'backup',name:'备用测试节点',kind:'worker',version:'qa',capabilities:['discover','route','connectivity','speed'],online:true},
+      {id:'backup2',name:'第二备用节点',kind:'worker',version:'qa',capabilities:['discover','route','connectivity','speed'],protocolFeatures:['task-generation-v1'],online:true},
     ]});
-    if(url.pathname==='/api/probe/nodes/execution-policy')return json({configured:true,primaryNodeId:'remote',backupNodeIds:['backup'],suggestedPrimaryNodeId:'remote'});
+    if(url.pathname==='/api/probe/nodes/execution-policy')return json({configured:true,primaryNodeId:'remote',backupNodeIds:['backup','backup2','console'],suggestedPrimaryNodeId:'remote'});
     if(url.pathname==='/api/probe/nodes/failovers'){
       const page=Number(url.searchParams.get('page') || 1);
       return json({items:[{id:page,taskId:`task-${page}`,jobId:'job-qa',fromNodeId:'remote',toNodeId:'backup',generation:page,reason:'primary_offline',transferredAt:'2026-10-23T10:00:00+00:00'}],page,pageSize:20,total:21});
@@ -721,7 +722,7 @@ test('old group link only prefills the new test form',async ({page})=>{
   let submissions=0;
   page.on('request',(request)=>{if(request.url().endsWith('/api/probe/jobs') && request.method()==='POST')submissions++;});
   await page.goto('/probe?tab=test&group=QA&nodeId=remote');
-  await expect(page).toHaveURL(/\/tests\/new\?group=QA&nodeId=remote/);
+  await expect(page).toHaveURL(/\/tests\/new\?group=QA/);
   await expect(page.getByLabel('目标范围')).toHaveValue('group');
   await expect(page.getByLabel('分组')).toHaveValue('QA');
   await page.screenshot({path:'test-results/test-create-group-1280.png',fullPage:true});
@@ -744,6 +745,21 @@ test('legacy server link keeps its query but current results use the unified pro
   await page.reload();
   await expect(page).toHaveURL(/\/servers\?nodeId=remote/);
   await expect(page.getByText(/当前结果反映最近一次被接受的主用或备用测量/)).toBeVisible();
+});
+
+test('legacy node query parameters do not filter task lists or aggregate discovery',async ({page})=>{
+  const requests:string[]=[];
+  page.on('request',(request)=>{
+    const url=new URL(request.url());
+    if(['/api/probe/jobs','/api/probe/discover/results','/api/probe/discover/facets'].includes(url.pathname))requests.push(request.url());
+  });
+  await page.goto('/tests?nodeId=remote&listNode=remote');
+  await expect(page.getByLabel('执行节点')).toHaveCount(0);
+  await expect.poll(()=>requests.some((request)=>new URL(request).pathname==='/api/probe/jobs')).toBe(true);
+  await page.goto('/discovery?nodeId=remote');
+  await expect(page.getByRole('combobox',{name:'观测来源'})).toHaveCount(0);
+  await expect.poll(()=>requests.some((request)=>new URL(request).pathname==='/api/probe/discover/results')).toBe(true);
+  expect(requests.every((request)=>!new URL(request).searchParams.has('nodeId'))).toBe(true);
 });
 
 test('asset pagination stays in the URL after refresh',async ({page})=>{
@@ -920,16 +936,45 @@ test('LB settings follows the saved primary policy and keeps the compatibility p
 });
 
 test('audit and result totals come from paged server queries',async ({page})=>{
+  const historyRequests:string[]=[];
+  page.on('request',(request)=>{
+    const url=new URL(request.url());
+    if(url.pathname==='/api/probe/history/route/page')historyRequests.push(request.url());
+  });
   await page.goto('/audit');
   await expect(page.getByText('205 条匹配')).toBeVisible();
   await page.goto('/results?kind=route&nodeId=remote&ip=192.0.2.1');
   await expect(page.getByText('路由 · 共 205 条')).toBeVisible();
-  await expect(page.getByLabel('结果来源')).toHaveValue('remote');
+  await expect(page.getByLabel('结果来源')).toHaveCount(0);
   await expect(page.getByText('192.0.2.1:7000')).toBeVisible();
   await expect(page.getByRole('button',{name:'来源对比'})).toHaveCount(0);
+  expect(historyRequests.length).toBeGreaterThan(0);
+  expect(historyRequests.every((request)=>!new URL(request).searchParams.has('nodeId'))).toBe(true);
   await page.reload();
   await expect(page.getByText('路由 · 共 205 条')).toBeVisible();
   await expect(page).toHaveURL(/nodeId=remote/);
+});
+
+test('test node policy auto-includes external fallbacks and keeps Console fixed last',async ({page})=>{
+  let saved:Record<string,unknown>|null=null;
+  await page.route('**/api/probe/nodes/execution-policy',async (route)=>{
+    if(route.request().method()==='PUT'){
+      saved=route.request().postDataJSON();
+      return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({configured:true,primaryNodeId:'remote',backupNodeIds:['backup','backup2','console'],suggestedPrimaryNodeId:null})});
+    }
+    return route.fallback();
+  });
+  await page.goto('/test-nodes');
+  await expect(page.getByText('备用测试节点',{exact:true})).toBeVisible();
+  await expect(page.getByText('第二备用节点',{exact:true})).toBeVisible();
+  await expect(page.getByText('主控 Console（最终备用）')).toBeVisible();
+  await expect(page.getByRole('button',{name:/上移备用节点/})).toHaveCount(2);
+  await expect(page.getByRole('button',{name:/下移备用节点/})).toHaveCount(2);
+  await expect(page.getByRole('checkbox')).toHaveCount(0);
+  await page.getByRole('button',{name:'上移备用节点 第二备用节点'}).click();
+  await page.getByRole('button',{name:'保存主备策略'}).click();
+  await expect.poll(()=>saved).not.toBeNull();
+  expect(saved).toEqual({primaryNodeId:'remote',backupNodeIds:['backup2','backup']});
 });
 
 test('unknown domain health is not counted as healthy',async ({page})=>{

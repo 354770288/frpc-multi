@@ -202,7 +202,7 @@ export function TestCreatePage() {
     return Boolean(match && Number(match[1])!==7000);
   });
   return <main className="mx-auto max-w-4xl space-y-5 px-4 py-6 sm:px-6">
-    <div><Link className="text-sm text-muted-foreground hover:underline" to="/tests">← 返回测试任务</Link><h2 className="mt-3 text-xl font-semibold">新建测试</h2><p className="text-sm text-muted-foreground">选择目标 → 测试方式与执行节点 → 核对并提交</p></div>
+    <div><Link className="text-sm text-muted-foreground hover:underline" to="/tests">← 返回测试任务</Link><h2 className="mt-3 text-xl font-semibold">新建测试</h2><p className="text-sm text-muted-foreground">选择目标 → 测试方式与执行策略 → 核对并提交</p></div>
     <p className="text-sm" aria-live="polite">第 {step} 步 / 3 步</p>
     {step===1 && <Card><CardHeader><CardTitle>选择目标</CardTitle></CardHeader><CardContent className="space-y-4">
       <div><label className="block text-sm" htmlFor="test-target-scope">目标范围</label><select id="test-target-scope" className="mt-2 w-full rounded-md border bg-background p-2" value={scope} onChange={(e)=>changeScope(e.target.value as Scope)}><option value="">请选择目标</option><option value="selected" disabled={!selected.length}>此前勾选的目标（{selected.length}）</option>{scope==='selection' && <option value="selection">服务器库冻结快照</option>}<option value="group">指定分组</option><option value="manual">手动输入端点</option><option value="all">全部服务器</option></select></div>
@@ -229,7 +229,7 @@ export function TestCreatePage() {
       {optionsLoading ? <p role="status" className="text-sm text-muted-foreground">正在加载节点与执行策略…</p> : nodesError ? <div role="alert" className="space-y-2 text-sm"><p>节点列表加载失败：{nodesError}</p><Button variant="outline" size="sm" onClick={()=>void loadOptions()}>重试加载</Button></div> : policyError ? <div role="alert" className="space-y-2 text-sm"><p>执行节点策略加载失败：{policyError}</p><Link className="underline" to="/test-nodes">打开测试节点设置修复</Link><Button variant="outline" size="sm" onClick={()=>void loadOptions()}>重试加载策略</Button></div> : policyReady && primaryNode ? <div className="space-y-2 text-sm">
         <p>主节点：{primaryNode.name} <span className={primaryNode.online ? 'text-primary' : 'text-destructive'}>（{primaryNode.online ? '在线' : '离线'}）</span></p>
         <p>备用节点顺序：{backupNodes.length ? backupNodes.map((node,index)=><span key={node.id}>{index>0?' → ':''}{node.name}（{node.online?'在线':'离线'}）</span>) : '未配置'}</p>
-        <p className="text-muted-foreground">当前任务由主节点执行；备份顺序由测试节点设置管理。</p>
+        <p className="text-muted-foreground">任务按主节点、外部备用顺序自动执行，主控作为最终备用。</p>
       </div> : <div className="space-y-2 text-sm"><p>尚未配置有效的主节点。</p><Link className="underline" to="/test-nodes">前往测试节点设置</Link></div>}
     </CardContent></Card>}
     {step===3 && <Card><CardHeader><CardTitle>核对本次提交</CardTitle></CardHeader><CardContent className="space-y-2 text-sm">

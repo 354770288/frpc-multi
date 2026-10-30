@@ -48,8 +48,11 @@ def probe_store() -> ProbeStore:
 
 def _enrich_source(items, node_id):
     store=job_store()
-    try:name=store.get_node(node_id)['name']
-    except KeyError:name=node_id
+    if node_id is not None:
+        try:name=store.get_node(node_id)['name']
+        except KeyError:name=node_id
+    else:
+        name=None
     from .jobs import split_endpoint
     def route_key(address, port=None):
         host, address_port = split_endpoint(address, PROBE_TEST_PORT)
@@ -69,7 +72,7 @@ def _enrich_source(items, node_id):
     for item in items:
         key = route_key(item['ip'], item.get('port'))
         enriched.append({
-            **item, 'nodeId': node_id, 'nodeName': name,
+            **item, **({'nodeId': node_id, 'nodeName': name} if node_id is not None else {}),
             'port': item.get('port', split_endpoint(item['ip'], PROBE_TEST_PORT)[1]),
             'latestRoute': lookup.get(key) if key else None,
         })
@@ -396,7 +399,7 @@ def list_servers(
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
     sort: Literal["ip", "group", "conn", "speed", "time"] = "group",
     order: Literal["asc", "desc"] = "asc",
-    nodeId: str = "console",
+    nodeId: str | None = None,
 ):
     try:
         query = ServerPageQuery(
@@ -431,7 +434,7 @@ def list_servers_cursor(
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
     sort: Literal["ip", "group", "conn", "speed", "time"] = "ip",
     order: Literal["asc", "desc"] = "asc",
-    nodeId: str = "console",
+    nodeId: str | None = None,
 ):
     try:
         query = ServerPageQuery(
@@ -453,7 +456,7 @@ def count_servers(
     tagId: str | None = None, includeTagIds: str = "", excludeTagIds: str = "",
     tagMode: Literal["any", "all"] = "any",
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
-    nodeId: str = "console",
+    nodeId: str | None = None,
 ):
     try:
         query = ServerPageQuery(q=q, group=group, group_ids=tuple(v for v in groupIds.split(",") if v.strip()),
@@ -474,7 +477,7 @@ def server_facets(
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
     tagSearch: str = "", tagPage: int | None = Query(default=None, ge=1, le=1_000_000),
     tagPageSize: int | None = Query(default=None, ge=1, le=100),
-    nodeId: str = "console",
+    nodeId: str | None = None,
 ):
     try:
         query = ServerPageQuery(
@@ -948,25 +951,25 @@ def list_history(
     kind: str,
     ip: str | None = None,
     limit: int = Query(default=200, ge=1, le=1000),
-    nodeId: str = "console",
+    nodeId: str | None = None,
 ):
     if kind == "route":
         return job_store().history(nodeId, kind, ip, limit)
     rows=job_store().history(nodeId,kind,ip,limit)
     if kind == "connectivity":
-        return [{**_public_conn(row),"nodeId":nodeId,"port":row["port"]} for row in rows]
+        return [{**_public_conn(row),"nodeId":row["node_id"],"port":row["port"]} for row in rows]
     if kind == "speed":
-        return [{**_public_speed(row),"nodeId":nodeId,"port":row["port"]} for row in rows]
+        return [{**_public_speed(row),"nodeId":row["node_id"],"port":row["port"]} for row in rows]
     raise HTTPException(status_code=404, detail="history 类型必须是 connectivity 或 speed")
 
 
 @router.get('/history/{kind}/page')
-def history_page(kind: Literal['route','connectivity','speed'],nodeId: str='console',page: int=Query(default=1,ge=1),pageSize: int=Query(default=50,ge=1,le=200),ip: str | None=None,port: int | None=Query(default=None,ge=1,le=65535),jobId: str | None=None,fromTime: str | None=None,toTime: str | None=None):
+def history_page(kind: Literal['route','connectivity','speed'],nodeId: str | None=None,page: int=Query(default=1,ge=1),pageSize: int=Query(default=50,ge=1,le=200),ip: str | None=None,port: int | None=Query(default=None,ge=1,le=65535),jobId: str | None=None,fromTime: str | None=None,toTime: str | None=None):
     return job_store().history_page(nodeId,kind,page,pageSize,ip=ip,port=port,job_id=jobId,from_time=fromTime,to_time=toTime)
 
 
 @router.delete("/history/{kind}")
-def clear_history(kind: str, user: Annotated[str, Depends(require_auth)], nodeId: str="console"):
+def clear_history(kind: str, user: Annotated[str, Depends(require_auth)], nodeId: str | None=None):
     if kind not in {"connectivity", "speed"}:
         raise HTTPException(status_code=404, detail="history 类型必须是 connectivity 或 speed")
     deleted = job_store().clear_history(nodeId,kind)
@@ -978,7 +981,7 @@ def clear_history(kind: str, user: Annotated[str, Depends(require_auth)], nodeId
 # 统计
 # ---------------------------------------------------------------------------
 @router.get("/dashboard")
-def dashboard(nodeId: str = "console"):
+def dashboard(nodeId: str | None = None):
     return source_store(nodeId).dashboard()
 
 
@@ -1104,7 +1107,7 @@ def discover_results(
     library: Literal["all", "imported", "new"] = "all",
     sort: Literal["discoveredAt", "ip", "latency"] = "discoveredAt",
     order: Literal["asc", "desc"] = "desc",
-    nodeId: str = "console",
+    nodeId: str | None = None,
 ):
     store_sort = "time" if sort == "discoveredAt" else sort
     result = source_store(nodeId).query_discover_results(DiscoverPageQuery(
@@ -1128,7 +1131,7 @@ def discover_results(
 
 
 @router.get("/discover/facets")
-def discover_facets(nodeId: str = "console"):
+def discover_facets(nodeId: str | None = None):
     return source_store(nodeId).discover_facets()
 
 

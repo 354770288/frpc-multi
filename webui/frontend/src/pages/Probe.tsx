@@ -28,7 +28,6 @@ import { TestNodesDialog } from './probe/TestNodesDialog';
 import { ProbeJobsPanel } from './probe/ProbeJobsPanel';
 import { ScanDialog } from './probe/ScanDialog';
 import { ProbeRouteHistory } from './probe/ProbeRouteHistory';
-import { SourceSelect } from './probe/NodeControls';
 import { BatchTagDialog, TagManagementDialog } from './probe/TagDialogs';
 import { ConfirmOverlay, Overlay } from '../components/Overlay';
 import { cn } from '../lib/utils';
@@ -96,9 +95,8 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
   const navigate = useNavigate();
   const { jobId: routeJobId } = useParams<{ jobId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [nodeId, setNodeId] = useState(searchParams.get('nodeId') || 'console');
-  useEffect(() => { setNodeId(searchParams.get('nodeId') || 'console'); }, [searchParams]);
-  const changeNodeId = (id: string) => { setNodeId(id); setSearchParams((current) => { const next=new URLSearchParams(current); next.set('nodeId',id); return next; }); };
+  // Current measurements are projected through the Console view; source is retained as provenance.
+  const nodeId = 'console';
   const sourceRef = useRef(nodeId); sourceRef.current = nodeId;
   const historyRequestRef = useRef(0);
   const nodeRequestRef = useRef(0);
@@ -137,9 +135,9 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
   const setTab = (value: string) => {
     setTabState(value as typeof section);
     const path: Record<string,string> = { discover:'/discovery',servers:'/servers',test:'/tests',history:'/results' };
-    navigate(`${path[value] || '/discovery'}?nodeId=${encodeURIComponent(nodeId)}`);
+    navigate(path[value] || '/discovery');
   };
-  const discovery = useDiscovery(tab === 'discover', nodeId);
+  const discovery = useDiscovery(tab === 'discover');
   // 服务器库同样走服务端分页（数据/轮询/跨页勾选由 hook 统一持有）
   const servers = useServers(tab === 'servers');
   const [serverSearch, setServerSearch] = useState(servers.query.q ?? '');
@@ -376,8 +374,8 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
     const request = ++historyRequestRef.current;
     try {
       const [conn, speed] = await Promise.all([
-        probeApi.connectivityHistory(ip || undefined, 200, nodeId),
-        probeApi.speedHistory(ip || undefined, 200, nodeId),
+        probeApi.connectivityHistory(ip || undefined, 200),
+        probeApi.speedHistory(ip || undefined, 200),
       ]);
       if (sourceRef.current !== nodeId || request !== historyRequestRef.current) return;
       setConnHistory(conn);
@@ -500,7 +498,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
     const kind = clearing;
     setClearing(null);
     try {
-      const result = await probeApi.clearHistory(kind, nodeId);
+      const result = await probeApi.clearHistory(kind);
       toast.success(`已清空 ${kind === 'connectivity' ? '连通性' : '速率'}历史（${result.deleted} 条）`);
       loadHistory(historyIp);
       servers.refreshAll().catch(() => {});
@@ -517,7 +515,6 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
         <h2 className="text-lg font-semibold">{{discover:'网段发现',servers:'服务器库',test:'测试任务',history:'测试结果'}[section]}</h2>
         <Badge tone="muted">frps 验收</Badge>
         <div className="ml-auto flex items-center gap-3">
-          {section !== 'test' && section !== 'servers' && <SourceSelect nodes={nodes} value={nodeId} onChange={changeNodeId} />}
           <Button size="sm" variant="outline" onClick={() => navigate('/test-nodes')}>测试节点</Button>
           {section !== 'test' && <ProbeStatCards stats={stats} />}
           {section !== 'test' && <Button size="sm" variant="outline"
@@ -530,7 +527,6 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
       {nodeError && <p role="alert" className="mb-3 text-xs text-destructive">{nodeError}</p>}
       {dashboardError && <p role="alert" className="mb-3 text-sm text-destructive">{dashboardError}；统计不可用，请重试。</p>}
       {section === 'servers' && <p className="mb-3 text-sm text-muted-foreground">当前结果反映最近一次被接受的主用或备用测量；执行来源与任务进度请查看测试任务和历史记录。</p>}
-      {section !== 'test' && section !== 'servers' && <p className="mb-3 text-sm text-muted-foreground">结果来源：{nodes.find((node) => node.id === nodeId)?.name || nodeId}。切换来源只改变显示；新任务使用测试节点设置中的主节点策略。</p>}
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="sr-only">
           <TabsTrigger value="discover">网段发现</TabsTrigger>
@@ -1056,7 +1052,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
               </CardContent>
             </Card>
           </div>
-          <div className="mt-4"><ProbeRouteHistory nodeId={nodeId} ip={historyIp} /></div>
+          <div className="mt-4"><ProbeRouteHistory ip={historyIp} /></div>
         </TabsContent>}
       </Tabs>
 
@@ -1216,7 +1212,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
       {clearing && (
         <ConfirmOverlay
           title={clearing === 'connectivity' ? '清空连通性历史' : '清空速率历史'}
-          description="清空后不可恢复，服务器清单不受影响。"
+          description="这会清空所有执行来源的历史记录，且不可恢复。服务器清单不受影响。"
           confirmLabel="清空" variant="destructive"
           onCancel={() => setClearing(null)} onConfirm={clearHistory}
         />

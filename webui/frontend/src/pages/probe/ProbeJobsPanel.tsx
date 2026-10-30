@@ -89,12 +89,10 @@ export function ProbeJobsPanel({
   const listPage = Math.max(1,Number(searchParams.get('page') || 1) || 1);
   const listState = searchParams.get('state') || '';
   const listMode = searchParams.get('mode') || '';
-  const listNode = searchParams.get('listNode') || '';
   const listTarget = searchParams.get('q') || '';
   const fromDate = searchParams.get('from') || '';
   const toDate = searchParams.get('to') || '';
   const taskState = searchParams.get('taskState') || '';
-  const taskNode = searchParams.get('taskNode') || '';
   const taskStage = searchParams.get('taskStage') || '';
   const taskTarget = searchParams.get('target') || '';
   const [listTotal,setListTotal] = useState(0);
@@ -145,7 +143,6 @@ export function ProbeJobsPanel({
       const query:Record<string,string|number>={page:listPage,pageSize:20};
       if(listState)query.state=listState;
       if(listMode)query.mode=listMode;
-      if(listNode)query.nodeId=listNode;
       if(listTarget)query.target=listTarget;
       const start=fromDate && /^\d{4}-\d{2}-\d{2}$/.test(fromDate) ? new Date(`${fromDate}T00:00:00`) : null;
       const end=toDate && /^\d{4}-\d{2}-\d{2}$/.test(toDate) ? new Date(`${toDate}T23:59:59.999`) : null;
@@ -157,7 +154,7 @@ export function ProbeJobsPanel({
       setListTotal(list.total);
       const id = focusJobId || jobId;
       if (id) {
-        const next = await probeApi.jobFiltered(id,{page,pageSize:200,...(taskState ? {state:taskState} : {}),...(taskNode ? {nodeId:taskNode} : {}),...(taskStage ? {stage:taskStage} : {}),...(taskTarget ? {target:taskTarget} : {})});
+        const next = await probeApi.jobFiltered(id,{page,pageSize:200,...(taskState ? {state:taskState} : {}),...(taskStage ? {stage:taskStage} : {}),...(taskTarget ? {target:taskTarget} : {})});
         if (!isCurrent()) return;
         const lastPage = Math.max(1, Math.ceil((next.filteredTaskTotal ?? next.taskTotal) / next.pageSize));
         if (page > lastPage) {
@@ -175,7 +172,7 @@ export function ProbeJobsPanel({
     } finally {
       if (isCurrent()) setLoading(false);
     }
-  }, [jobId, page, owner, listPage, listState, listMode, listNode, listTarget, fromDate, toDate, focusJobId, taskState, taskNode, taskStage, taskTarget]);
+  }, [jobId, page, owner, listPage, listState, listMode, listTarget, fromDate, toDate, focusJobId, taskState, taskStage, taskTarget]);
   const changeFilter = (key:string,value:string) => {
     setSearchParams((current)=>{const next=new URLSearchParams(current);if(value)next.set(key,value);else next.delete(key);next.delete('page');return next;});
     setPage(1);
@@ -274,7 +271,6 @@ export function ProbeJobsPanel({
         <div className="flex flex-wrap items-center gap-2">
           <label className="text-sm">批次状态 <select className="ml-2 rounded-md border bg-background p-2" value={listState} onChange={(event)=>changeFilter('state',event.target.value)}><option value="">全部状态</option><option value="running">进行中</option><option value="done">已完成</option><option value="failed">失败</option><option value="stopped">已停止</option></select></label>
           <label className="text-sm">类型 <select className="ml-2 rounded-md border bg-background p-2" value={listMode} onChange={(event)=>changeFilter('mode',event.target.value)}><option value="">全部类型</option>{(['discover','route','connectivity','speed','full'] as const).map((item)=><option key={item} value={item}>{MODE_NAMES[item]}</option>)}</select></label>
-          <label className="text-sm">执行节点 <select className="ml-2 rounded-md border bg-background p-2" value={listNode} onChange={(event)=>changeFilter('listNode',event.target.value)}><option value="">全部节点</option>{nodes.map((node)=><option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
           <label className="text-sm">目标 <input className="ml-2 rounded-md border bg-background p-2" value={listTarget} onChange={(event)=>changeFilter('q',event.target.value)} placeholder="IP 或域名" /></label>
           <label className="text-sm">起 <input className="ml-2 rounded-md border bg-background p-2" type="date" value={fromDate} onChange={(event)=>changeFilter('from',event.target.value)} /></label>
           <label className="text-sm">止 <input className="ml-2 rounded-md border bg-background p-2" type="date" value={toDate} onChange={(event)=>changeFilter('to',event.target.value)} /></label>
@@ -389,7 +385,6 @@ export function ProbeJobsPanel({
               </Button>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-sm">
-              <label>节点 <select className="ml-1 rounded-md border bg-background p-2" value={taskNode} onChange={(event)=>changeFilter('taskNode',event.target.value)}><option value="">全部</option>{nodes.map((node)=><option key={node.id} value={node.id}>{node.name}</option>)}</select></label>
               <label>阶段 <select className="ml-1 rounded-md border bg-background p-2" value={taskStage} onChange={(event)=>changeFilter('taskStage',event.target.value)}><option value="">全部</option>{['discover','route','connectivity','speed'].map((stage)=><option key={stage} value={stage}>{MODE_NAMES[stage as keyof typeof MODE_NAMES]}</option>)}</select></label>
               <label>状态 <select className="ml-1 rounded-md border bg-background p-2" value={taskState} onChange={(event)=>changeFilter('taskState',event.target.value)}><option value="">全部</option>{Object.entries(STATES).map(([state,name])=><option key={state} value={state}>{name}</option>)}</select></label>
               <label>目标 <input className="ml-1 rounded-md border bg-background p-2" value={taskTarget} onChange={(event)=>changeFilter('target',event.target.value)} placeholder="IP 或域名" /></label>
