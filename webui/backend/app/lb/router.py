@@ -1,6 +1,6 @@
 """/api/lb/*：负载均衡（Cloudflare DDNS，单 A 主备模式）。
 
-候选域名绑定服务器库分组；同步把该域名收敛为**一条**托管 A 记录，
+候选域名显式选择服务器；同步把该域名收敛为**一条**托管 A 记录，
 指向池内最优健康 IP（健康监测见 lb.health）。变更操作写审计（lb_* 前缀）。
 """
 
@@ -10,14 +10,14 @@ import threading
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth import require_auth
 from ..probe.store import ProbeStore
 from ..settings import settings
 from .cloudflare import CloudflareClient, CloudflareError
 from .store import LbStore, validate_domain_name
-from .syncer import summarize, sync_domain
+from .syncer import summarize, sync_domain, _sync_lock
 
 router = APIRouter(prefix="/api/lb", dependencies=[Depends(require_auth)])
 
@@ -50,7 +50,6 @@ def _cf_client(token: str) -> CloudflareClient:
 
 
 def _public_domain(domain, store: ProbeStore) -> dict:
-    pool = [s for s in store.list_servers() if s.server_group == domain.group_name]
     return {
         "id": domain.id,
         "name": domain.name,
@@ -67,7 +66,8 @@ def _public_domain(domain, store: ProbeStore) -> dict:
         "lastSyncMessage": domain.last_sync_message,
         "currentIp": domain.current_ip,
         "createdAt": domain.created_at,
-        "poolSize": len(pool),
+        "poolSize": LbStore(store.database_path).domain_server_count(domain.id),
+        "preferredServerId": domain.preferred_server_id,
     }
 
 
@@ -84,8 +84,8 @@ def pool_health_view():
     for domain in store.list_domains():
         if not domain.enabled:
             continue
-        pool = sorted({split_addr(s.ip, 7000)[0] for s in probe.list_servers() if s.server_group == domain.group_name})
-        selection = selection_for_domain(domain, probe, pool_health)
+        pool = sorted({split_addr(row['ip'], 7000)[0] for row in store.iter_domain_candidate_rows(domain.id)})
+        selection = selection_for_domain(domain, probe, pool_health, lb_store=store)
         domains.append({
             "domainId": domain.id,
             "name": domain.name,
@@ -172,7 +172,8 @@ class DomainCreate(BaseModel):
     name: str
     zoneId: str
     zoneName: str
-    group: str
+    group: str = ""
+    serverIds: list[Annotated[int, Field(strict=True, gt=0)]] | None = Field(default=None, max_length=5000)
     ttl: int = 60
     syncMode: str = "manual"
     intervalSeconds: int = 300
@@ -189,6 +190,14 @@ class DomainPatch(BaseModel):
 
 class DomainDelete(BaseModel):
     removeRecords: bool = False
+
+
+class DomainServersUpdate(BaseModel):
+    serverIds: list[Annotated[int, Field(strict=True, gt=0)]] = Field(min_length=1, max_length=5000)
+
+
+class DomainSwitch(BaseModel):
+    serverId: Annotated[int, Field(strict=True, gt=0)]
 
 
 def _check_domain_in_zone(name: str, zone_name: str) -> None:
@@ -214,11 +223,12 @@ def create_domain(payload: DomainCreate, user: Annotated[str, Depends(require_au
             name=payload.name, zone_id=payload.zoneId, zone_name=payload.zoneName,
             group_name=payload.group, ttl=payload.ttl, sync_mode=payload.syncMode,
             interval_seconds=payload.intervalSeconds, enabled=payload.enabled,
+            server_ids=payload.serverIds,
         )
     except ValueError as exc:
         audit(user, "lb_create_domain", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    audit(user, "lb_create_domain", message=f"{domain.name} → 分组「{domain.group_name}」")
+    audit(user, "lb_create_domain", message=f"{domain.name} → 手动候选池")
     return _public_domain(domain, probe_store())
 
 
@@ -233,11 +243,12 @@ def _get_domain_or_404(domain_id: int, store: LbStore):
 def update_domain(domain_id: int, payload: DomainPatch, user: Annotated[str, Depends(require_auth)]):
     store = lb_store()
     try:
-        domain = store.update_domain(
-            domain_id,
-            group_name=payload.group, ttl=payload.ttl, sync_mode=payload.syncMode,
-            interval_seconds=payload.intervalSeconds, enabled=payload.enabled,
-        )
+        with _sync_lock:
+            domain = store.update_domain(
+                domain_id,
+                group_name=payload.group, ttl=payload.ttl, sync_mode=payload.syncMode,
+                interval_seconds=payload.intervalSeconds, enabled=payload.enabled,
+            )
     except ValueError as exc:
         audit(user, "lb_update_domain", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -247,9 +258,76 @@ def update_domain(domain_id: int, payload: DomainPatch, user: Annotated[str, Dep
     return _public_domain(domain, probe_store())
 
 
+@router.get('/domains/{domain_id}/servers')
+def domain_servers(domain_id: int, page: int = Query(default=1, ge=1),
+                   pageSize: int = Query(default=50, ge=1, le=200), q: str = ''):
+    from ..probe.jobs import ProbeJobStore
+    from .health import split_addr
+
+    store = lb_store()
+    domain = _get_domain_or_404(domain_id, store)
+    result = store.domain_candidate_page(domain_id, page=page, page_size=pageSize, q=q)
+    rows = result['items']
+    hosts = list(dict.fromkeys(split_addr(row['ip'], 7000)[0] for row in rows))
+    observations = ProbeJobStore(store.database_path)
+    latest = {kind: {(row['server_ip'], row['port']): row
+                     for row in observations.current_results(kind, hosts)}
+              for kind in ('connectivity', 'speed')}
+    items = []
+    for row in rows:
+        endpoint = split_addr(row['ip'], 7000)
+        conn = latest['connectivity'].get(endpoint)
+        speed = latest['speed'].get(endpoint)
+        items.append({
+            'id': row['id'], 'ip': row['ip'], 'group': row['server_group'],
+            'preferred': row['id'] == domain.preferred_server_id,
+            'current': endpoint[0] == domain.current_ip,
+            'latestConnectivity': ({'frpsReachable': bool(conn['frps_reachable']),
+                                    'tunnelEstablished': bool(conn['tunnel_established']),
+                                    'firewallOpen': bool(conn['firewall_open']),
+                                    'detail': conn['detail'], 'testTime': conn['test_time']} if conn else None),
+            'latestSpeed': ({'downloadOk': bool(speed['dl_ok']), 'uploadOk': bool(speed['ul_ok']),
+                             'downloadMbps': speed['dl_speed_mbps'], 'uploadMbps': speed['ul_speed_mbps'],
+                             'testTime': speed['test_time']} if speed else None),
+        })
+    return {**result, 'items': items}
+
+
+def _change_domain_servers(domain_id: int, payload: DomainServersUpdate, user: str, *, remove: bool):
+    store = lb_store()
+    try:
+        with _sync_lock:
+            _get_domain_or_404(domain_id, store)
+            method = store.remove_domain_servers if remove else store.add_domain_servers
+            method(domain_id, payload.serverIds)
+            total = store.domain_server_count(domain_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit(user, 'lb_remove_candidates' if remove else 'lb_add_candidates',
+          message=f'域名 {domain_id} · {len(set(payload.serverIds))} 项')
+    return {'ok': True, 'total': total}
+
+
+@router.post('/domains/{domain_id}/servers')
+def add_domain_servers(domain_id: int, payload: DomainServersUpdate, user: Annotated[str, Depends(require_auth)]):
+    return _change_domain_servers(domain_id, payload, user, remove=False)
+
+
+@router.delete('/domains/{domain_id}/servers')
+def remove_domain_servers(domain_id: int, payload: DomainServersUpdate, user: Annotated[str, Depends(require_auth)]):
+    return _change_domain_servers(domain_id, payload, user, remove=True)
+
+
 @router.delete("/domains/{domain_id}")
 def delete_domain(domain_id: int, user: Annotated[str, Depends(require_auth)],
                   payload: DomainDelete | None = None):
+    with _sync_lock:
+        return _delete_domain_locked(domain_id, user, payload)
+
+
+def _delete_domain_locked(domain_id: int, user: str, payload: DomainDelete | None):
     store = lb_store()
     domain = _get_domain_or_404(domain_id, store)
     removed_records: list[str] = []
@@ -278,6 +356,15 @@ def delete_domain(domain_id: int, user: Annotated[str, Depends(require_auth)],
 # ---------------------------------------------------------------------------
 @router.post("/domains/{domain_id}/sync")
 def sync_domain_now(domain_id: int, user: Annotated[str, Depends(require_auth)]):
+    return _sync_domain_request(domain_id, user)
+
+
+@router.post('/domains/{domain_id}/switch')
+def switch_domain_server(domain_id: int, payload: DomainSwitch, user: Annotated[str, Depends(require_auth)]):
+    return _sync_domain_request(domain_id, user, target_server_id=payload.serverId)
+
+
+def _sync_domain_request(domain_id: int, user: str, *, target_server_id: int | None = None):
     store = lb_store()
     domain = _get_domain_or_404(domain_id, store)
     token = store.cloudflare_token()
@@ -285,11 +372,18 @@ def sync_domain_now(domain_id: int, user: Annotated[str, Depends(require_auth)])
         raise HTTPException(status_code=400, detail="未配置 Cloudflare API Token")
     try:
         with _cf_client(token) as client:
-            result = sync_domain(domain, probe_store(), store, client)
+            if target_server_id is None:
+                result = sync_domain(domain, probe_store(), store, client)
+            else:
+                result = sync_domain(domain, probe_store(), store, client, target_server_id=target_server_id)
+    except ValueError as exc:
+        audit(user, 'lb_switch_domain', success=False, message=f'{domain.name}: {exc}')
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except CloudflareError as exc:
         audit(user, "lb_sync_domain", success=False, message=f"{domain.name}: {exc}")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    audit(user, "lb_sync_domain", success=result.ok, message=f"{domain.name}: {result.message}")
+    audit(user, "lb_switch_domain" if target_server_id is not None else "lb_sync_domain",
+          success=result.ok, message=f"{domain.name}: {result.message}")
     return summarize(result)
 
 

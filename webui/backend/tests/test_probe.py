@@ -1069,7 +1069,8 @@ class ProbeStoreTests(unittest.TestCase):
         self.assertNotIn("旧组", self.store.list_groups())
         self.assertEqual(self.store.list_servers()[0].server_group, "新组")
         self.assertEqual(discover_rows(self.store)[0]["server_group"], "新组")
-        self.assertEqual(lb.list_domains()[0].group_name, "新组")
+        self.assertEqual(lb.list_domains()[0].group_name, "")
+        self.assertEqual(lb.domain_server_ids(lb.list_domains()[0].id), [self.store.list_servers()[0].id])
 
         with self.assertRaises(ValueError):
             self.store.rename_group("新组", "别的组")  # 重名拒绝
@@ -1100,14 +1101,16 @@ class ProbeStoreTests(unittest.TestCase):
         lb = LbStore(self.store.database_path)
         domain = lb.create_domain(name="stable.example.com", zone_id="z", zone_name="example.com",
                                   group_name=group_id)
-        self.assertEqual(domain.group_name, "稳定组")
-        self.assertEqual(domain.group_id, group_id)
+        self.assertEqual(domain.group_name, "")
+        self.assertIsNone(domain.group_id)
+        self.assertEqual(lb.domain_server_ids(domain.id), [server.id])
 
         self.store.rename_group("稳定组", "改名组")
         renamed = next(row for row in self.store.list_groups_with_colors() if row["name"] == "改名组")
         self.assertEqual(renamed["id"], group_id)
         self.assertEqual(self.store.get_server(server.id).server_group, "改名组")
-        self.assertEqual(lb.list_domains()[0].group_name, "改名组")
+        self.assertEqual(lb.list_domains()[0].group_name, "")
+        self.assertEqual(lb.domain_server_ids(domain.id), [server.id])
         with self.assertRaises(ValueError):
             self.store.delete_group("改名组")
 
@@ -1126,7 +1129,7 @@ class ProbeStoreTests(unittest.TestCase):
                       for table in ("probe_servers", "probe_discover_results", "lb_domains")]
         finally:
             connection.close()
-        self.assertEqual(values, [group_id, group_id, group_id])
+        self.assertEqual(values, [group_id, group_id, None])
 
     def test_stable_group_migration_failure_leaves_marker_clear_for_retry(self):
         import sqlite3
@@ -2500,7 +2503,9 @@ class DiscoverApiTests(unittest.TestCase):
         store = ProbeStore(self.db_path)
         self.assertIn("新组", store.list_groups())
         self.assertEqual(store.list_servers()[0].server_group, "新组")
-        self.assertEqual(LbStore(self.db_path).list_domains()[0].group_name, "新组")
+        lb = LbStore(self.db_path)
+        self.assertEqual(lb.list_domains()[0].group_name, "")
+        self.assertEqual(lb.domain_server_ids(lb.list_domains()[0].id), [store.list_servers()[0].id])
 
         conflict = client.patch("/api/probe/servers/groups/rename", json={
             "old": "新组", "new": "占位组",

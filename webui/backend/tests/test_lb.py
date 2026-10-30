@@ -105,7 +105,9 @@ class LbStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.update_domain(domain.id, sync_mode="bogus")
         updated = self.store.update_domain(domain.id, group_name="新池", enabled=False)
-        self.assertEqual(updated.group_name, "新池")
+        self.assertEqual(updated.group_name, "")
+        self.assertIsNone(updated.group_id)
+        self.assertEqual(self.store.domain_server_count(domain.id), 0)
         self.assertFalse(updated.enabled)
         self.store.delete_domain(domain.id)
         self.assertEqual(self.store.list_domains(), [])
@@ -145,11 +147,12 @@ class SyncerTests(unittest.TestCase):
         self.assertEqual(self.lb.get_domain(self.domain.id).current_ip, "1.1.1.1")
 
     def test_sync_keeps_selection_after_group_rename(self):
-        group_id = self.domain.group_id
+        member_ids = self.lb.domain_server_ids(self.domain.id)
         self.probe.rename_group("pool", "renamed-pool")
         domain = self.lb.get_domain(self.domain.id)
-        self.assertEqual(domain.group_id, group_id)
-        self.assertEqual(domain.group_name, "renamed-pool")
+        self.assertIsNone(domain.group_id)
+        self.assertEqual(domain.group_name, "")
+        self.assertEqual(self.lb.domain_server_ids(domain.id), member_ids)
         cf = FakeCloudflare()
         result = sync_domain(domain, self.probe, self.lb, cf,
                              make_monitor({"1.1.1.1": True, "2.2.2.2": True}))
@@ -207,7 +210,7 @@ class SyncerTests(unittest.TestCase):
         self.assertEqual(result['reason'], 'healthy_ip_order')
         self.assertEqual(result['nodeId'], node)  # legacy config remains visible for API/UI compatibility
 
-    def test_lb_scopes_current_result_reads_to_healthy_group_candidates(self):
+    def test_lb_scopes_current_result_reads_to_explicit_domain_candidates(self):
         from app.probe.jobs import ProbeJobStore
         jobs = ProbeJobStore(self.probe.database_path)
         node = jobs.create_node('scoped-lb-primary')['id']
@@ -233,7 +236,7 @@ class SyncerTests(unittest.TestCase):
         self.assertEqual(selection['bestIp'], '2.2.2.2')
         self.assertEqual(len(calls), 2)
         for _, ips, group in calls:
-            self.assertEqual(group, 'pool')
+            self.assertIsNone(group)
             self.assertEqual(set(ips), {'1.1.1.1', '2.2.2.2'})
 
     def test_failover_switches_on_unhealthy(self):
@@ -373,7 +376,7 @@ class HealthTests(unittest.TestCase):
 
 class SchedulerTests(unittest.TestCase):
     def setUp(self):
-        self.lb, _ = make_stores(tempfile.mkdtemp(prefix="lb-sched-"))
+        self.lb, self.probe = make_stores(tempfile.mkdtemp(prefix="lb-sched-"))
 
     def _domain(self, **kwargs):
         base = dict(name="frps.example.com", zone_id="z", zone_name="example.com",
@@ -408,28 +411,27 @@ class SchedulerTests(unittest.TestCase):
         from app.settings import settings
         from app.control.database import connect_database
 
-        probe = make_stores(tempfile.mkdtemp(prefix="lb-fo-"))[1]
-        probe.import_servers([{"ip": "1.1.1.1", "group": "g"}, {"ip": "2.2.2.2", "group": "g"}])
+        self.probe.import_servers([{"ip": "1.1.1.1", "group": "g"}, {"ip": "2.2.2.2", "group": "g"}])
         self.lb.set_cloudflare_token("tok")
         domain = self._domain(name="frps.example.com", sync_mode="scheduled", interval_seconds=86400)
 
         # 初始：两台健康 → 收敛到 1.1.1.1
         monitor = make_monitor({"1.1.1.1": True, "2.2.2.2": True})
         cf = FakeCloudflare()
-        count = run_due_syncs(self.lb, probe, settings, monitor=monitor, cf_factory=lambda tok: cf)
+        count = run_due_syncs(self.lb, self.probe, settings, monitor=monitor, cf_factory=lambda tok: cf)
         self.assertEqual(count, 1)
         self.assertEqual(cf.ips("frps.example.com"), ["1.1.1.1"])
 
         # 标记 last_sync_at 刚同步过（间隔 86400 不会到期），但 1.1.1.1 不健康 → 仍触发切换
         monitor._record("1.1.1.1", 7000, False, "t")
         monitor._record("1.1.1.1", 7000, False, "t")
-        count = run_due_syncs(self.lb, probe, settings, monitor=monitor, cf_factory=lambda tok: cf)
+        count = run_due_syncs(self.lb, self.probe, settings, monitor=monitor, cf_factory=lambda tok: cf)
         self.assertEqual(count, 1)
         self.assertEqual(cf.ips("frps.example.com"), ["2.2.2.2"])
         self.assertEqual(self.lb.get_domain(domain.id).current_ip, "2.2.2.2")
 
         # 无变化 → 不再同步
-        self.assertEqual(run_due_syncs(self.lb, probe, settings, monitor=monitor,
+        self.assertEqual(run_due_syncs(self.lb, self.probe, settings, monitor=monitor,
                                        cf_factory=lambda tok: cf), 0)
 
         # failover 写了审计

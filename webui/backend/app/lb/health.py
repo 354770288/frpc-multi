@@ -3,7 +3,7 @@
 单 A 主备模式的核心保障：候选域名的 A 记录必须始终指向池内「最优健康」的
 一台 frps——frpc 与访问端解析到同一台，命中率 100%；该台故障时自动切换。
 
-- 健康探测：对启用域名绑定分组内的服务器做 tcping（frps 端口），
+- 健康探测：对启用域名显式候选池内的服务器做 tcping（frps 端口），
   连续失败达到阈值才判定不健康（防单次抖动），一次成功立即恢复。
 - 选优：健康集合内按（最近穿透测试 frps 可达 > 最新下行速率 > IP 升序）
   排序，取第一。从未探测过的 IP 视为健康（冷启动不空转）。
@@ -104,16 +104,17 @@ class PoolHealthMonitor:
                        *, force: bool = False) -> list[str]:
         """检查所有启用域名池内、到期未查的 IP；返回本次检查的 IP 列表。"""
         port = effective_frps_port(settings, probe_store)
-        groups = {d.group_name for d in lb_store.list_domains() if d.enabled}
-        addrs: list[str] = []
-        for row in probe_store.list_servers():
-            if row.server_group in groups:
-                addrs.append(row.ip)
+        addrs_by_host: dict[str, int] = {}
+        for domain in lb_store.list_domains():
+            if not domain.enabled:
+                continue
+            for row in lb_store.iter_domain_candidate_rows(domain.id):
+                host, addr_port = split_addr(row["ip"], port)
+                addrs_by_host.setdefault(host, addr_port)
 
         now = time.monotonic()
         due: list[tuple[str, int]] = []
-        for addr in addrs:
-            host, addr_port = split_addr(addr, port)
+        for host, addr_port in addrs_by_host.items():
             with self._lock:
                 entry = self._states.get(host)
             if (force or entry is None
@@ -163,11 +164,12 @@ class PoolHealthMonitor:
             self._states.clear()
 
 
-def best_ip_for_domain(domain: LbDomain, probe_store: ProbeStore, monitor: PoolHealthMonitor) -> str | None:
+def best_ip_for_domain(domain: LbDomain, probe_store: ProbeStore, monitor: PoolHealthMonitor,
+                       *, lb_store: LbStore | None = None) -> str | None:
     """域名池内的最优健康 IP（供 syncer 与 failover 判定共用）。"""
     from .selection import selection_for_domain
 
-    return selection_for_domain(domain, probe_store, monitor)["bestIp"]
+    return selection_for_domain(domain, probe_store, monitor, lb_store=lb_store)["bestIp"]
 
 
 # 模块级单例：调度线程写入，API 读取（与 probe runner 相同的模式）

@@ -981,7 +981,7 @@ test('unknown domain health is not counted as healthy',async ({page})=>{
   await page.goto('/lb');
   await expect(page.getByText(/0\/1 已确认健康 · 1 待检查/)).toBeVisible();
   await page.screenshot({path:'test-results/lb-unknown-1280.png',fullPage:true});
-  await expect(page.getByRole('link',{name:'测量此分组 →'})).toHaveAttribute('href',/\/tests\/new\?/);
+  await expect(page.getByRole('button',{name:'候选服务器'})).toBeVisible();
 });
 
 test('test creation remains usable at phone width',async ({page})=>{

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
-  ChevronDown, Cloud, Globe, ListChecks, Pencil, Plus, RefreshCw, RefreshCcw, Trash2,
+  ChevronDown, Cloud, Globe, ListChecks, Pencil, Plus, RefreshCw, RefreshCcw, Trash2, Users,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { lbApi, probeApi } from '../lib/api';
@@ -23,20 +23,8 @@ import {
   Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import { ConfirmOverlay, Overlay } from '../components/Overlay';
-import type { CloudflareZone, GroupInfo, LbDomain, LbDnsRecord, LbHealth, LbSyncLog, LbSelectionConfig } from '../lib/types';
-
-type GroupBadgeVariant = 'destructive' | 'warning' | 'info' | 'success' | 'muted';
-
-/** 分组颜色 → Badge variant（红=危险/黄=警告/蓝=信息/绿=成功，无色=灰）。 */
-function groupVariant(color: GroupInfo['color'] | undefined): GroupBadgeVariant {
-  switch (color) {
-    case 'red': return 'destructive';
-    case 'yellow': return 'warning';
-    case 'blue': return 'info';
-    case 'green': return 'success';
-    default: return 'muted';
-  }
-}
+import type { CloudflareZone, LbDomain, LbDnsRecord, LbHealth, LbSyncLog, LbSelectionConfig } from '../lib/types';
+import { DomainCandidatesDialog } from './DomainCandidatesDialog';
 
 export function LbPage() {
   const navigate=useNavigate();
@@ -45,7 +33,6 @@ export function LbPage() {
   const [health, setHealth] = useState<LbHealth | null>(null);
   const [tokenConfigured, setTokenConfigured] = useState(false);
   const [zones, setZones] = useState<CloudflareZone[]>([]);
-  const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectionConfig,setSelectionConfig]=useState<LbSelectionConfig|null>(null);
   const [primaryNodeName,setPrimaryNodeName]=useState('');
@@ -54,16 +41,16 @@ export function LbPage() {
   const [editing, setEditing] = useState<LbDomain | 'new' | null>(null);
   const [inspecting, setInspecting] = useState<LbDomain | null>(null);
   const [deleting, setDeleting] = useState<LbDomain | null>(null);
+  const [managingCandidates, setManagingCandidates] = useState<LbDomain | null>(null);
   const [syncing, setSyncing] = useState<Record<number, boolean>>({});
 
   const load = useCallback(async () => {
     try {
-      const [list, info, groupList, healthSnapshot,selection,testNodes] = await Promise.all([
-        lbApi.domains(), lbApi.cloudflare(), probeApi.groups(), lbApi.health(),lbApi.selectionConfig(),probeApi.testNodes().catch(()=>({items:[]})),
+      const [list, info, healthSnapshot,selection,testNodes] = await Promise.all([
+        lbApi.domains(), lbApi.cloudflare(), lbApi.health(),lbApi.selectionConfig(),probeApi.testNodes().catch(()=>({items:[]})),
       ]);
       setDomains(list);
       setTokenConfigured(info.configured);
-      setGroups(groupList);
       setHealth(healthSnapshot);
       setSelectionConfig(selection);
       const policy = await probeApi.executionPolicy();
@@ -127,7 +114,7 @@ export function LbPage() {
               <table className="w-full min-w-[700px]">
                 <thead>
                   <tr className="border-b bg-muted/50">
-                    <Th>域名</Th><Th>绑定分组</Th><Th>当前指向 / 选优</Th><Th>主控健康</Th><Th>最近同步</Th><Th align="right">操作</Th>
+                    <Th>域名</Th><Th>候选服务器</Th><Th>当前指向 / 选优</Th><Th>主控健康</Th><Th>最近同步</Th><Th align="right">操作</Th>
                   </tr>
                 </thead>
                 <tbody>
@@ -150,15 +137,8 @@ export function LbPage() {
                       </Td>
                       <Td>
                         <div className="flex items-center gap-1.5">
-                          <Badge variant={groupVariant(groups.find((g) => g.name === domain.group)?.color)} dot>{domain.group}</Badge>
-                          {domain.poolSize === 0 && (
-                            <>
-                              <Badge tone="warning">空池</Badge>
-                              <Link to="/servers" className="whitespace-nowrap text-[11px] text-primary underline underline-offset-2">
-                                去服务器库 →
-                              </Link>
-                            </>
-                          )}
+                          <Badge tone={domain.poolSize ? 'muted' : 'warning'}>{domain.poolSize} 台</Badge>
+                          {!domain.poolSize && <span className="text-[11px] text-muted-foreground">待添加</span>}
                         </div>
                       </Td>
                       <Td>
@@ -173,7 +153,6 @@ export function LbPage() {
                           <span className="text-xs text-muted-foreground">未同步</span>
                         )}
                         {domainHealth?.selection && <div className="mt-2"><SelectionReason selection={domainHealth.selection} /></div>}
-                        <Link to={`/tests/new?${new URLSearchParams({ group: domain.group })}`} className="mt-2 inline-block text-sm text-primary underline underline-offset-2">测量此分组 →</Link>
                       </Td>
                       <Td>
                         <span className="font-mono text-sm tabular-nums" title={poolStates.map((s) => s ? `${s.ip} ${s.ok === false ? '失败' : s.ok === true ? '健康' : '待检查'}` : '').filter(Boolean).join('\n')}>
@@ -204,6 +183,9 @@ export function LbPage() {
                           <Button size="sm" variant="outline" onClick={() => syncNow(domain)} disabled={!!syncing[domain.id]}>
                             <RefreshCcw size={13} />{syncing[domain.id] ? '同步中…' : '立即同步'}
                           </Button>
+                          <Button size="sm" variant="outline" onClick={() => setManagingCandidates(domain)}>
+                            <Users size={13} />候选服务器
+                          </Button>
                           <Button size="sm" variant="outline" onClick={() => {setInspecting(domain);navigate(`/lb/${domain.id}`);}}>
                             <ListChecks size={13} />记录
                           </Button>
@@ -231,18 +213,17 @@ export function LbPage() {
                           <EmptyHeader>
                             <EmptyMedia variant="icon"><Globe /></EmptyMedia>
                             <EmptyTitle>还没有候选域名</EmptyTitle>
-                            <EmptyDescription>候选域名 = 绑定健康分组的单 A 主备入口（自动指向最优 frps，故障自动切换）。三步接入：</EmptyDescription>
+                            <EmptyDescription>为每个域名手动指定候选服务器；主控根据健康状态自动切换，健康时优先使用手动固定的服务器。</EmptyDescription>
                           </EmptyHeader>
                           <EmptyContent>
                             <div className="flex flex-col gap-2 text-left text-xs leading-5 text-muted-foreground">
                               <div>
-                                <span className="mr-1 font-medium text-foreground">① 备池</span>
-                                服务器库穿透测试，通过的服务器勾选批量改入健康分组
-                                <Link to="/servers" className="ml-1 text-primary underline underline-offset-2">去服务器库 →</Link>
+                                <span className="mr-1 font-medium text-foreground">① 建域名</span>
+                                点右上方「新增域名」，选择 Zone 并创建域名
                               </div>
                               <div>
-                                <span className="mr-1 font-medium text-foreground">② 建域名</span>
-                                点右上方「新增域名」，选择 Zone 并绑定该健康分组，立即同步生成 A 记录
+                                <span className="mr-1 font-medium text-foreground">② 选候选</span>
+                                打开域名的「候选服务器」，从服务器库逐页搜索并勾选
                               </div>
                               <div>
                                 <span className="mr-1 font-medium text-foreground">③ 使用</span>
@@ -266,9 +247,8 @@ export function LbPage() {
         <DomainDialog
           domain={editing === 'new' ? null : editing}
           zones={zones}
-          groups={groups.map((group) => group.name)}
           onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); load(); }}
+          onSaved={(savedDomain) => { setEditing(null); void load(); if (editing === 'new') setManagingCandidates(savedDomain); }}
           onNeedZones={async () => {
             const result = await lbApi.verifyCloudflare();
             setZones(result.zones);
@@ -278,6 +258,9 @@ export function LbPage() {
       )}
       {inspecting && (
         <RecordsDialog domain={inspecting} onClose={() => {setInspecting(null);navigate('/lb');}} />
+      )}
+      {managingCandidates && (
+        <DomainCandidatesDialog key={managingCandidates.id} domain={managingCandidates} onClose={() => setManagingCandidates(null)} onChanged={() => void load()} />
       )}
       {deleting && (
         <DeleteDomainDialog domain={deleting} onCancel={() => setDeleting(null)}
@@ -392,17 +375,15 @@ function CloudflareCard({ configured, masked, zones, onZones, onSaved }: {
 }
 
 /** 新增 / 编辑候选域名弹窗。 */
-function DomainDialog({ domain, zones, groups, onClose, onSaved, onNeedZones }: {
+function DomainDialog({ domain, zones, onClose, onSaved, onNeedZones }: {
   domain: LbDomain | null;
   zones: CloudflareZone[];
-  groups: string[];
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (domain: LbDomain) => void;
   onNeedZones: () => Promise<CloudflareZone[]>;
 }) {
   const [zoneId, setZoneId] = useState(domain?.zoneId ?? '');
   const [name, setName] = useState(domain?.name ?? '');
-  const [group, setGroup] = useState(domain?.group ?? '');
   const [ttl, setTtl] = useState(String(domain?.ttl ?? 60));
   const [mode, setMode] = useState<'manual' | 'scheduled'>(domain?.syncMode ?? 'manual');
   const [interval, setIntervalValue] = useState(String(Math.round((domain?.intervalSeconds ?? 300) / 60)));
@@ -427,7 +408,6 @@ function DomainDialog({ domain, zones, groups, onClose, onSaved, onNeedZones }: 
       toast.error(`域名必须等于 ${selectedZone.name} 或是其子域名`);
       return;
     }
-    if (!group) { toast.error('请选择绑定的服务器分组'); return; }
     if (!/^\d+$/.test(ttl) || Number(ttl) < 30 || Number(ttl) > 3600) { toast.error('TTL 需在 30-3600 秒'); return; }
     const intervalSeconds = Math.round(Number(interval) * 60);
     if (mode === 'scheduled' && (!/^\d+(\.5)?$/.test(interval) || intervalSeconds < 60 || intervalSeconds > 86400)) {
@@ -436,18 +416,19 @@ function DomainDialog({ domain, zones, groups, onClose, onSaved, onNeedZones }: 
     setSaving(true);
     try {
       if (domain) {
-        await lbApi.updateDomain(domain.id, {
-          group, ttl: Number(ttl), syncMode: mode, intervalSeconds, enabled,
-        });
-        toast.success('候选域名已更新');
-      } else {
-        await lbApi.createDomain({
-          name: name.trim(), zoneId, zoneName: selectedZone!.name, group,
+        const saved = await lbApi.updateDomain(domain.id, {
           ttl: Number(ttl), syncMode: mode, intervalSeconds, enabled,
         });
-        toast.success('候选域名已创建，点「立即同步」生成 A 记录');
+        toast.success('候选域名已更新');
+        onSaved(saved);
+      } else {
+        const saved = await lbApi.createDomain({
+          name: name.trim(), zoneId, zoneName: selectedZone!.name,
+          ttl: Number(ttl), syncMode: mode, intervalSeconds, enabled,
+        });
+        toast.success('域名已创建，下一步请添加候选服务器');
+        onSaved(saved);
       }
-      onSaved();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '保存失败');
     } finally {
@@ -478,19 +459,6 @@ function DomainDialog({ domain, zones, groups, onClose, onSaved, onNeedZones }: 
             placeholder={selectedZone ? `如 frps.${selectedZone.name}` : 'frps.example.com'}
             disabled={!!domain}
           />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label className="text-xs">绑定服务器分组（池 = 组内全部服务器）</Label>
-          <Select value={group} onValueChange={setGroup}>
-            <SelectTrigger><SelectValue placeholder="选择分组" /></SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {groups.length
-                  ? groups.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)
-                  : <div className="px-3 py-2 text-xs text-muted-foreground">还没有分组，去「服务器库 → 分组管理」创建</div>}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div className="flex flex-col gap-1.5">

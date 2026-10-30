@@ -59,14 +59,17 @@ def _fresh(row: dict, seconds: float) -> bool:
         return False
 
 
-def selection_for_domain(domain: LbDomain, probe: ProbeStore, monitor) -> dict:
+def selection_for_domain(domain: LbDomain, probe: ProbeStore, monitor, *,
+                         lb_store: LbStore | None = None) -> dict:
     """One decision shared by preview, scheduled failover and DNS synchronization."""
-    config = selection_config(LbStore(probe.database_path))
+    lb_store = lb_store or LbStore(probe.database_path)
+    config = selection_config(lb_store)
     legacy_source = config["nodeId"]
-    rows = [r for r in probe.list_servers_with_status() if r["server_group"] == domain.group_name]
+    rows = list(lb_store.iter_domain_candidate_rows(domain.id))
     healthy = [r for r in rows if monitor.is_healthy(_endpoint(r["ip"], 7000)[0])]
     view = {"nodeId": legacy_source, "healthSource": "console", "maxAgeHours": config["maxAgeHours"],
-            "observedAt": None, "validCandidates": 0, "bestIp": None, "reason": "no_healthy_candidates"}
+            "observedAt": None, "validCandidates": 0, "bestIp": None, "bestServerId": None,
+            "reason": "no_healthy_candidates"}
     if not healthy:
         return view
 
@@ -76,7 +79,7 @@ def selection_for_domain(domain: LbDomain, probe: ProbeStore, monitor) -> dict:
     candidate_ips = list(dict.fromkeys(_endpoint(row["ip"], PROBE_TEST_PORT)[0] for row in healthy))
     # Choose latest first, THEN filter age: failed recent results must hide older successes.
     latest = {kind: {_endpoint(r["server_ip"], r.get("port", PROBE_TEST_PORT)): r
-                     for r in observations.current_results(kind, candidate_ips, server_group=domain.group_name)
+                     for r in observations.current_results(kind, candidate_ips)
                      if _fresh(r, max_age)}
               for kind in ("connectivity", "speed")}
     ranked = []
@@ -89,19 +92,29 @@ def selection_for_domain(domain: LbDomain, probe: ProbeStore, monitor) -> dict:
         if conn is not None or speed is not None:
             observed.add(row["ip"])
             timestamps.extend(r["test_time"] for r in (conn, speed) if r is not None)
-        ranked.append({"ip": row["ip"], "c_frps_reachable": bool(conn and conn.get("frps_reachable")),
+        ranked.append({"server_id": row["id"], "ip": row["ip"],
+                       "c_frps_reachable": bool(conn and conn.get("frps_reachable")),
                        "s_dl_speed_mbps": (float(speed.get("dl_speed_bps", 0)) * 8 / 1024**2
                                            if speed and speed.get("dl_ok") else 0)})
     observed_hosts = {_endpoint(addr, PROBE_TEST_PORT)[0] for addr in observed}
     view.update(validCandidates=len(observed_hosts), observedAt=max(timestamps) if timestamps else None)
+    preferred = next((row for row in healthy if row["id"] == domain.preferred_server_id), None)
+    if preferred is not None:
+        view.update(bestIp=_endpoint(preferred["ip"], PROBE_TEST_PORT)[0],
+                    bestServerId=preferred["id"], reason="preferred_server")
+        return view
+
     current_healthy = any(_endpoint(r["ip"], PROBE_TEST_PORT)[0] == domain.current_ip for r in healthy)
     if current_healthy and domain.current_ip not in observed_hosts:
-        view.update(bestIp=domain.current_ip, reason="keep_healthy_current")
+        current = next(r for r in healthy if _endpoint(r["ip"], PROBE_TEST_PORT)[0] == domain.current_ip)
+        view.update(bestIp=domain.current_ip, bestServerId=current["id"], reason="keep_healthy_current")
     elif observed:
         ranked.sort(key=lambda r: _order(r["ip"]))
         ranked.sort(key=lambda r: (r["c_frps_reachable"], r["s_dl_speed_mbps"]), reverse=True)
-        view.update(bestIp=_endpoint(ranked[0]["ip"], PROBE_TEST_PORT)[0], reason="primary_observation")
+        view.update(bestIp=_endpoint(ranked[0]["ip"], PROBE_TEST_PORT)[0],
+                    bestServerId=ranked[0]["server_id"], reason="primary_observation")
     else:
-        selected = min((r["ip"] for r in healthy), key=_order)
-        view.update(bestIp=_endpoint(selected, PROBE_TEST_PORT)[0], reason="healthy_ip_order")
+        selected = min(healthy, key=lambda r: _order(r["ip"]))
+        view.update(bestIp=_endpoint(selected["ip"], PROBE_TEST_PORT)[0],
+                    bestServerId=selected["id"], reason="healthy_ip_order")
     return view

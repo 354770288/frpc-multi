@@ -499,7 +499,9 @@ export type LbDomain = {
   name: string;
   zoneId: string;
   zoneName: string;
+  /** Legacy migration field; new domains use explicit server membership. */
   group: string;
+  groupId: string | null;
   ttl: number;
   syncMode: 'manual' | 'scheduled';
   intervalSeconds: number;
@@ -510,6 +512,19 @@ export type LbDomain = {
   currentIp: string | null;
   createdAt: string;
   poolSize: number;
+  preferredServerId: number | null;
+};
+
+export type LbDomainServer = Pick<ProbeServer, 'id' | 'ip' | 'group' | 'latestConnectivity' | 'latestSpeed'> & {
+  preferred: boolean;
+  current: boolean;
+};
+
+export type LbDomainServerPage = {
+  items: LbDomainServer[];
+  page: number;
+  pageSize: number;
+  total: number;
 };
 
 // 单 A 主备：池内 IP 健康快照与各域名当前指向/最优 IP

@@ -304,8 +304,17 @@ CREATE TABLE IF NOT EXISTS lb_domains (
     last_sync_ok INTEGER,
     last_sync_message TEXT NOT NULL DEFAULT '',
     current_ip TEXT,
+    preferred_server_id INTEGER REFERENCES probe_servers(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS lb_domain_servers (
+    domain_id INTEGER NOT NULL REFERENCES lb_domains(id) ON DELETE CASCADE,
+    server_id INTEGER NOT NULL REFERENCES probe_servers(id) ON DELETE CASCADE,
+    PRIMARY KEY (domain_id, server_id)
+);
+CREATE INDEX IF NOT EXISTS idx_lb_domain_servers_server
+    ON lb_domain_servers(server_id, domain_id);
 
 CREATE TABLE IF NOT EXISTS lb_sync_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -380,10 +389,50 @@ def _migrate_nodes(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_lb_domains(connection: sqlite3.Connection) -> None:
-    """lb_domains 补 current_ip 列（单 A 主备模式：当前 A 记录指向的 IP）。"""
+    """Add current and manual-preference columns to legacy LB domains."""
     columns = _column_names(connection, "lb_domains")
     if columns and "current_ip" not in columns:
         connection.execute("ALTER TABLE lb_domains ADD COLUMN current_ip TEXT")
+    if columns and "preferred_server_id" not in columns:
+        connection.execute(
+            "ALTER TABLE lb_domains ADD COLUMN preferred_server_id INTEGER "
+            "REFERENCES probe_servers(id) ON DELETE SET NULL"
+        )
+
+
+def _migrate_lb_domain_servers(connection: sqlite3.Connection) -> None:
+    """Snapshot legacy group candidates once, then detach domains from groups."""
+    if not _column_names(connection, "lb_domains") or not _column_names(connection, "probe_servers"):
+        return
+
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        marker = connection.execute(
+            "SELECT value FROM lb_settings WHERE key = 'lb_domain_servers_migrated'"
+        ).fetchone()
+        if marker is None:
+            # Stable ids are authoritative. Legacy names participate only when
+            # neither side had an id at migration time.
+            connection.execute(
+                "INSERT OR IGNORE INTO lb_domain_servers(domain_id, server_id) "
+                "SELECT d.id, s.id FROM lb_domains d JOIN probe_servers s ON ("
+                "(d.group_id IS NOT NULL AND d.group_id != '' AND s.group_id = d.group_id) OR "
+                "((d.group_id IS NULL OR d.group_id = '') AND (s.group_id IS NULL OR s.group_id = '') "
+                "AND trim(d.group_name) != '' "
+                "AND s.server_group = d.group_name))"
+            )
+            connection.execute(
+                "INSERT INTO lb_settings(key, value) VALUES('lb_domain_servers_migrated', '1')"
+            )
+
+        # Snapshot is now authoritative. Clear legacy bindings even on retry
+        # after the marker was committed by an earlier application version.
+        connection.execute("UPDATE lb_domains SET group_name = '', group_id = NULL")
+    except Exception:
+        connection.rollback()
+        raise
+    else:
+        connection.commit()
 
 
 def _migrate_probe_groups(connection: sqlite3.Connection) -> None:
@@ -1019,6 +1068,8 @@ def initialize_database(path: Path) -> None:
             _migrate_lb_domains(connection)
             _migrate_probe_groups(connection)
             _migrate_stable_group_ids(connection)
+            connection.commit()
+            _migrate_lb_domain_servers(connection)
             connection.commit()
             # 各迁移自带 BEGIN IMMEDIATE/COMMIT，必须都在外层 commit 之后调用，
             # 避免撞上前面 DML 留下的隐式事务

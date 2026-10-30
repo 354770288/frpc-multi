@@ -14,6 +14,7 @@ import type {
   InstanceDetail,
   LabelCount,
   LbDomain,
+  LbDomainServerPage,
   LbDnsRecord,
   LbHealth,
   LbSyncLog,
@@ -420,12 +421,22 @@ export const lbApi = {
     }),
   domains: () => api<LbDomain[]>('/api/lb/domains'),
   createDomain: (payload: {
-    name: string; zoneId: string; zoneName: string; group: string;
+    name: string; zoneId: string; zoneName: string; serverIds?: number[];
     ttl?: number; syncMode?: 'manual' | 'scheduled'; intervalSeconds?: number; enabled?: boolean;
   }) => api<LbDomain>('/api/lb/domains', { method: 'POST', body: JSON.stringify(payload) }),
   updateDomain: (id: number, payload: {
-    group?: string; ttl?: number; syncMode?: 'manual' | 'scheduled'; intervalSeconds?: number; enabled?: boolean;
+    ttl?: number; syncMode?: 'manual' | 'scheduled'; intervalSeconds?: number; enabled?: boolean;
   }) => api<LbDomain>(`/api/lb/domains/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  domainServers: (id: number, query: { page: number; pageSize: number; q?: string }, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ page: String(query.page), pageSize: String(query.pageSize), q: query.q?.trim() ?? '' });
+    return api<LbDomainServerPage>(`/api/lb/domains/${id}/servers?${params}`, { signal });
+  },
+  addDomainServers: (id: number, serverIds: number[]) =>
+    api<{ ok: boolean; total: number }>(`/api/lb/domains/${id}/servers`, { method: 'POST', body: JSON.stringify({ serverIds }) }),
+  removeDomainServers: (id: number, serverIds: number[]) =>
+    api<{ ok: boolean; total: number }>(`/api/lb/domains/${id}/servers`, { method: 'DELETE', body: JSON.stringify({ serverIds }) }),
+  switchDomain: (id: number, serverId: number) =>
+    api<LbSyncResult>(`/api/lb/domains/${id}/switch`, { method: 'POST', body: JSON.stringify({ serverId }) }),
   deleteDomain: (id: number, removeRecords: boolean) =>
     api<{ ok: boolean; removedRecords: string[] }>(`/api/lb/domains/${id}`, {
       method: 'DELETE',

@@ -58,7 +58,7 @@ def run_due_syncs(store: LbStore, probe_store: ProbeStore, settings: Settings,
     for domain in store.list_domains():
         if not domain.enabled:
             continue
-        best = best_ip_for_domain(domain, probe_store, monitor)
+        best = best_ip_for_domain(domain, probe_store, monitor, lb_store=store)
         if best is not None and best != domain.current_ip:
             # 最优健康 IP 变化：立即切换（含从未同步过的域名首次收敛）
             to_sync[domain.id] = domain

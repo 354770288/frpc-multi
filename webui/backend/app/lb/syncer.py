@@ -11,7 +11,6 @@ DNS 记录原样保留。Cloudflare API 非事务，逐条执行、失败收集�
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass, field
 
 from ..models import now_iso
@@ -20,9 +19,9 @@ from .cloudflare import CloudflareClient, CloudflareError
 from .health import PoolHealthMonitor, split_addr
 from .selection import selection_for_domain
 from .store import LbDomain, LbStore
+from .coordination import sync_lock as _sync_lock
 
 # 同步很快（每条记录一个 API 调用），全局锁串行避免手动 + 定时并发互踩
-_sync_lock = threading.Lock()
 
 
 @dataclass
@@ -42,20 +41,47 @@ class SyncResult:
 
 
 def sync_domain(domain: LbDomain, probe_store: ProbeStore, lb_store: LbStore,
-                cf: CloudflareClient, monitor: PoolHealthMonitor | None = None) -> SyncResult:
+                cf: CloudflareClient, monitor: PoolHealthMonitor | None = None, *,
+                target_server_id: int | None = None) -> SyncResult:
     """收敛该域名的托管 A 记录到一条 = 池内最优健康 IP。
 
     - 池为空：删除全部托管记录；
     - 池内无健康 IP：保留现有记录不动（避免抖动期 DNS 悬空），标记失败并提示。
     """
     with _sync_lock:
-        status_rows = [row for row in probe_store.list_servers_with_status()
-                       if row["server_group"] == domain.group_name]
-        pool_ips = {split_addr(row["ip"], 7000)[0] for row in status_rows}
+        # The caller may hold an old scheduler/API snapshot. Reload after taking
+        # the sync lock so a stale preferred_server_id cannot undo a manual pin.
+        domain = lb_store.get_domain(domain.id)
+        candidates = list(lb_store.iter_domain_candidate_rows(domain.id))
+        pool_ips = {split_addr(row["ip"], 7000)[0] for row in candidates}
         monitor = monitor or _default_monitor()
-        selection = selection_for_domain(domain, probe_store, monitor)
+        selection = selection_for_domain(domain, probe_store, monitor, lb_store=lb_store)
         target_ip = selection["bestIp"] if pool_ips else None
         healthy_size = sum(1 for ip in pool_ips if monitor.is_healthy(ip))
+
+        if target_server_id is not None:
+            requested = (next((row for row in candidates if row["id"] == target_server_id), None)
+                         if type(target_server_id) is int else None)
+            if requested is None:
+                result = SyncResult(
+                    ok=False, target_ip=domain.current_ip, previous_ip=domain.current_ip,
+                    pool_size=len(pool_ips), healthy_size=healthy_size,
+                    errors=["指定服务器不属于该域名候选列表"], selection=selection,
+                )
+                _finish(lb_store, domain, result)
+                return result
+            requested_ip = split_addr(requested["ip"], 7000)[0]
+            if not monitor.is_healthy(requested_ip):
+                result = SyncResult(
+                    ok=False, target_ip=domain.current_ip, previous_ip=domain.current_ip,
+                    pool_size=len(pool_ips), healthy_size=healthy_size,
+                    errors=[f"指定服务器 {requested_ip} 当前不健康"], selection=selection,
+                )
+                _finish(lb_store, domain, result)
+                return result
+            target_ip = requested_ip
+            selection = {**selection, "bestIp": requested_ip,
+                         "bestServerId": requested["id"], "reason": "manual_target"}
 
         try:
             records = cf.list_a_records(domain.zone_id, domain.name)
@@ -96,19 +122,24 @@ def sync_domain(domain: LbDomain, probe_store: ProbeStore, lb_store: LbStore,
             return result
         else:
             # 收敛到单条：缺则补、多则删
+            may_remove_old = True
             if target_ip not in managed_ips:
                 try:
                     cf.create_a_record(domain.zone_id, domain.name, target_ip, domain.ttl)
                     added.append(target_ip)
                 except CloudflareError as exc:
                     errors.append(f"写入 {target_ip} 失败: {exc}")
-            for record in managed:
-                if record.content != target_ip:
-                    try:
-                        cf.delete_a_record(domain.zone_id, record.id)
-                        removed.append(record.content)
-                    except CloudflareError as exc:
-                        errors.append(f"移除 {record.content} 失败: {exc}")
+                    # Cloudflare is not transactional. Keep the old managed
+                    # record if creating its replacement failed.
+                    may_remove_old = False
+            if may_remove_old:
+                for record in managed:
+                    if record.content != target_ip:
+                        try:
+                            cf.delete_a_record(domain.zone_id, record.id)
+                            removed.append(record.content)
+                        except CloudflareError as exc:
+                            errors.append(f"移除 {record.content} 失败: {exc}")
 
         switched = bool(previous_ip and target_ip and previous_ip != target_ip)
         result = SyncResult(
@@ -124,7 +155,18 @@ def sync_domain(domain: LbDomain, probe_store: ProbeStore, lb_store: LbStore,
             errors=errors,
             selection=selection,
         )
-        _finish(lb_store, domain, result)
+        preferred_update = _UNSET
+        if result.ok:
+            if not pool_ips:
+                preferred_update = None
+            elif target_server_id is not None:
+                preferred_update = target_server_id
+            elif (domain.preferred_server_id is not None
+                  and selection.get("bestServerId") != domain.preferred_server_id):
+                # Clear a pin only after fallback has successfully converged;
+                # this prevents automatic return when the pinned member recovers.
+                preferred_update = None
+        _finish(lb_store, domain, result, preferred_server_id=preferred_update)
         return result
 
 
@@ -133,7 +175,11 @@ def _default_monitor() -> PoolHealthMonitor:
     return pool_health
 
 
-def _finish(lb_store: LbStore, domain: LbDomain, result: SyncResult) -> None:
+_UNSET = object()
+
+
+def _finish(lb_store: LbStore, domain: LbDomain, result: SyncResult, *,
+            preferred_server_id: int | None | object = _UNSET) -> None:
     parts = [f"池 {result.pool_size} 台（健康 {result.healthy_size}）"]
     if result.selection:
         parts.append(f"观测 {result.selection['nodeId']} · {result.selection['reason']}"
@@ -147,17 +193,21 @@ def _finish(lb_store: LbStore, domain: LbDomain, result: SyncResult) -> None:
     if result.removed:
         parts.append(f"移除 {len(result.removed)} 条（{'、'.join(result.removed[:5])}{'…' if len(result.removed) > 5 else ''}）")
     if result.pool_size == 0:
-        parts.append("警告：绑定分组内没有服务器，已清空托管记录")
+        parts.append("警告：候选池内没有服务器，已清空托管记录")
     if result.unmanaged_count:
         parts.append(f"另有 {result.unmanaged_count} 条非托管记录未改动")
     if result.errors:
         parts.append("；".join(result.errors))
     result.message = "；".join(parts)
+    params = {}
+    if preferred_server_id is not _UNSET:
+        params["preferred_server_id"] = preferred_server_id
     lb_store.mark_sync_result(
         domain.id, ok=result.ok, message=result.message,
         added=result.added, removed=result.removed,
         kept=1 if result.target_ip else 0,
         current_ip=result.target_ip if result.ok else domain.current_ip,
+        **params,
     )
 
 

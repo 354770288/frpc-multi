@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import secrets
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable, Literal, NamedTuple, Sequence, TypeVar
@@ -652,6 +653,7 @@ class ProbeStore:
         server_group: str | None = None,
         tag_ids: Sequence[str] | None = None,
     ) -> ProbeServer:
+        from ..lb.coordination import sync_lock
         def write(connection):
             connection.execute("BEGIN IMMEDIATE")
             server = connection.execute(
@@ -677,17 +679,22 @@ class ProbeStore:
                 )
             connection.commit()
 
-        self._with_connection(write)
+        with sync_lock if ip is not None else nullcontext():
+            self._with_connection(write)
         return self.get_server(server_id)
 
     def delete_server(self, server_id: int) -> None:
+        from ..lb.coordination import sync_lock
         self.get_server(server_id)
 
         def write(connection):
             connection.execute("DELETE FROM probe_servers WHERE id = ?", (server_id,))
             connection.commit()
 
-        self._with_connection(write)
+        # Asset deletion cascades into domain membership and manual pins. Keep
+        # it outside an in-flight DNS switch until its result has been saved.
+        with sync_lock:
+            self._with_connection(write)
 
     def delete_servers_batch(self, ids: Sequence[int], *, lease_guard: tuple[str, str] | None = None) -> int:
         """Delete a bounded server chunk in one immediate transaction.
@@ -695,6 +702,7 @@ class ProbeStore:
         Missing IDs are naturally idempotent; normalized tag relations and other
         dependent rows are removed by SQLite's configured foreign-key cascades.
         """
+        from ..lb.coordination import sync_lock
         normalized = _normalize_ids(ids)
         if not normalized:
             return 0
@@ -709,7 +717,8 @@ class ProbeStore:
                 ).rowcount
             connection.commit()
             return affected
-        return self._with_connection(write)
+        with sync_lock:
+            return self._with_connection(write)
 
     def import_servers(self, items: list[dict]) -> tuple[int, int]:
         """Atomically import bounded input chunks; very large imports need the async job slice."""

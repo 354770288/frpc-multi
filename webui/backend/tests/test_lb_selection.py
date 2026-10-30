@@ -26,8 +26,9 @@ class SelectionTests(unittest.TestCase):
         self.lb, self.probe = LbStore(db), ProbeStore(db)
         self.probe.import_servers([{"ip": ip, "group": "pool"}
                                    for ip in ("1.1.1.10", "1.1.1.2")])
+        member_ids = [row.id for row in self.probe.list_servers()]
         self.domain = self.lb.create_domain(name="test.example.com", zone_id="z", zone_name="example.com",
-                                             group_name="pool")
+                                             server_ids=member_ids)
         self.lb.set_setting("selection_config", json.dumps({"nodeId": "cn", "maxAgeHours": 24}))
         self.monitor = PoolHealthMonitor()
         self.records = {"connectivity": [], "speed": []}
@@ -37,7 +38,7 @@ class SelectionTests(unittest.TestCase):
             def __init__(self, path):
                 pass
 
-            def current_results(self, kind, ips=None, *, server_group=None):
+            def current_results(self, kind, ips=None):
                 wanted = set(ips or ())
                 return [row for row in owner.records[kind]
                         if not wanted or row["server_ip"] in wanted]
@@ -108,7 +109,8 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(self.decide()["validCandidates"], 0)
 
     def test_custom_port_observation_does_not_rank_fixed_test_port(self):
-        self.probe.create_server(ip='1.1.1.3:7001', server_group='pool')
+        custom_port = self.probe.create_server(ip='1.1.1.3:7001', server_group='pool')
+        self.lb.add_domain_servers(self.domain.id, [custom_port.id])
         self.records['connectivity'] = [self.record('1.1.1.3', port=7001, frps_reachable=True)]
         self.assertEqual(self.decide()['bestIp'], '1.1.1.2')
         self.assertEqual(self.decide()['validCandidates'], 0)
@@ -118,7 +120,8 @@ class SelectionTests(unittest.TestCase):
         from app.lb.syncer import sync_domain
         from tests.test_lb import FakeCloudflare
 
-        self.probe.create_server(ip='1.1.1.3', server_group='pool')
+        fixed_port = self.probe.create_server(ip='1.1.1.3', server_group='pool')
+        self.lb.add_domain_servers(self.domain.id, [fixed_port.id])
         self.records['connectivity'] = [self.record('1.1.1.3', port=7000, frps_reachable=True)]
         cf = FakeCloudflare()
         result = sync_domain(self.domain, self.probe, self.lb, cf, self.monitor)
