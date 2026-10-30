@@ -1,6 +1,7 @@
 import { getAuthToken, notifyUnauthorized, AuthError } from './auth';
 import type {
   AuditLog,
+  GeoIpStatus,
   TestNode, TestNodeExecutionPolicy, ProbeFailover, ProbeJobInput, ProbeJob, ProbeJobDetail, LbSelectionConfig,
   CloudflareInfo,
   CloudflareZone,
@@ -153,6 +154,12 @@ export const nodesApi = {
     logs: (nodeId: number, name: string, params: URLSearchParams) =>
       api<{ lines: string[] }>(`/api/nodes/${nodeId}/instances/${name}/logs?${params.toString()}`)
   }
+};
+
+export const geoipApi = {
+  status: () => api<GeoIpStatus>('/api/geoip/status'),
+  update: () => api<{ queued: true }>('/api/geoip/update', { method: 'POST' }),
+  refresh: () => api<{ queued: true }>('/api/geoip/refresh', { method: 'POST' }),
 };
 
 export const auditLogsApi = {

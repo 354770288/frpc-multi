@@ -1,0 +1,2249 @@
+{
+  "size": 1000000,
+  "history_rounds": 3,
+  "batch_size": 250,
+  "synthetic": true,
+  "synthetic_snapshot": "synthetic-capacity-20-countries-200-asns-v1",
+  "started_at": "2026-10-30T20:04:15+08:00",
+  "hardware": {
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "cpu_count": 10,
+    "python": "3.14.2 (main, Dec  5 2025, 16:49:16) [Clang 17.0.0 (clang-1700.6.3.2)]",
+    "sqlite": "3.51.2",
+    "hw.memsize": "17179869184",
+    "machdep.cpu.brand_string": "Apple M4"
+  },
+  "caveats": [
+    "Synthetic fixed positive snapshot: 20 countries/200 ASNs; measures label storage and SQLite throughput, not real geographic coverage.",
+    "All IPs have assets, 75% also discoveries; every IP has all three current kinds and requested immutable history rounds.",
+    "Seed bypasses GeoIP insert triggers to model pre-feature storage; actual GeoIP migration and bounded backfill run afterward.",
+    "Direct ProbeStore APIs plus geo/manualLabels page enrichment; no HTTP/browser/network latency or route/public-serialization enrichment. Five reader threads and one continuous 250-IP geo fact/tag rewrite thread.",
+    "Refresh writer rewrites existing positive facts/tags; no probe-result writes during measured query concurrency.",
+    "Warm local filesystem cache; single host/process, not production hardware. Facet sample counts may be small."
+  ],
+  "source_sha256": {
+    "scripts/benchmark_geoip.py": "15f8eaa5eb2844c4c8717d88ed042af1635c082e175f2f08ed128b9a64972cc2",
+    "webui/backend/app/geoip/__init__.py": "4ae4eb3f7effac64197abb68813f2f8876c6aa57a2e7358ae8478441daf07abf",
+    "webui/backend/app/geoip/database.py": "af970445a08b1b69a72649777d8c90fa6f13bcb87d6b88e5ddaea1d6dffc65c8",
+    "webui/backend/app/geoip/identity.py": "7c2a818fda27aad07ee499bc87afbc1b0fc1a63461550c2b7df8daa3f9f25c7a",
+    "webui/backend/app/geoip/router.py": "f51ac920a4ebf9c72e2f0f9d98bacd6148083455e0a59975a020bd06f727deee",
+    "webui/backend/app/geoip/schema.py": "596c7da780c29413f28b6b60a2cbb2926c9912fa882f1ae530d43eb17e014484",
+    "webui/backend/app/geoip/service.py": "7db034fcfdd0d9d5bc646b97a154b5a01aceacc0c0fedf612f5575dae88bac9a",
+    "webui/backend/app/geoip/store.py": "5ea4f5c1bba38832a9f430211aeea69f9c22d0a3882d840efd14353884d2c8ef",
+    "webui/backend/app/geoip/tags.py": "ae493bc5b649ce2eb0177269ff65a24d4817e6f1cb08e9538db0b3a49d910d0d",
+    "webui/backend/app/probe/store.py": "2d92ea5dd0a2f7d87a71653722e50e28b90e31dfa30137b2c3b1825c15ec42bd",
+    "webui/backend/app/control/database.py": "6e545bf40c0dd1ba82c16f97435580152014000c8cd205483196ce46d6a72566"
+  },
+  "mmdb_reader": {
+    "fixture": "webui/backend/tests/fixtures/ipinfo_lite.sample.mmdb",
+    "fixture_bytes": 3154,
+    "open_seconds": 0.0018141670152544975,
+    "lookups": 100000,
+    "seconds": 1.8175810002721846,
+    "lookups_per_second": 55018.18074959239,
+    "statuses": {
+      "ready": 100000
+    }
+  },
+  "seed": {
+    "seconds": 434.44491554191336,
+    "ips_per_second": 2301.787785345883,
+    "history_rows": 9000000,
+    "current_rows": 3000000,
+    "discovery_rows": 750000,
+    "files": {
+      "database": 4968259584,
+      "-wal": 8491352,
+      "-shm": 32768
+    }
+  },
+  "backfill": {
+    "seconds": 40.48855216708034,
+    "calls": 7002,
+    "batch": {
+      "n": 7003,
+      "p50_ms": 5.5995830334723,
+      "p95_ms": 11.171665973961353,
+      "max_ms": 499.34487510472536
+    },
+    "queued": {
+      "pending": 1000000,
+      "ready": 0,
+      "notFound": 0,
+      "nonPublic": 0,
+      "error": 0
+    }
+  },
+  "geo_processing": {
+    "seconds": 227.9718654169701,
+    "steps": 4001,
+    "ips_per_second": 4386.506195275272,
+    "counts": {
+      "pending": 0,
+      "ready": 1000000,
+      "notFound": 0,
+      "nonPublic": 0,
+      "error": 0
+    },
+    "files": {
+      "database": 5580984320,
+      "-wal": 6999912,
+      "-shm": 32768
+    }
+  },
+  "verified_cardinalities": {
+    "probe_servers": 1000000,
+    "probe_discover_results": 750000,
+    "probe_results": 9000000,
+    "probe_current_results": 3000000,
+    "geoip_records": 1000000,
+    "geoip_record_tags": 2000000,
+    "probe_server_tags": 2000000,
+    "probe_tags": 220,
+    "positive_fact_rows": 1000000,
+    "nonempty_asset_labels": 1000000
+  },
+  "query_plans": {
+    "list_ip": [
+      {
+        "sql": "SELECT COUNT(*) FROM probe_servers s",
+        "plan": [
+          {
+            "id": 4,
+            "parent": 0,
+            "notused": 0,
+            "detail": "SCAN probe_servers USING COVERING INDEX idx_probe_servers_current_host"
+          }
+        ]
+      },
+      {
+        "sql": "WITH page AS MATERIALIZED (SELECT s.* FROM probe_servers s INDEXED BY idx_probe_servers_ip ORDER BY (s.ip_sort IS NULL) ASC, s.ip_sort ASC, s.id ASC LIMIT 50 OFFSET 0) SELECT s.*, c.test_time AS c_test_time,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.frps_reachable'),0) END AS c_frps_reachable,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.tunnel_established'),0) END AS c_tunnel_established,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.firewall_open'),0) END AS c_firewall_open,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.detail'),'') END AS c_detail,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.dl_ok'),0) END AS s_dl_ok,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.ul_ok'),0) END AS s_ul_ok,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.dl_speed_bps'),0)*8.0/1048576 END AS s_dl_speed_mbps,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.ul_speed_bps'),0)*8.0/1048576 END AS s_ul_speed_mbps,\n            p.test_time AS s_test_time FROM page s\n            LEFT JOIN main.probe_current_results c ON c.server_ip=probe_endpoint_host(s.ip)\n                AND c.kind='connectivity' AND c.port=7000\n                AND probe_endpoint_port(s.ip)=7000\n            LEFT JOIN main.probe_current_results p ON p.server_ip=probe_endpoint_host(s.ip)\n                AND p.kind='speed' AND p.port=7000\n                AND probe_endpoint_port(s.ip)=7000 ORDER BY (s.ip_sort IS NULL) ASC, s.ip_sort ASC, s.id ASC",
+        "plan": [
+          {
+            "id": 3,
+            "parent": 0,
+            "notused": 0,
+            "detail": "MATERIALIZE page"
+          },
+          {
+            "id": 12,
+            "parent": 3,
+            "notused": 223,
+            "detail": "SCAN s USING INDEX idx_probe_servers_ip"
+          },
+          {
+            "id": 40,
+            "parent": 0,
+            "notused": 72,
+            "detail": "SCAN s"
+          },
+          {
+            "id": 42,
+            "parent": 0,
+            "notused": 47,
+            "detail": "SEARCH c USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+          },
+          {
+            "id": 58,
+            "parent": 0,
+            "notused": 47,
+            "detail": "SEARCH p USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+          },
+          {
+            "id": 170,
+            "parent": 0,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          }
+        ]
+      }
+    ],
+    "list_ip_count": [
+      {
+        "id": 4,
+        "parent": 0,
+        "notused": 0,
+        "detail": "SCAN probe_servers USING COVERING INDEX idx_probe_servers_current_host"
+      }
+    ],
+    "filter_country": [
+      {
+        "sql": "SELECT COUNT(*) FROM probe_server_tags WHERE tag_id='geoip:country:US'",
+        "plan": [
+          {
+            "id": 3,
+            "parent": 0,
+            "notused": 56,
+            "detail": "SEARCH probe_server_tags USING COVERING INDEX idx_probe_server_tags_tag_server (tag_id=?)"
+          }
+        ]
+      },
+      {
+        "sql": "WITH page AS MATERIALIZED (SELECT s.* FROM probe_servers s INDEXED BY idx_probe_servers_ip WHERE s.id IN (SELECT st.server_id FROM probe_server_tags st WHERE st.tag_id IN ('geoip:country:US')) ORDER BY (s.ip_sort IS NULL) ASC, s.ip_sort ASC, s.id ASC LIMIT 50 OFFSET 0) SELECT s.*, c.test_time AS c_test_time,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.frps_reachable'),0) END AS c_frps_reachable,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.tunnel_established'),0) END AS c_tunnel_established,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.firewall_open'),0) END AS c_firewall_open,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.detail'),'') END AS c_detail,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.dl_ok'),0) END AS s_dl_ok,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.ul_ok'),0) END AS s_ul_ok,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.dl_speed_bps'),0)*8.0/1048576 END AS s_dl_speed_mbps,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.ul_speed_bps'),0)*8.0/1048576 END AS s_ul_speed_mbps,\n            p.test_time AS s_test_time FROM page s\n            LEFT JOIN main.probe_current_results c ON c.server_ip=probe_endpoint_host(s.ip)\n                AND c.kind='connectivity' AND c.port=7000\n                AND probe_endpoint_port(s.ip)=7000\n            LEFT JOIN main.probe_current_results p ON p.server_ip=probe_endpoint_host(s.ip)\n                AND p.kind='speed' AND p.port=7000\n                AND probe_endpoint_port(s.ip)=7000 ORDER BY (s.ip_sort IS NULL) ASC, s.ip_sort ASC, s.id ASC",
+        "plan": [
+          {
+            "id": 3,
+            "parent": 0,
+            "notused": 0,
+            "detail": "MATERIALIZE page"
+          },
+          {
+            "id": 12,
+            "parent": 3,
+            "notused": 222,
+            "detail": "SCAN s USING INDEX idx_probe_servers_ip"
+          },
+          {
+            "id": 18,
+            "parent": 3,
+            "notused": 0,
+            "detail": "LIST SUBQUERY 1"
+          },
+          {
+            "id": 21,
+            "parent": 18,
+            "notused": 56,
+            "detail": "SEARCH st USING COVERING INDEX idx_probe_server_tags_tag_server (tag_id=?)"
+          },
+          {
+            "id": 29,
+            "parent": 18,
+            "notused": 0,
+            "detail": "CREATE BLOOM FILTER"
+          },
+          {
+            "id": 62,
+            "parent": 0,
+            "notused": 72,
+            "detail": "SCAN s"
+          },
+          {
+            "id": 64,
+            "parent": 0,
+            "notused": 47,
+            "detail": "SEARCH c USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+          },
+          {
+            "id": 80,
+            "parent": 0,
+            "notused": 47,
+            "detail": "SEARCH p USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+          },
+          {
+            "id": 192,
+            "parent": 0,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          }
+        ]
+      }
+    ],
+    "filter_country_count": [
+      {
+        "id": 3,
+        "parent": 0,
+        "notused": 91,
+        "detail": "SEARCH s USING INTEGER PRIMARY KEY (rowid=?)"
+      },
+      {
+        "id": 7,
+        "parent": 0,
+        "notused": 0,
+        "detail": "LIST SUBQUERY 1"
+      },
+      {
+        "id": 10,
+        "parent": 7,
+        "notused": 56,
+        "detail": "SEARCH st USING COVERING INDEX idx_probe_server_tags_tag_server (tag_id=?)"
+      },
+      {
+        "id": 20,
+        "parent": 7,
+        "notused": 0,
+        "detail": "CREATE BLOOM FILTER"
+      }
+    ],
+    "filter_complex": [
+      {
+        "sql": "SELECT COUNT(*) FROM probe_servers s WHERE s.group_id IN ('g00') AND s.id IN (SELECT st.server_id FROM probe_server_tags st WHERE st.tag_id IN ('geoip:country:US')) AND NOT EXISTS (SELECT 1 FROM probe_server_tags st WHERE st.server_id=s.id AND st.tag_id IN ('geoip:asn:AS64500')) AND s.conn_score BETWEEN 1 AND 3",
+        "plan": [
+          {
+            "id": 3,
+            "parent": 0,
+            "notused": 46,
+            "detail": "SEARCH s USING COVERING INDEX idx_probe_servers_group_conn_score (group_id=? AND conn_score>? AND conn_score<?)"
+          },
+          {
+            "id": 12,
+            "parent": 0,
+            "notused": 0,
+            "detail": "LIST SUBQUERY 1"
+          },
+          {
+            "id": 15,
+            "parent": 12,
+            "notused": 56,
+            "detail": "SEARCH st USING COVERING INDEX idx_probe_server_tags_tag_server (tag_id=?)"
+          },
+          {
+            "id": 23,
+            "parent": 12,
+            "notused": 0,
+            "detail": "CREATE BLOOM FILTER"
+          },
+          {
+            "id": 32,
+            "parent": 0,
+            "notused": 0,
+            "detail": "CORRELATED SCALAR SUBQUERY 2"
+          },
+          {
+            "id": 36,
+            "parent": 32,
+            "notused": 39,
+            "detail": "SEARCH st USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 (server_id=? AND tag_id=?)"
+          }
+        ]
+      },
+      {
+        "sql": "WITH page AS MATERIALIZED (SELECT s.* FROM probe_servers s WHERE s.group_id IN ('g00') AND s.id IN (SELECT st.server_id FROM probe_server_tags st WHERE st.tag_id IN ('geoip:country:US')) AND NOT EXISTS (SELECT 1 FROM probe_server_tags st WHERE st.server_id=s.id AND st.tag_id IN ('geoip:asn:AS64500')) AND s.conn_score BETWEEN 1 AND 3 ORDER BY s.server_group ASC, (s.ip_sort IS NULL) ASC, s.ip_sort ASC, s.id ASC LIMIT 50 OFFSET 0) SELECT s.*, c.test_time AS c_test_time,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.frps_reachable'),0) END AS c_frps_reachable,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.tunnel_established'),0) END AS c_tunnel_established,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.firewall_open'),0) END AS c_firewall_open,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.detail'),'') END AS c_detail,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.dl_ok'),0) END AS s_dl_ok,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.ul_ok'),0) END AS s_ul_ok,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.dl_speed_bps'),0)*8.0/1048576 END AS s_dl_speed_mbps,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.ul_speed_bps'),0)*8.0/1048576 END AS s_ul_speed_mbps,\n            p.test_time AS s_test_time FROM page s\n            LEFT JOIN main.probe_current_results c ON c.server_ip=probe_endpoint_host(s.ip)\n                AND c.kind='connectivity' AND c.port=7000\n                AND probe_endpoint_port(s.ip)=7000\n            LEFT JOIN main.probe_current_results p ON p.server_ip=probe_endpoint_host(s.ip)\n                AND p.kind='speed' AND p.port=7000\n                AND probe_endpoint_port(s.ip)=7000 ORDER BY s.server_group ASC, (s.ip_sort IS NULL) ASC, s.ip_sort ASC, s.id ASC",
+        "plan": [
+          {
+            "id": 3,
+            "parent": 0,
+            "notused": 0,
+            "detail": "MATERIALIZE page"
+          },
+          {
+            "id": 12,
+            "parent": 3,
+            "notused": 49,
+            "detail": "SEARCH s USING INDEX idx_probe_servers_group_conn_score (group_id=? AND conn_score>? AND conn_score<?)"
+          },
+          {
+            "id": 22,
+            "parent": 3,
+            "notused": 0,
+            "detail": "LIST SUBQUERY 1"
+          },
+          {
+            "id": 25,
+            "parent": 22,
+            "notused": 56,
+            "detail": "SEARCH st USING COVERING INDEX idx_probe_server_tags_tag_server (tag_id=?)"
+          },
+          {
+            "id": 33,
+            "parent": 22,
+            "notused": 0,
+            "detail": "CREATE BLOOM FILTER"
+          },
+          {
+            "id": 42,
+            "parent": 3,
+            "notused": 0,
+            "detail": "CORRELATED SCALAR SUBQUERY 2"
+          },
+          {
+            "id": 46,
+            "parent": 42,
+            "notused": 39,
+            "detail": "SEARCH st USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 (server_id=? AND tag_id=?)"
+          },
+          {
+            "id": 79,
+            "parent": 3,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          },
+          {
+            "id": 95,
+            "parent": 0,
+            "notused": 24,
+            "detail": "SCAN s"
+          },
+          {
+            "id": 97,
+            "parent": 0,
+            "notused": 47,
+            "detail": "SEARCH c USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+          },
+          {
+            "id": 113,
+            "parent": 0,
+            "notused": 47,
+            "detail": "SEARCH p USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+          },
+          {
+            "id": 232,
+            "parent": 0,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY"
+          }
+        ]
+      }
+    ],
+    "filter_complex_count": [
+      {
+        "id": 3,
+        "parent": 0,
+        "notused": 46,
+        "detail": "SEARCH s USING COVERING INDEX idx_probe_servers_group_conn_score (group_id=? AND conn_score>? AND conn_score<?)"
+      },
+      {
+        "id": 14,
+        "parent": 0,
+        "notused": 0,
+        "detail": "LIST SUBQUERY 1"
+      },
+      {
+        "id": 17,
+        "parent": 14,
+        "notused": 56,
+        "detail": "SEARCH st USING COVERING INDEX idx_probe_server_tags_tag_server (tag_id=?)"
+      },
+      {
+        "id": 27,
+        "parent": 14,
+        "notused": 0,
+        "detail": "CREATE BLOOM FILTER"
+      },
+      {
+        "id": 36,
+        "parent": 0,
+        "notused": 0,
+        "detail": "CORRELATED SCALAR SUBQUERY 2"
+      },
+      {
+        "id": 40,
+        "parent": 36,
+        "notused": 39,
+        "detail": "SEARCH st USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 (server_id=? AND tag_id=?)"
+      }
+    ],
+    "pending": [
+      {
+        "id": 4,
+        "parent": 0,
+        "notused": 46,
+        "detail": "SEARCH geoip_records USING COVERING INDEX idx_geoip_pending (queued=? AND retry_at<?)"
+      }
+    ],
+    "backfill_discovery": [
+      {
+        "id": 4,
+        "parent": 0,
+        "notused": 196,
+        "detail": "SEARCH probe_discover_results USING INTEGER PRIMARY KEY (rowid>?)"
+      }
+    ],
+    "backfill_assets": [
+      {
+        "id": 4,
+        "parent": 0,
+        "notused": 196,
+        "detail": "SEARCH probe_servers USING INTEGER PRIMARY KEY (rowid>?)"
+      }
+    ],
+    "geo_counts": [
+      {
+        "id": 6,
+        "parent": 0,
+        "notused": 210,
+        "detail": "SCAN geoip_records USING COVERING INDEX idx_geoip_status"
+      }
+    ],
+    "list_speed": [
+      {
+        "sql": "SELECT COUNT(*) FROM probe_servers s",
+        "plan": [
+          {
+            "id": 4,
+            "parent": 0,
+            "notused": 0,
+            "detail": "SCAN probe_servers USING COVERING INDEX idx_probe_servers_current_host"
+          }
+        ]
+      },
+      {
+        "sql": "WITH page AS MATERIALIZED (SELECT s.* FROM probe_servers s ORDER BY s.speed_sort ASC, s.id ASC LIMIT 50 OFFSET 0) SELECT s.*, c.test_time AS c_test_time,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.frps_reachable'),0) END AS c_frps_reachable,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.tunnel_established'),0) END AS c_tunnel_established,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.firewall_open'),0) END AS c_firewall_open,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.detail'),'') END AS c_detail,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.dl_ok'),0) END AS s_dl_ok,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.ul_ok'),0) END AS s_ul_ok,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.dl_speed_bps'),0)*8.0/1048576 END AS s_dl_speed_mbps,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.ul_speed_bps'),0)*8.0/1048576 END AS s_ul_speed_mbps,\n            p.test_time AS s_test_time FROM page s\n            LEFT JOIN main.probe_current_results c ON c.server_ip=probe_endpoint_host(s.ip)\n                AND c.kind='connectivity' AND c.port=7000\n                AND probe_endpoint_port(s.ip)=7000\n            LEFT JOIN main.probe_current_results p ON p.server_ip=probe_endpoint_host(s.ip)\n                AND p.kind='speed' AND p.port=7000\n                AND probe_endpoint_port(s.ip)=7000 ORDER BY s.speed_sort ASC, s.id ASC",
+        "plan": [
+          {
+            "id": 3,
+            "parent": 0,
+            "notused": 0,
+            "detail": "MATERIALIZE page"
+          },
+          {
+            "id": 12,
+            "parent": 3,
+            "notused": 223,
+            "detail": "SCAN s USING INDEX idx_probe_servers_speed_sort_id"
+          },
+          {
+            "id": 40,
+            "parent": 0,
+            "notused": 72,
+            "detail": "SCAN s"
+          },
+          {
+            "id": 42,
+            "parent": 0,
+            "notused": 47,
+            "detail": "SEARCH c USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+          },
+          {
+            "id": 58,
+            "parent": 0,
+            "notused": 47,
+            "detail": "SEARCH p USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+          }
+        ]
+      }
+    ],
+    "list_time": [
+      {
+        "sql": "SELECT COUNT(*) FROM probe_servers s",
+        "plan": [
+          {
+            "id": 4,
+            "parent": 0,
+            "notused": 0,
+            "detail": "SCAN probe_servers USING COVERING INDEX idx_probe_servers_current_host"
+          }
+        ]
+      },
+      {
+        "sql": "WITH page AS MATERIALIZED (SELECT s.* FROM probe_servers s ORDER BY (s.time_sort IS NULL) ASC, s.time_sort ASC, s.id ASC LIMIT 50 OFFSET 0) SELECT s.*, c.test_time AS c_test_time,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.frps_reachable'),0) END AS c_frps_reachable,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.tunnel_established'),0) END AS c_tunnel_established,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.firewall_open'),0) END AS c_firewall_open,\n            CASE WHEN c.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(c.data,'$.detail'),'') END AS c_detail,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.dl_ok'),0) END AS s_dl_ok,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.ul_ok'),0) END AS s_ul_ok,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.dl_speed_bps'),0)*8.0/1048576 END AS s_dl_speed_mbps,\n            CASE WHEN p.server_ip IS NULL THEN NULL ELSE COALESCE(json_extract(p.data,'$.ul_speed_bps'),0)*8.0/1048576 END AS s_ul_speed_mbps,\n            p.test_time AS s_test_time FROM page s\n            LEFT JOIN main.probe_current_results c ON c.server_ip=probe_endpoint_host(s.ip)\n                AND c.kind='connectivity' AND c.port=7000\n                AND probe_endpoint_port(s.ip)=7000\n            LEFT JOIN main.probe_current_results p ON p.server_ip=probe_endpoint_host(s.ip)\n                AND p.kind='speed' AND p.port=7000\n                AND probe_endpoint_port(s.ip)=7000 ORDER BY (s.time_sort IS NULL) ASC, s.time_sort ASC, s.id ASC",
+        "plan": [
+          {
+            "id": 3,
+            "parent": 0,
+            "notused": 0,
+            "detail": "MATERIALIZE page"
+          },
+          {
+            "id": 12,
+            "parent": 3,
+            "notused": 224,
+            "detail": "SCAN s USING INDEX idx_probe_servers_time_sort_asc"
+          },
+          {
+            "id": 40,
+            "parent": 0,
+            "notused": 72,
+            "detail": "SCAN s"
+          },
+          {
+            "id": 42,
+            "parent": 0,
+            "notused": 47,
+            "detail": "SEARCH c USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+          },
+          {
+            "id": 58,
+            "parent": 0,
+            "notused": 47,
+            "detail": "SEARCH p USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+          },
+          {
+            "id": 170,
+            "parent": 0,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          }
+        ]
+      }
+    ],
+    "facets_contextual": [
+      {
+        "sql": "SELECT s.server_group, COUNT(*) AS count FROM probe_servers s WHERE s.conn_score BETWEEN 1 AND 3 AND s.server_group != '' GROUP BY s.server_group ORDER BY s.server_group",
+        "plan": [
+          {
+            "id": 7,
+            "parent": 0,
+            "notused": 152,
+            "detail": "SEARCH s USING COVERING INDEX idx_probe_servers_conn_score (conn_score>? AND conn_score<?)"
+          },
+          {
+            "id": 14,
+            "parent": 0,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR GROUP BY"
+          }
+        ]
+      },
+      {
+        "sql": "WITH facet_servers AS MATERIALIZED (SELECT s.id FROM probe_servers s WHERE s.conn_score BETWEEN 1 AND 3), raw_counts AS MATERIALIZED (SELECT st.tag_id,COUNT(*) AS count FROM probe_server_tags st INDEXED BY idx_probe_server_tags_tag_server WHERE st.server_id IN (SELECT id FROM facet_servers) GROUP BY st.tag_id), all_tag_counts AS MATERIALIZED (SELECT r.tag_id,c.id AS category_id,c.name AS category,t.name,r.count FROM raw_counts r JOIN probe_tags t ON t.id=r.tag_id JOIN probe_tag_categories c ON c.id=t.category_id), tag_counts AS (SELECT * FROM all_tag_counts WHERE (''='' OR category LIKE '%%' ESCAPE '\\' COLLATE NOCASE OR name LIKE '%%' ESCAPE '\\' COLLATE NOCASE)), tag_page AS (SELECT * FROM tag_counts ORDER BY category COLLATE BINARY,name COLLATE BINARY,tag_id COLLATE BINARY LIMIT 50 OFFSET 0), tag_total AS (SELECT COUNT(*) AS total FROM tag_counts), legacy_names AS (SELECT name,COUNT(*) AS multiplicity,SUM(count) AS count FROM all_tag_counts GROUP BY name), legacy_labels AS (SELECT name,CASE WHEN multiplicity=1 THEN count ELSE (SELECT COUNT(DISTINCT st.server_id) FROM probe_tags t JOIN probe_server_tags st ON st.tag_id=t.id WHERE t.name=legacy_names.name AND st.server_id IN (SELECT id FROM facet_servers)) END AS count FROM legacy_names) SELECT 'tag' AS facet,p.tag_id,p.category_id,p.category,p.name,p.count,total.total AS tag_total FROM tag_total total LEFT JOIN tag_page p ON 1=1 UNION ALL SELECT 'label' AS facet,NULL AS tag_id,NULL AS category_id,NULL AS category,labels.name,labels.count,NULL AS tag_total FROM legacy_labels labels ORDER BY facet,category,name",
+        "plan": [
+          {
+            "id": 1,
+            "parent": 0,
+            "notused": 0,
+            "detail": "MERGE (UNION ALL)"
+          },
+          {
+            "id": 3,
+            "parent": 1,
+            "notused": 0,
+            "detail": "LEFT"
+          },
+          {
+            "id": 5,
+            "parent": 3,
+            "notused": 0,
+            "detail": "CO-ROUTINE tag_total"
+          },
+          {
+            "id": 8,
+            "parent": 5,
+            "notused": 0,
+            "detail": "MATERIALIZE all_tag_counts"
+          },
+          {
+            "id": 11,
+            "parent": 8,
+            "notused": 0,
+            "detail": "MATERIALIZE raw_counts"
+          },
+          {
+            "id": 18,
+            "parent": 11,
+            "notused": 216,
+            "detail": "SCAN st USING COVERING INDEX idx_probe_server_tags_tag_server"
+          },
+          {
+            "id": 23,
+            "parent": 11,
+            "notused": 0,
+            "detail": "LIST SUBQUERY 2"
+          },
+          {
+            "id": 27,
+            "parent": 23,
+            "notused": 0,
+            "detail": "MATERIALIZE facet_servers"
+          },
+          {
+            "id": 30,
+            "parent": 27,
+            "notused": 148,
+            "detail": "SEARCH s USING COVERING INDEX idx_probe_servers_conn_score_id (conn_score>? AND conn_score<?)"
+          },
+          {
+            "id": 43,
+            "parent": 23,
+            "notused": 204,
+            "detail": "SCAN facet_servers"
+          },
+          {
+            "id": 49,
+            "parent": 23,
+            "notused": 0,
+            "detail": "CREATE BLOOM FILTER"
+          },
+          {
+            "id": 94,
+            "parent": 8,
+            "notused": 82,
+            "detail": "SCAN r"
+          },
+          {
+            "id": 96,
+            "parent": 8,
+            "notused": 46,
+            "detail": "SEARCH t USING INDEX sqlite_autoindex_probe_tags_1 (id=?)"
+          },
+          {
+            "id": 102,
+            "parent": 8,
+            "notused": 46,
+            "detail": "SEARCH c USING INDEX sqlite_autoindex_probe_tag_categories_1 (id=?)"
+          },
+          {
+            "id": 120,
+            "parent": 5,
+            "notused": 82,
+            "detail": "SCAN all_tag_counts"
+          },
+          {
+            "id": 137,
+            "parent": 3,
+            "notused": 0,
+            "detail": "MATERIALIZE tag_page"
+          },
+          {
+            "id": 146,
+            "parent": 137,
+            "notused": 216,
+            "detail": "SCAN all_tag_counts"
+          },
+          {
+            "id": 172,
+            "parent": 137,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          },
+          {
+            "id": 182,
+            "parent": 3,
+            "notused": 16,
+            "detail": "SCAN total"
+          },
+          {
+            "id": 187,
+            "parent": 3,
+            "notused": 72,
+            "detail": "SCAN p LEFT-JOIN"
+          },
+          {
+            "id": 208,
+            "parent": 3,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          },
+          {
+            "id": 223,
+            "parent": 1,
+            "notused": 0,
+            "detail": "RIGHT"
+          },
+          {
+            "id": 225,
+            "parent": 223,
+            "notused": 0,
+            "detail": "CO-ROUTINE legacy_names"
+          },
+          {
+            "id": 232,
+            "parent": 225,
+            "notused": 216,
+            "detail": "SCAN all_tag_counts"
+          },
+          {
+            "id": 234,
+            "parent": 225,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR GROUP BY"
+          },
+          {
+            "id": 274,
+            "parent": 223,
+            "notused": 82,
+            "detail": "SCAN legacy_names"
+          },
+          {
+            "id": 284,
+            "parent": 223,
+            "notused": 0,
+            "detail": "CORRELATED SCALAR SUBQUERY 10"
+          },
+          {
+            "id": 289,
+            "parent": 284,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR count(DISTINCT)"
+          },
+          {
+            "id": 292,
+            "parent": 284,
+            "notused": 55,
+            "detail": "SEARCH t USING COVERING INDEX idx_probe_tags_name (name=?)"
+          },
+          {
+            "id": 297,
+            "parent": 284,
+            "notused": 56,
+            "detail": "SEARCH st USING COVERING INDEX idx_probe_server_tags_tag_server (tag_id=? AND server_id=?)"
+          },
+          {
+            "id": 302,
+            "parent": 284,
+            "notused": 0,
+            "detail": "LIST SUBQUERY 9"
+          },
+          {
+            "id": 306,
+            "parent": 302,
+            "notused": 216,
+            "detail": "SCAN facet_servers"
+          },
+          {
+            "id": 312,
+            "parent": 302,
+            "notused": 0,
+            "detail": "CREATE BLOOM FILTER"
+          },
+          {
+            "id": 345,
+            "parent": 223,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          }
+        ]
+      }
+    ],
+    "facets_global": [
+      {
+        "sql": "SELECT s.server_group, COUNT(*) AS count FROM probe_servers s WHERE s.server_group != '' GROUP BY s.server_group ORDER BY s.server_group",
+        "plan": [
+          {
+            "id": 7,
+            "parent": 0,
+            "notused": 212,
+            "detail": "SCAN s USING COVERING INDEX idx_probe_servers_group_ip"
+          }
+        ]
+      },
+      {
+        "sql": "WITH raw_counts AS MATERIALIZED (SELECT st.tag_id,COUNT(*) AS count FROM probe_server_tags st INDEXED BY idx_probe_server_tags_tag_server GROUP BY st.tag_id), all_tag_counts AS MATERIALIZED (SELECT r.tag_id,c.id AS category_id,c.name AS category,t.name,r.count FROM raw_counts r JOIN probe_tags t ON t.id=r.tag_id JOIN probe_tag_categories c ON c.id=t.category_id), tag_counts AS (SELECT * FROM all_tag_counts WHERE (''='' OR category LIKE '%%' ESCAPE '\\' COLLATE NOCASE OR name LIKE '%%' ESCAPE '\\' COLLATE NOCASE)), tag_page AS (SELECT * FROM tag_counts ORDER BY category COLLATE BINARY,name COLLATE BINARY,tag_id COLLATE BINARY), tag_total AS (SELECT COUNT(*) AS total FROM tag_counts), legacy_names AS (SELECT name,COUNT(*) AS multiplicity,SUM(count) AS count FROM all_tag_counts GROUP BY name), legacy_labels AS (SELECT name,CASE WHEN multiplicity=1 THEN count ELSE (SELECT COUNT(DISTINCT st.server_id) FROM probe_tags t JOIN probe_server_tags st ON st.tag_id=t.id WHERE t.name=legacy_names.name) END AS count FROM legacy_names) SELECT 'tag' AS facet,p.tag_id,p.category_id,p.category,p.name,p.count,total.total AS tag_total FROM tag_total total LEFT JOIN tag_page p ON 1=1 UNION ALL SELECT 'label' AS facet,NULL AS tag_id,NULL AS category_id,NULL AS category,labels.name,labels.count,NULL AS tag_total FROM legacy_labels labels ORDER BY facet,category,name",
+        "plan": [
+          {
+            "id": 1,
+            "parent": 0,
+            "notused": 0,
+            "detail": "MERGE (UNION ALL)"
+          },
+          {
+            "id": 3,
+            "parent": 1,
+            "notused": 0,
+            "detail": "LEFT"
+          },
+          {
+            "id": 5,
+            "parent": 3,
+            "notused": 0,
+            "detail": "CO-ROUTINE tag_total"
+          },
+          {
+            "id": 8,
+            "parent": 5,
+            "notused": 0,
+            "detail": "MATERIALIZE all_tag_counts"
+          },
+          {
+            "id": 11,
+            "parent": 8,
+            "notused": 0,
+            "detail": "MATERIALIZE raw_counts"
+          },
+          {
+            "id": 18,
+            "parent": 11,
+            "notused": 216,
+            "detail": "SCAN st USING COVERING INDEX idx_probe_server_tags_tag_server"
+          },
+          {
+            "id": 57,
+            "parent": 8,
+            "notused": 82,
+            "detail": "SCAN r"
+          },
+          {
+            "id": 59,
+            "parent": 8,
+            "notused": 46,
+            "detail": "SEARCH t USING INDEX sqlite_autoindex_probe_tags_1 (id=?)"
+          },
+          {
+            "id": 65,
+            "parent": 8,
+            "notused": 46,
+            "detail": "SEARCH c USING INDEX sqlite_autoindex_probe_tag_categories_1 (id=?)"
+          },
+          {
+            "id": 83,
+            "parent": 5,
+            "notused": 82,
+            "detail": "SCAN all_tag_counts"
+          },
+          {
+            "id": 101,
+            "parent": 3,
+            "notused": 16,
+            "detail": "SCAN total"
+          },
+          {
+            "id": 104,
+            "parent": 3,
+            "notused": 216,
+            "detail": "SCAN all_tag_counts LEFT-JOIN"
+          },
+          {
+            "id": 138,
+            "parent": 3,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          },
+          {
+            "id": 153,
+            "parent": 1,
+            "notused": 0,
+            "detail": "RIGHT"
+          },
+          {
+            "id": 155,
+            "parent": 153,
+            "notused": 0,
+            "detail": "CO-ROUTINE legacy_names"
+          },
+          {
+            "id": 162,
+            "parent": 155,
+            "notused": 216,
+            "detail": "SCAN all_tag_counts"
+          },
+          {
+            "id": 164,
+            "parent": 155,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR GROUP BY"
+          },
+          {
+            "id": 204,
+            "parent": 153,
+            "notused": 82,
+            "detail": "SCAN legacy_names"
+          },
+          {
+            "id": 214,
+            "parent": 153,
+            "notused": 0,
+            "detail": "CORRELATED SCALAR SUBQUERY 7"
+          },
+          {
+            "id": 219,
+            "parent": 214,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR count(DISTINCT)"
+          },
+          {
+            "id": 222,
+            "parent": 214,
+            "notused": 55,
+            "detail": "SEARCH t USING COVERING INDEX idx_probe_tags_name (name=?)"
+          },
+          {
+            "id": 227,
+            "parent": 214,
+            "notused": 56,
+            "detail": "SEARCH st USING COVERING INDEX idx_probe_server_tags_tag_server (tag_id=?)"
+          },
+          {
+            "id": 251,
+            "parent": 153,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          }
+        ]
+      }
+    ],
+    "discovery_filter": [
+      {
+        "sql": "SELECT COUNT(*) FROM probe_discover_results d WHERE d.ip IN (SELECT ip FROM (SELECT ip FROM probe_discover_results EXCEPT SELECT ip FROM probe_servers ORDER BY ip))",
+        "plan": [
+          {
+            "id": 3,
+            "parent": 0,
+            "notused": 100,
+            "detail": "SEARCH d USING COVERING INDEX sqlite_autoindex_probe_discover_results_1 (ip=?)"
+          },
+          {
+            "id": 7,
+            "parent": 0,
+            "notused": 0,
+            "detail": "LIST SUBQUERY 3"
+          },
+          {
+            "id": 10,
+            "parent": 7,
+            "notused": 0,
+            "detail": "CO-ROUTINE (subquery-2)"
+          },
+          {
+            "id": 12,
+            "parent": 10,
+            "notused": 0,
+            "detail": "MERGE (EXCEPT)"
+          },
+          {
+            "id": 14,
+            "parent": 12,
+            "notused": 0,
+            "detail": "LEFT"
+          },
+          {
+            "id": 17,
+            "parent": 14,
+            "notused": 211,
+            "detail": "SCAN probe_discover_results USING COVERING INDEX sqlite_autoindex_probe_discover_results_1"
+          },
+          {
+            "id": 24,
+            "parent": 12,
+            "notused": 0,
+            "detail": "RIGHT"
+          },
+          {
+            "id": 27,
+            "parent": 24,
+            "notused": 210,
+            "detail": "SCAN probe_servers USING COVERING INDEX sqlite_autoindex_probe_servers_1"
+          },
+          {
+            "id": 57,
+            "parent": 7,
+            "notused": 216,
+            "detail": "SCAN (subquery-2)"
+          },
+          {
+            "id": 64,
+            "parent": 7,
+            "notused": 0,
+            "detail": "CREATE BLOOM FILTER"
+          }
+        ]
+      }
+    ]
+  },
+  "concurrency": {
+    "seconds": 45.09436354087666,
+    "readers": 5,
+    "writer_pause_seconds": 0.1,
+    "sustained_writer": {
+      "batches": 327,
+      "records": 81750
+    },
+    "queries": {
+      "geo_write_batch": {
+        "n": 327,
+        "p50_ms": 29.62341718375683,
+        "p95_ms": 39.30999990552664,
+        "max_ms": 56.84450035914779
+      },
+      "filter_country": {
+        "n": 167,
+        "p50_ms": 21.969541907310486,
+        "p95_ms": 35.75608367100358,
+        "max_ms": 52.49545816332102,
+        "gate_ms": 1500,
+        "passed": true
+      },
+      "discovery_list": {
+        "n": 32,
+        "p50_ms": 35.3046040982008,
+        "p95_ms": 45.39012489840388,
+        "max_ms": 46.76941689103842,
+        "gate_ms": 800,
+        "passed": true
+      },
+      "count_complex": {
+        "n": 285,
+        "p50_ms": 104.39695883542299,
+        "p95_ms": 127.99937464296818,
+        "max_ms": 233.47866581752896,
+        "gate_ms": 3000,
+        "passed": true
+      },
+      "geo_counts": {
+        "n": 285,
+        "p50_ms": 55.63579127192497,
+        "p95_ms": 66.70850003138185,
+        "max_ms": 81.54812501743436,
+        "gate_ms": 3000,
+        "passed": true
+      },
+      "discovery_filter": {
+        "n": 32,
+        "p50_ms": 126.8054791726172,
+        "p95_ms": 164.8657089099288,
+        "max_ms": 409.06037483364344,
+        "gate_ms": 1500,
+        "passed": true
+      },
+      "list_ip": {
+        "n": 512,
+        "p50_ms": 27.593187522143126,
+        "p95_ms": 38.862249813973904,
+        "max_ms": 460.6181248091161,
+        "gate_ms": 800,
+        "passed": true
+      },
+      "list_speed": {
+        "n": 512,
+        "p50_ms": 28.504895512014627,
+        "p95_ms": 37.64487477019429,
+        "max_ms": 50.404833164066076,
+        "gate_ms": 800,
+        "passed": true
+      },
+      "list_time": {
+        "n": 511,
+        "p50_ms": 27.58050011470914,
+        "p95_ms": 37.70358255133033,
+        "max_ms": 57.892624754458666,
+        "gate_ms": 800,
+        "passed": true
+      },
+      "facets_global": {
+        "n": 17,
+        "p50_ms": 223.37091714143753,
+        "p95_ms": 817.7992501296103,
+        "max_ms": 817.7992501296103,
+        "gate_ms": 3000,
+        "passed": true
+      },
+      "discovery_facets": {
+        "n": 32,
+        "p50_ms": 1269.365729065612,
+        "p95_ms": 1382.0313750766218,
+        "max_ms": 1413.2040422409773,
+        "gate_ms": 3000,
+        "passed": true
+      },
+      "filter_complex": {
+        "n": 167,
+        "p50_ms": 244.6634997613728,
+        "p95_ms": 286.23120905831456,
+        "max_ms": 1229.3103341944516,
+        "gate_ms": 1500,
+        "passed": true
+      },
+      "facets_contextual": {
+        "n": 16,
+        "p50_ms": 2513.6563959531486,
+        "p95_ms": 2727.9588752426207,
+        "max_ms": 2727.9588752426207,
+        "gate_ms": 3000,
+        "passed": true
+      }
+    },
+    "errors": [],
+    "gates": {
+      "list_ms": 800,
+      "filter_ms": 1500,
+      "counts_ms": 3000
+    },
+    "all_measured_gates_pass": true
+  },
+  "files_before_checkpoint": {
+    "database": 5581172736,
+    "-wal": 681802352,
+    "-shm": 1343488
+  },
+  "files_after_checkpoint": {
+    "database": 5581312000,
+    "-wal": 0,
+    "-shm": 1343488
+  },
+  "quick_check": "ok",
+  "retained_failure_database": "/private/tmp/frpc-geoip-failure-1000000-ykmh_7vy/capacity.db",
+  "temporary_database_removed": true,
+  "http_attempts": 0,
+  "peak_process_rss_bytes": 62128128,
+  "finished_at": "2026-10-30T20:24:04+08:00",
+  "initial_fill_source_sha256": {
+    "scripts/benchmark_geoip.py": "5bc486660f2a1b532741f8994bec243f511a83f016bbd813791bde7c35f6419f",
+    "webui/backend/app/geoip/__init__.py": "4ae4eb3f7effac64197abb68813f2f8876c6aa57a2e7358ae8478441daf07abf",
+    "webui/backend/app/geoip/database.py": "29ac29f5ca0c7216e087af4c8bdbb9a50ea37e5ab9f65631b145593ffca3a234",
+    "webui/backend/app/geoip/identity.py": "9d1849df766ecf2c388ff9ae8eeda5c5bc7541263bfd7644bc54a1d8b0ce92e2",
+    "webui/backend/app/geoip/router.py": "f51ac920a4ebf9c72e2f0f9d98bacd6148083455e0a59975a020bd06f727deee",
+    "webui/backend/app/geoip/schema.py": "1b97bb2ebcef02cc3ff76adb5e4986e574b718144db6a775366498fe3b7d8b7c",
+    "webui/backend/app/geoip/service.py": "f16837b9a8c843d1b99a07d4cc4ee6dc8d8e272d8610a32771a19f68b9c65475",
+    "webui/backend/app/geoip/store.py": "f5f184c9dc2bcaa54972b5d23a31bee7e127fe9bf48984d618ca94c218b0ac92",
+    "webui/backend/app/geoip/tags.py": "17f9b40969a599dc7a9c9e5805a5747a4f30b2489f0f6c721206f4c3f58f67b2",
+    "webui/backend/app/probe/store.py": "dc903c6641a54cc8a12b36a2674b641a9d9fb2fe08dd57699bfeec2f0a5b37a8",
+    "webui/backend/app/control/database.py": "627bb739cf360e0e8d092337bb3c88f17167c5f02a9e83cc375dd7d67d1e117b"
+  },
+  "initial_concurrency": {
+    "seconds": 42.33321108389646,
+    "readers": 5,
+    "sustained_writer": {
+      "batches": 335,
+      "records": 83750
+    },
+    "queries": {
+      "geo_write_batch": {
+        "n": 335,
+        "p50_ms": 62.46141577139497,
+        "p95_ms": 202.5213330052793,
+        "max_ms": 689.5247497595847
+      },
+      "discovery_list": {
+        "n": 2,
+        "p50_ms": 456.6162913106382,
+        "p95_ms": 655.051332898438,
+        "max_ms": 655.051332898438,
+        "gate_ms": 800,
+        "passed": true
+      },
+      "list_ip": {
+        "n": 59,
+        "p50_ms": 41.52154177427292,
+        "p95_ms": 718.1032919324934,
+        "max_ms": 4114.371499978006,
+        "gate_ms": 800,
+        "passed": true
+      },
+      "list_speed": {
+        "n": 58,
+        "p50_ms": 49.510020995512605,
+        "p95_ms": 391.08408289030194,
+        "max_ms": 3865.230082999915,
+        "gate_ms": 800,
+        "passed": true
+      },
+      "list_time": {
+        "n": 58,
+        "p50_ms": 36.70710441656411,
+        "p95_ms": 490.61729200184345,
+        "max_ms": 4039.97475001961,
+        "gate_ms": 800,
+        "passed": true
+      },
+      "filter_country": {
+        "n": 1,
+        "p50_ms": 3243.0442916229367,
+        "p95_ms": 3243.0442916229367,
+        "max_ms": 3243.0442916229367,
+        "gate_ms": 1500,
+        "passed": false
+      },
+      "count_complex": {
+        "n": 3,
+        "p50_ms": 4297.098750248551,
+        "p95_ms": 11897.132250014693,
+        "max_ms": 11897.132250014693,
+        "gate_ms": 3000,
+        "passed": false
+      },
+      "discovery_filter": {
+        "n": 2,
+        "p50_ms": 9320.039749844,
+        "p95_ms": 11864.085874985904,
+        "max_ms": 11864.085874985904,
+        "gate_ms": 1500,
+        "passed": false
+      },
+      "facets_global": {
+        "n": 1,
+        "p50_ms": 7256.048125214875,
+        "p95_ms": 7256.048125214875,
+        "max_ms": 7256.048125214875,
+        "gate_ms": 3000,
+        "passed": false
+      },
+      "geo_counts": {
+        "n": 2,
+        "p50_ms": 11054.617312503979,
+        "p95_ms": 16305.640040896833,
+        "max_ms": 16305.640040896833,
+        "gate_ms": 3000,
+        "passed": false
+      },
+      "discovery_facets": {
+        "n": 2,
+        "p50_ms": 10491.859040921554,
+        "p95_ms": 16817.324665840715,
+        "max_ms": 16817.324665840715,
+        "gate_ms": 3000,
+        "passed": false
+      },
+      "filter_complex": {
+        "n": 1,
+        "p50_ms": 36389.11620806903,
+        "p95_ms": 36389.11620806903,
+        "max_ms": 36389.11620806903,
+        "gate_ms": 1500,
+        "passed": false
+      },
+      "facets_contextual": {
+        "n": 1,
+        "p50_ms": 35074.34141682461,
+        "p95_ms": 35074.34141682461,
+        "max_ms": 35074.34141682461,
+        "gate_ms": 3000,
+        "passed": false
+      }
+    },
+    "errors": [],
+    "gates": {
+      "list_ms": 800,
+      "filter_ms": 1500,
+      "counts_ms": 3000
+    },
+    "all_measured_gates_pass": false
+  },
+  "initial_query_plans": {
+    "list_ip": [
+      {
+        "id": 9,
+        "parent": 0,
+        "notused": 223,
+        "detail": "SCAN s USING INDEX idx_probe_servers_ip"
+      },
+      {
+        "id": 12,
+        "parent": 0,
+        "notused": 47,
+        "detail": "SEARCH c USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+      },
+      {
+        "id": 28,
+        "parent": 0,
+        "notused": 47,
+        "detail": "SEARCH p USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+      }
+    ],
+    "list_ip_count": [
+      {
+        "id": 4,
+        "parent": 0,
+        "notused": 0,
+        "detail": "SCAN probe_servers USING COVERING INDEX idx_probe_servers_current_host"
+      }
+    ],
+    "filter_country": [
+      {
+        "id": 11,
+        "parent": 0,
+        "notused": 222,
+        "detail": "SCAN s USING INDEX idx_probe_servers_ip"
+      },
+      {
+        "id": 14,
+        "parent": 0,
+        "notused": 47,
+        "detail": "SEARCH c USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+      },
+      {
+        "id": 30,
+        "parent": 0,
+        "notused": 47,
+        "detail": "SEARCH p USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+      },
+      {
+        "id": 46,
+        "parent": 0,
+        "notused": 45,
+        "detail": "SEARCH st EXISTS USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 (server_id=? AND tag_id=?)"
+      }
+    ],
+    "filter_country_count": [
+      {
+        "id": 5,
+        "parent": 0,
+        "notused": 207,
+        "detail": "SCAN s USING COVERING INDEX idx_probe_servers_current_host"
+      },
+      {
+        "id": 7,
+        "parent": 0,
+        "notused": 45,
+        "detail": "SEARCH st EXISTS USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 (server_id=? AND tag_id=?)"
+      }
+    ],
+    "filter_complex": [
+      {
+        "id": 11,
+        "parent": 0,
+        "notused": 49,
+        "detail": "SEARCH s USING INDEX idx_probe_servers_group_conn_score (group_id=? AND conn_score>? AND conn_score<?)"
+      },
+      {
+        "id": 21,
+        "parent": 0,
+        "notused": 0,
+        "detail": "CORRELATED SCALAR SUBQUERY 2"
+      },
+      {
+        "id": 25,
+        "parent": 21,
+        "notused": 39,
+        "detail": "SEARCH st USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 (server_id=? AND tag_id=?)"
+      },
+      {
+        "id": 36,
+        "parent": 0,
+        "notused": 47,
+        "detail": "SEARCH c USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+      },
+      {
+        "id": 52,
+        "parent": 0,
+        "notused": 47,
+        "detail": "SEARCH p USING INDEX sqlite_autoindex_probe_current_results_1 (server_ip=? AND kind=? AND port=?) LEFT-JOIN"
+      },
+      {
+        "id": 68,
+        "parent": 0,
+        "notused": 45,
+        "detail": "SEARCH st EXISTS USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 (server_id=? AND tag_id=?)"
+      },
+      {
+        "id": 174,
+        "parent": 0,
+        "notused": 0,
+        "detail": "USE TEMP B-TREE FOR ORDER BY"
+      }
+    ],
+    "filter_complex_count": [
+      {
+        "id": 5,
+        "parent": 0,
+        "notused": 46,
+        "detail": "SEARCH s USING COVERING INDEX idx_probe_servers_group_conn_score (group_id=? AND conn_score>? AND conn_score<?)"
+      },
+      {
+        "id": 14,
+        "parent": 0,
+        "notused": 0,
+        "detail": "CORRELATED SCALAR SUBQUERY 2"
+      },
+      {
+        "id": 18,
+        "parent": 14,
+        "notused": 39,
+        "detail": "SEARCH st USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 (server_id=? AND tag_id=?)"
+      },
+      {
+        "id": 29,
+        "parent": 0,
+        "notused": 45,
+        "detail": "SEARCH st EXISTS USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 (server_id=? AND tag_id=?)"
+      }
+    ],
+    "pending": [
+      {
+        "id": 4,
+        "parent": 0,
+        "notused": 46,
+        "detail": "SEARCH geoip_records USING COVERING INDEX idx_geoip_pending (queued=? AND retry_at<?)"
+      }
+    ],
+    "backfill_discovery": [
+      {
+        "id": 4,
+        "parent": 0,
+        "notused": 196,
+        "detail": "SEARCH probe_discover_results USING INTEGER PRIMARY KEY (rowid>?)"
+      }
+    ],
+    "backfill_assets": [
+      {
+        "id": 4,
+        "parent": 0,
+        "notused": 196,
+        "detail": "SEARCH probe_servers USING INTEGER PRIMARY KEY (rowid>?)"
+      }
+    ],
+    "geo_counts": [
+      {
+        "id": 7,
+        "parent": 0,
+        "notused": 223,
+        "detail": "SCAN geoip_records USING INDEX idx_geoip_pending"
+      },
+      {
+        "id": 10,
+        "parent": 0,
+        "notused": 0,
+        "detail": "USE TEMP B-TREE FOR GROUP BY"
+      }
+    ],
+    "facets_contextual": [
+      {
+        "sql": "SELECT s.server_group, COUNT(*) AS count FROM probe_servers s WHERE s.conn_score BETWEEN 1 AND 3 AND s.server_group != '' GROUP BY s.server_group ORDER BY s.server_group",
+        "plan": [
+          {
+            "id": 7,
+            "parent": 0,
+            "notused": 152,
+            "detail": "SEARCH s USING COVERING INDEX idx_probe_servers_conn_score (conn_score>? AND conn_score<?)"
+          },
+          {
+            "id": 14,
+            "parent": 0,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR GROUP BY"
+          }
+        ]
+      },
+      {
+        "sql": "WITH facet_servers AS MATERIALIZED (SELECT s.id FROM probe_servers s WHERE s.conn_score BETWEEN 1 AND 3), tag_counts AS (SELECT t.id AS tag_id,c.id AS category_id,c.name AS category,t.name AS name,COUNT(*) AS count FROM facet_servers fs CROSS JOIN probe_server_tags st ON st.server_id=fs.id JOIN probe_tags t ON t.id=st.tag_id JOIN probe_tag_categories c ON c.id=t.category_id WHERE (''='' OR c.name LIKE '%%' ESCAPE '\\' COLLATE NOCASE OR t.name LIKE '%%' ESCAPE '\\' COLLATE NOCASE) GROUP BY t.id,c.id,c.name,t.name), tag_page AS (SELECT * FROM tag_counts ORDER BY category COLLATE BINARY,name COLLATE BINARY,tag_id COLLATE BINARY LIMIT 50 OFFSET 0), tag_total AS (SELECT COUNT(*) AS total FROM tag_counts), legacy_server_names AS (SELECT fs.id AS server_id,t.name AS name FROM facet_servers fs CROSS JOIN probe_server_tags st ON st.server_id=fs.id JOIN probe_tags t ON t.id=st.tag_id GROUP BY fs.id,t.name), legacy_labels AS (SELECT name,COUNT(*) AS count FROM legacy_server_names GROUP BY name) SELECT 'tag' AS facet,p.tag_id,p.category_id,p.category,p.name,p.count,total.total AS tag_total FROM tag_total total LEFT JOIN tag_page p ON 1=1 UNION ALL SELECT 'label' AS facet,NULL AS tag_id,NULL AS category_id,NULL AS category,labels.name,labels.count,NULL AS tag_total FROM legacy_labels labels ORDER BY facet,category,name",
+        "plan": [
+          {
+            "id": 1,
+            "parent": 0,
+            "notused": 0,
+            "detail": "MERGE (UNION ALL)"
+          },
+          {
+            "id": 3,
+            "parent": 1,
+            "notused": 0,
+            "detail": "LEFT"
+          },
+          {
+            "id": 5,
+            "parent": 3,
+            "notused": 0,
+            "detail": "CO-ROUTINE tag_total"
+          },
+          {
+            "id": 8,
+            "parent": 5,
+            "notused": 0,
+            "detail": "MATERIALIZE tag_counts"
+          },
+          {
+            "id": 11,
+            "parent": 8,
+            "notused": 0,
+            "detail": "MATERIALIZE facet_servers"
+          },
+          {
+            "id": 14,
+            "parent": 11,
+            "notused": 148,
+            "detail": "SEARCH s USING COVERING INDEX idx_probe_servers_conn_score_id (conn_score>? AND conn_score<?)"
+          },
+          {
+            "id": 39,
+            "parent": 8,
+            "notused": 156,
+            "detail": "SCAN fs"
+          },
+          {
+            "id": 41,
+            "parent": 8,
+            "notused": 56,
+            "detail": "SEARCH st USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 (server_id=?)"
+          },
+          {
+            "id": 47,
+            "parent": 8,
+            "notused": 46,
+            "detail": "SEARCH t USING INDEX sqlite_autoindex_probe_tags_1 (id=?)"
+          },
+          {
+            "id": 52,
+            "parent": 8,
+            "notused": 46,
+            "detail": "SEARCH c USING INDEX sqlite_autoindex_probe_tag_categories_1 (id=?)"
+          },
+          {
+            "id": 64,
+            "parent": 8,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR GROUP BY"
+          },
+          {
+            "id": 117,
+            "parent": 5,
+            "notused": 82,
+            "detail": "SCAN tag_counts"
+          },
+          {
+            "id": 127,
+            "parent": 3,
+            "notused": 0,
+            "detail": "MATERIALIZE tag_page"
+          },
+          {
+            "id": 136,
+            "parent": 127,
+            "notused": 216,
+            "detail": "SCAN tag_counts"
+          },
+          {
+            "id": 155,
+            "parent": 127,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          },
+          {
+            "id": 165,
+            "parent": 3,
+            "notused": 16,
+            "detail": "SCAN total"
+          },
+          {
+            "id": 170,
+            "parent": 3,
+            "notused": 72,
+            "detail": "SCAN p LEFT-JOIN"
+          },
+          {
+            "id": 191,
+            "parent": 3,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          },
+          {
+            "id": 206,
+            "parent": 1,
+            "notused": 0,
+            "detail": "RIGHT"
+          },
+          {
+            "id": 208,
+            "parent": 206,
+            "notused": 0,
+            "detail": "CO-ROUTINE legacy_labels"
+          },
+          {
+            "id": 210,
+            "parent": 208,
+            "notused": 0,
+            "detail": "CO-ROUTINE legacy_server_names"
+          },
+          {
+            "id": 221,
+            "parent": 210,
+            "notused": 216,
+            "detail": "SCAN fs"
+          },
+          {
+            "id": 223,
+            "parent": 210,
+            "notused": 56,
+            "detail": "SEARCH st USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 (server_id=?)"
+          },
+          {
+            "id": 229,
+            "parent": 210,
+            "notused": 46,
+            "detail": "SEARCH t USING INDEX sqlite_autoindex_probe_tags_1 (id=?)"
+          },
+          {
+            "id": 234,
+            "parent": 210,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR GROUP BY"
+          },
+          {
+            "id": 274,
+            "parent": 208,
+            "notused": 82,
+            "detail": "SCAN legacy_server_names"
+          },
+          {
+            "id": 277,
+            "parent": 208,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR GROUP BY"
+          },
+          {
+            "id": 312,
+            "parent": 206,
+            "notused": 82,
+            "detail": "SCAN labels"
+          },
+          {
+            "id": 325,
+            "parent": 206,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          }
+        ]
+      }
+    ],
+    "facets_global": [
+      {
+        "sql": "SELECT s.server_group, COUNT(*) AS count FROM probe_servers s WHERE s.server_group != '' GROUP BY s.server_group ORDER BY s.server_group",
+        "plan": [
+          {
+            "id": 7,
+            "parent": 0,
+            "notused": 212,
+            "detail": "SCAN s USING COVERING INDEX idx_probe_servers_group_ip"
+          }
+        ]
+      },
+      {
+        "sql": "WITH tag_counts AS (SELECT t.id AS tag_id,c.id AS category_id,c.name AS category,t.name AS name,COUNT(*) AS count FROM probe_server_tags st INDEXED BY idx_probe_server_tags_tag_server JOIN probe_tags t ON t.id=st.tag_id JOIN probe_tag_categories c ON c.id=t.category_id WHERE (''='' OR c.name LIKE '%%' ESCAPE '\\' COLLATE NOCASE OR t.name LIKE '%%' ESCAPE '\\' COLLATE NOCASE) GROUP BY st.tag_id), tag_page AS (SELECT * FROM tag_counts ORDER BY category COLLATE BINARY,name COLLATE BINARY,tag_id COLLATE BINARY), tag_total AS (SELECT COUNT(*) AS total FROM tag_counts), legacy_labels AS (SELECT t.name AS name,COUNT(DISTINCT st.server_id) AS count FROM probe_server_tags st INDEXED BY idx_probe_server_tags_tag_server JOIN probe_tags t ON t.id=st.tag_id GROUP BY t.name) SELECT 'tag' AS facet,p.tag_id,p.category_id,p.category,p.name,p.count,total.total AS tag_total FROM tag_total total LEFT JOIN tag_page p ON 1=1 UNION ALL SELECT 'label' AS facet,NULL AS tag_id,NULL AS category_id,NULL AS category,labels.name,labels.count,NULL AS tag_total FROM legacy_labels labels ORDER BY facet,category,name",
+        "plan": [
+          {
+            "id": 1,
+            "parent": 0,
+            "notused": 0,
+            "detail": "MERGE (UNION ALL)"
+          },
+          {
+            "id": 3,
+            "parent": 1,
+            "notused": 0,
+            "detail": "LEFT"
+          },
+          {
+            "id": 5,
+            "parent": 3,
+            "notused": 0,
+            "detail": "CO-ROUTINE tag_total"
+          },
+          {
+            "id": 8,
+            "parent": 5,
+            "notused": 0,
+            "detail": "MATERIALIZE tag_counts"
+          },
+          {
+            "id": 20,
+            "parent": 8,
+            "notused": 216,
+            "detail": "SCAN st USING COVERING INDEX idx_probe_server_tags_tag_server"
+          },
+          {
+            "id": 22,
+            "parent": 8,
+            "notused": 46,
+            "detail": "SEARCH t USING INDEX sqlite_autoindex_probe_tags_1 (id=?)"
+          },
+          {
+            "id": 27,
+            "parent": 8,
+            "notused": 46,
+            "detail": "SEARCH c USING INDEX sqlite_autoindex_probe_tag_categories_1 (id=?)"
+          },
+          {
+            "id": 77,
+            "parent": 5,
+            "notused": 82,
+            "detail": "SCAN tag_counts"
+          },
+          {
+            "id": 88,
+            "parent": 3,
+            "notused": 16,
+            "detail": "SCAN total"
+          },
+          {
+            "id": 91,
+            "parent": 3,
+            "notused": 216,
+            "detail": "SCAN tag_counts LEFT-JOIN"
+          },
+          {
+            "id": 112,
+            "parent": 3,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          },
+          {
+            "id": 127,
+            "parent": 1,
+            "notused": 0,
+            "detail": "RIGHT"
+          },
+          {
+            "id": 129,
+            "parent": 127,
+            "notused": 0,
+            "detail": "CO-ROUTINE legacy_labels"
+          },
+          {
+            "id": 137,
+            "parent": 129,
+            "notused": 216,
+            "detail": "SCAN st USING COVERING INDEX idx_probe_server_tags_tag_server"
+          },
+          {
+            "id": 139,
+            "parent": 129,
+            "notused": 46,
+            "detail": "SEARCH t USING INDEX sqlite_autoindex_probe_tags_1 (id=?)"
+          },
+          {
+            "id": 144,
+            "parent": 129,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR GROUP BY"
+          },
+          {
+            "id": 182,
+            "parent": 129,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR count(DISTINCT)"
+          },
+          {
+            "id": 187,
+            "parent": 127,
+            "notused": 82,
+            "detail": "SCAN labels"
+          },
+          {
+            "id": 200,
+            "parent": 127,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          }
+        ]
+      }
+    ],
+    "discovery_filter": [
+      {
+        "sql": "SELECT COUNT(*) FROM probe_discover_results d WHERE NOT EXISTS (SELECT 1 FROM probe_servers s WHERE s.ip = d.ip)",
+        "plan": [
+          {
+            "id": 3,
+            "parent": 0,
+            "notused": 211,
+            "detail": "SCAN d USING COVERING INDEX sqlite_autoindex_probe_discover_results_1"
+          },
+          {
+            "id": 6,
+            "parent": 0,
+            "notused": 0,
+            "detail": "CORRELATED SCALAR SUBQUERY 1"
+          },
+          {
+            "id": 10,
+            "parent": 6,
+            "notused": 39,
+            "detail": "SEARCH s USING COVERING INDEX sqlite_autoindex_probe_servers_1 (ip=?)"
+          }
+        ]
+      },
+      {
+        "sql": "SELECT d.id, d.ip, d.port, d.latency_ms, d.server_group, d.label, d.discovered_at, EXISTS (SELECT 1 FROM probe_servers s WHERE s.ip = d.ip) AS in_library FROM probe_discover_results d WHERE NOT EXISTS (SELECT 1 FROM probe_servers s WHERE s.ip = d.ip) ORDER BY d.discovered_at DESC, d.id DESC LIMIT 50 OFFSET 0",
+        "plan": [
+          {
+            "id": 8,
+            "parent": 0,
+            "notused": 223,
+            "detail": "SCAN d USING INDEX idx_probe_discover_time"
+          },
+          {
+            "id": 12,
+            "parent": 0,
+            "notused": 0,
+            "detail": "CORRELATED SCALAR SUBQUERY 2"
+          },
+          {
+            "id": 16,
+            "parent": 12,
+            "notused": 39,
+            "detail": "SEARCH s USING COVERING INDEX sqlite_autoindex_probe_servers_1 (ip=?)"
+          },
+          {
+            "id": 34,
+            "parent": 0,
+            "notused": 0,
+            "detail": "CORRELATED SCALAR SUBQUERY 1"
+          },
+          {
+            "id": 38,
+            "parent": 34,
+            "notused": 39,
+            "detail": "SEARCH s USING COVERING INDEX sqlite_autoindex_probe_servers_1 (ip=?)"
+          }
+        ]
+      }
+    ]
+  },
+  "final_query_source_sha256": {
+    "scripts/benchmark_geoip.py": "15f8eaa5eb2844c4c8717d88ed042af1635c082e175f2f08ed128b9a64972cc2",
+    "webui/backend/app/geoip/__init__.py": "4ae4eb3f7effac64197abb68813f2f8876c6aa57a2e7358ae8478441daf07abf",
+    "webui/backend/app/geoip/database.py": "af970445a08b1b69a72649777d8c90fa6f13bcb87d6b88e5ddaea1d6dffc65c8",
+    "webui/backend/app/geoip/identity.py": "7c2a818fda27aad07ee499bc87afbc1b0fc1a63461550c2b7df8daa3f9f25c7a",
+    "webui/backend/app/geoip/router.py": "f51ac920a4ebf9c72e2f0f9d98bacd6148083455e0a59975a020bd06f727deee",
+    "webui/backend/app/geoip/schema.py": "596c7da780c29413f28b6b60a2cbb2926c9912fa882f1ae530d43eb17e014484",
+    "webui/backend/app/geoip/service.py": "7db034fcfdd0d9d5bc646b97a154b5a01aceacc0c0fedf612f5575dae88bac9a",
+    "webui/backend/app/geoip/store.py": "5ea4f5c1bba38832a9f430211aeea69f9c22d0a3882d840efd14353884d2c8ef",
+    "webui/backend/app/geoip/tags.py": "ae493bc5b649ce2eb0177269ff65a24d4817e6f1cb08e9538db0b3a49d910d0d",
+    "webui/backend/app/probe/store.py": "2d92ea5dd0a2f7d87a71653722e50e28b90e31dfa30137b2c3b1825c15ec42bd",
+    "webui/backend/app/control/database.py": "6e545bf40c0dd1ba82c16f97435580152014000c8cd205483196ce46d6a72566"
+  },
+  "final_query_started_at": "2026-10-31T01:40:45+08:00",
+  "final_ready_records": 1000000,
+  "final_geo_tag_links": 2000000,
+  "final_asset_tag_links": 2000000,
+  "final_query_files_before_checkpoint": {
+    "database": 5628608512,
+    "-wal": 61684672,
+    "-shm": 131072
+  },
+  "final_query_workload": {
+    "requested_seconds": 45,
+    "stable_positive_refresh": true,
+    "writer_pause_seconds": 0.1,
+    "production_worker_pause_seconds": 0.1,
+    "note": "Pacing is explicit; default matches production. Refresh changes timestamps while membership stays stable. Full positive growth is measured by initial fill; unpaced saturation results are retained."
+  },
+  "final_query_http_attempts": 0,
+  "final_query_peak_rss_bytes": 389087232,
+  "final_query_files": {
+    "database": 5642403840,
+    "-wal": 0,
+    "-shm": 0
+  },
+  "final_query_finished_at": "2026-10-31T01:41:32+08:00",
+  "unpaced_concurrency": {
+    "seconds": 40.315763500053436,
+    "readers": 5,
+    "sustained_writer": {
+      "batches": 1229,
+      "records": 307250
+    },
+    "queries": {
+      "geo_write_batch": {
+        "n": 1229,
+        "p50_ms": 30.768707860261202,
+        "p95_ms": 42.978167068213224,
+        "max_ms": 57.29399994015694
+      },
+      "filter_country": {
+        "n": 117,
+        "p50_ms": 30.079166870564222,
+        "p95_ms": 51.27637507393956,
+        "max_ms": 60.1163343526423,
+        "gate_ms": 1500,
+        "passed": true
+      },
+      "list_ip": {
+        "n": 334,
+        "p50_ms": 37.42381255142391,
+        "p95_ms": 50.24341680109501,
+        "max_ms": 132.08991708233953,
+        "gate_ms": 800,
+        "passed": true
+      },
+      "count_complex": {
+        "n": 201,
+        "p50_ms": 129.45079198107123,
+        "p95_ms": 169.82549987733364,
+        "max_ms": 199.69962490722537,
+        "gate_ms": 3000,
+        "passed": true
+      },
+      "list_speed": {
+        "n": 333,
+        "p50_ms": 38.88283297419548,
+        "p95_ms": 52.13095899671316,
+        "max_ms": 65.58137480169535,
+        "gate_ms": 800,
+        "passed": true
+      },
+      "discovery_list": {
+        "n": 24,
+        "p50_ms": 44.782937970012426,
+        "p95_ms": 114.14029216393828,
+        "max_ms": 137.58262479677796,
+        "gate_ms": 800,
+        "passed": true
+      },
+      "list_time": {
+        "n": 333,
+        "p50_ms": 37.53808280453086,
+        "p95_ms": 55.08754076436162,
+        "max_ms": 114.2417499795556,
+        "gate_ms": 800,
+        "passed": true
+      },
+      "geo_counts": {
+        "n": 201,
+        "p50_ms": 63.51404218003154,
+        "p95_ms": 89.62887478992343,
+        "max_ms": 124.04454173520207,
+        "gate_ms": 3000,
+        "passed": true
+      },
+      "facets_global": {
+        "n": 12,
+        "p50_ms": 262.1813742443919,
+        "p95_ms": 361.50262504816055,
+        "max_ms": 361.50262504816055,
+        "gate_ms": 3000,
+        "passed": true
+      },
+      "filter_complex": {
+        "n": 117,
+        "p50_ms": 308.9708751067519,
+        "p95_ms": 393.6279169283807,
+        "max_ms": 444.1891247406602,
+        "gate_ms": 1500,
+        "passed": true
+      },
+      "discovery_filter": {
+        "n": 24,
+        "p50_ms": 145.67514578811824,
+        "p95_ms": 204.15304088965058,
+        "max_ms": 206.77187526598573,
+        "gate_ms": 1500,
+        "passed": true
+      },
+      "discovery_facets": {
+        "n": 23,
+        "p50_ms": 1557.4444169178605,
+        "p95_ms": 1916.9492502696812,
+        "max_ms": 2118.6729590408504,
+        "gate_ms": 3000,
+        "passed": true
+      },
+      "facets_contextual": {
+        "n": 12,
+        "p50_ms": 3068.149833008647,
+        "p95_ms": 3727.004916872829,
+        "max_ms": 3727.004916872829,
+        "gate_ms": 3000,
+        "passed": false
+      }
+    },
+    "errors": [],
+    "gates": {
+      "list_ms": 800,
+      "filter_ms": 1500,
+      "counts_ms": 3000
+    },
+    "all_measured_gates_pass": false
+  },
+  "prior_query_runs": [
+    {
+      "seconds": 45.53237933386117,
+      "readers": 5,
+      "writer_pause_seconds": 0.02,
+      "sustained_writer": {
+        "batches": 676,
+        "records": 169000
+      },
+      "queries": {
+        "geo_write_batch": {
+          "n": 676,
+          "p50_ms": 39.225167129188776,
+          "p95_ms": 50.26149982586503,
+          "max_ms": 59.170959051698446
+        },
+        "filter_country": {
+          "n": 155,
+          "p50_ms": 41.4622500538826,
+          "p95_ms": 61.94225000217557,
+          "max_ms": 70.35175012424588,
+          "gate_ms": 1500,
+          "passed": true
+        },
+        "list_ip": {
+          "n": 356,
+          "p50_ms": 40.25062499567866,
+          "p95_ms": 57.635083328932524,
+          "max_ms": 70.04883280023932,
+          "gate_ms": 800,
+          "passed": true
+        },
+        "list_speed": {
+          "n": 356,
+          "p50_ms": 42.03202109783888,
+          "p95_ms": 61.02420808747411,
+          "max_ms": 80.82504197955132,
+          "gate_ms": 800,
+          "passed": true
+        },
+        "count_complex": {
+          "n": 248,
+          "p50_ms": 107.17681259848177,
+          "p95_ms": 157.04720886424184,
+          "max_ms": 186.1607083119452,
+          "gate_ms": 3000,
+          "passed": true
+        },
+        "list_time": {
+          "n": 355,
+          "p50_ms": 41.344957891851664,
+          "p95_ms": 59.18900016695261,
+          "max_ms": 72.32154067605734,
+          "gate_ms": 800,
+          "passed": true
+        },
+        "discovery_list": {
+          "n": 13,
+          "p50_ms": 43.36337512359023,
+          "p95_ms": 160.0812920369208,
+          "max_ms": 160.0812920369208,
+          "gate_ms": 800,
+          "passed": true
+        },
+        "geo_counts": {
+          "n": 247,
+          "p50_ms": 70.12762501835823,
+          "p95_ms": 94.31962482631207,
+          "max_ms": 137.64112489297986,
+          "gate_ms": 3000,
+          "passed": true
+        },
+        "filter_complex": {
+          "n": 155,
+          "p50_ms": 233.94200019538403,
+          "p95_ms": 370.7686671987176,
+          "max_ms": 397.05145778134465,
+          "gate_ms": 1500,
+          "passed": true
+        },
+        "facets_global": {
+          "n": 15,
+          "p50_ms": 265.2537077665329,
+          "p95_ms": 338.6291670612991,
+          "max_ms": 338.6291670612991,
+          "gate_ms": 3000,
+          "passed": true
+        },
+        "discovery_filter": {
+          "n": 13,
+          "p50_ms": 151.0100420564413,
+          "p95_ms": 178.38225001469254,
+          "max_ms": 178.38225001469254,
+          "gate_ms": 1500,
+          "passed": true
+        },
+        "facets_contextual": {
+          "n": 14,
+          "p50_ms": 3041.824249783531,
+          "p95_ms": 3681.9877079688013,
+          "max_ms": 3681.9877079688013,
+          "gate_ms": 3000,
+          "passed": false
+        },
+        "discovery_facets": {
+          "n": 13,
+          "p50_ms": 3369.2840836010873,
+          "p95_ms": 3968.0013325996697,
+          "max_ms": 3968.0013325996697,
+          "gate_ms": 3000,
+          "passed": false
+        }
+      },
+      "errors": [],
+      "gates": {
+        "list_ms": 800,
+        "filter_ms": 1500,
+        "counts_ms": 3000
+      },
+      "all_measured_gates_pass": false
+    },
+    {
+      "seconds": 45.27132804179564,
+      "readers": 5,
+      "writer_pause_seconds": 0.02,
+      "sustained_writer": {
+        "batches": 762,
+        "records": 190500
+      },
+      "queries": {
+        "geo_write_batch": {
+          "n": 762,
+          "p50_ms": 30.410603852942586,
+          "p95_ms": 42.22416691482067,
+          "max_ms": 54.47683297097683
+        },
+        "filter_country": {
+          "n": 152,
+          "p50_ms": 25.618041399866343,
+          "p95_ms": 39.03962532058358,
+          "max_ms": 67.90920812636614,
+          "gate_ms": 1500,
+          "passed": true
+        },
+        "discovery_list": {
+          "n": 30,
+          "p50_ms": 38.916750345379114,
+          "p95_ms": 57.74699989706278,
+          "max_ms": 150.22804122418165,
+          "gate_ms": 800,
+          "passed": true
+        },
+        "list_ip": {
+          "n": 451,
+          "p50_ms": 31.631499994546175,
+          "p95_ms": 45.019208919256926,
+          "max_ms": 316.27404084429145,
+          "gate_ms": 800,
+          "passed": true
+        },
+        "discovery_filter": {
+          "n": 30,
+          "p50_ms": 135.05533314310014,
+          "p95_ms": 172.31583315879107,
+          "max_ms": 185.96083391457796,
+          "gate_ms": 1500,
+          "passed": true
+        },
+        "list_speed": {
+          "n": 451,
+          "p50_ms": 32.93254226446152,
+          "p95_ms": 45.2070408500731,
+          "max_ms": 76.48712489753962,
+          "gate_ms": 800,
+          "passed": true
+        },
+        "list_time": {
+          "n": 450,
+          "p50_ms": 31.678999541327357,
+          "p95_ms": 44.36245886608958,
+          "max_ms": 62.5379579141736,
+          "gate_ms": 800,
+          "passed": true
+        },
+        "discovery_facets": {
+          "n": 30,
+          "p50_ms": 1344.4779170677066,
+          "p95_ms": 1659.5024578273296,
+          "max_ms": 1905.3517919965088,
+          "gate_ms": 3000,
+          "passed": true
+        },
+        "count_complex": {
+          "n": 253,
+          "p50_ms": 112.3836669139564,
+          "p95_ms": 151.94529108703136,
+          "max_ms": 902.8270421549678,
+          "gate_ms": 3000,
+          "passed": true
+        },
+        "filter_complex": {
+          "n": 152,
+          "p50_ms": 263.2672293111682,
+          "p95_ms": 350.21095909178257,
+          "max_ms": 1017.8682091645896,
+          "gate_ms": 1500,
+          "passed": true
+        },
+        "geo_counts": {
+          "n": 253,
+          "p50_ms": 58.21445817127824,
+          "p95_ms": 76.18920784443617,
+          "max_ms": 186.63529213517904,
+          "gate_ms": 3000,
+          "passed": true
+        },
+        "facets_global": {
+          "n": 15,
+          "p50_ms": 246.06558308005333,
+          "p95_ms": 1119.468499906361,
+          "max_ms": 1119.468499906361,
+          "gate_ms": 3000,
+          "passed": true
+        },
+        "facets_contextual": {
+          "n": 15,
+          "p50_ms": 2686.073333956301,
+          "p95_ms": 3415.933750104159,
+          "max_ms": 3415.933750104159,
+          "gate_ms": 3000,
+          "passed": false
+        }
+      },
+      "errors": [],
+      "gates": {
+        "list_ms": 800,
+        "filter_ms": 1500,
+        "counts_ms": 3000
+      },
+      "all_measured_gates_pass": false
+    }
+  ],
+  "final_query_read_only_optimization_retest": true,
+  "final_discovery_nonempty_labels": 750000,
+  "verification_note": "Final SELECT and pacing retest reuses the prior full quick_check=ok and HTTP interception on this isolated fixture; memory peak fields retain their original measured run context."
+}

@@ -89,6 +89,38 @@ docker rm -f frpc-agent
 # 粘贴 Console 新生成的一键安装命令
 ```
 
+## 本地 IP 归属地数据库
+
+Console 使用 IPinfo Lite 在本地识别国家/地区和 ASN；组织名称在详情展示。识别覆盖发现命中和产生正式测试结果的服务器，未测试的纯手工导入资产暂不主动查询。
+
+`.env` 配置：
+
+```dotenv
+GEOIP_ENABLED=true
+GEOIP_DATABASE_PATH=/data/geoip/ipinfo_lite.mmdb
+IPINFO_TOKEN=
+```
+
+在 [IPinfo Lite](https://ipinfo.io/lite) 获取免费账户 Token，填写 `IPINFO_TOKEN` 后重建 Console，服务会首次下载整库，此后每 24 小时检查更新。Token 只在服务端使用；运行时逐 IP 查询不调用外部 API。系统页“本地 IP 归属地”可查看数据库版本、数据年龄、回填计数并请求更新或重新识别。
+
+也可以自行准备 IPinfo Lite MMDB，Token 留空，将文件放入 Console 数据卷：
+
+```bash
+docker compose -f compose.console.yaml exec -T frpc-console mkdir -p /data/geoip
+docker cp ./ipinfo_lite.mmdb frpc-console:/data/geoip/ipinfo_lite.mmdb.next
+docker compose -f compose.console.yaml exec -T frpc-console mv /data/geoip/ipinfo_lite.mmdb.next /data/geoip/ipinfo_lite.mmdb
+```
+
+文件会在后台校验并加载；支持国家/地区、ASN 字符串字段的 IPinfo Lite 格式，单文件最大 128 MiB。数据库以有界内存快照加载，替换期间可能短暂持有新旧两份。缺库时待处理队列保留；下载或校验失败保留有效旧快照，错误可在系统页查看。数据库更新后，对仍被发现候选或服务器引用的 IP 分批刷新。
+
+后台每批处理 250 IP，并让步 100ms，为交互查询保留资源。历史大批回填及每日更新以队列进度为准；原始紧循环吞吐与正常后台节奏分开记录。SQLite 每连接页缓存为 8 MiB，临时聚合使用内存，读取映射上限 256 MiB；百万级隔离测试记录实际 RSS。
+
+自动标签由系统维护，人工标签替换和批量操作会保留它们。业务分组可选，仅表示生产、备用、项目等用途；测试状态来自各项目结果；域名候选成员独立维护。
+
+设置 `GEOIP_ENABLED=false` 并重建 Console 可暂停识别及下载，已有标签、测试和域名选优继续可用。备份 Console 数据库时同时保存 `/data/geoip/`；数据库及下载 Token 不加入 Git。回退程序前先备份数据，涉及迁移回退时恢复对应备份。
+
+数据来源：[IPinfo Lite](https://ipinfo.io/developers/ipinfo-lite-database)，许可：[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)。公开显示或分发数据时保留 IPinfo 署名；分发衍生数据遵循该许可。
+
 ## 节点突然为空时的恢复步骤
 
 先不要执行任何带 `-v` 的删除命令，例如 `docker compose down -v` 或 `docker volume rm`。

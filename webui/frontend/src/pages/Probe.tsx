@@ -28,9 +28,11 @@ import { TestNodesDialog } from './probe/TestNodesDialog';
 import { ProbeJobsPanel } from './probe/ProbeJobsPanel';
 import { ScanDialog } from './probe/ScanDialog';
 import { ProbeRouteHistory } from './probe/ProbeRouteHistory';
+import { GeoInfo } from './probe/GeoInfo';
 import { BatchTagDialog, TagManagementDialog } from './probe/TagDialogs';
 import { ConfirmOverlay, Overlay } from '../components/Overlay';
 import { cn } from '../lib/utils';
+import { manualGeoLabels, readOnlyTagNames } from '../lib/geoip';
 import { probeEndpointHost } from '../lib/probeEndpoint';
 import type {
   TestNode, TestNodeExecutionPolicy, ProbeJobDetail, GroupColor, GroupInfo, LabelCount, ServerConn,
@@ -389,7 +391,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
 
   useEffect(() => { loadHistory(historyIp); }, [loadHistory, historyIp]);
 
-  /** 分组 → 组内服务器数：分组管理弹窗里标出空分组（提示先入组再绑域名）。 */
+  /** 业务分组 → 组内服务器数。 */
   const groupCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const { group, count } of servers.facets.groups) {
@@ -633,7 +635,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                             disabled={row.inLibrary}
                             onChange={() => discovery.toggleSelected(row.id)} />
                         </Td>
-                        <Td><div className="flex flex-col gap-1"><span className="font-mono text-[12px] font-medium">{row.ip}</span><span className="text-[11px] text-muted-foreground">{row.nodeName} · {row.latestRoute ? row.latestRoute.ok ? row.latestRoute.isCn2 ? 'CN2' : '非 CN2' : '路由失败' : '未测路由'}</span></div></Td>
+                        <Td><div className="flex flex-col gap-1"><span className="font-mono text-[12px] font-medium">{row.ip}</span><GeoInfo geo={row.geo} labels={row.labels} /><span className="text-[11px] text-muted-foreground">{row.nodeName} · {row.latestRoute ? row.latestRoute.ok ? row.latestRoute.isCn2 ? 'CN2' : '非 CN2' : '路由失败' : '未测路由'}</span></div></Td>
                         <Td><span className="font-mono text-xs text-muted-foreground">{row.port}</span></Td>
                         <Td><span className="font-mono text-xs tabular-nums text-muted-foreground">{row.latencyMs} ms</span></Td>
                         <Td>{row.group ? <Badge variant={groupVariant(groupColorMap.get(row.group))} dot>{row.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>
@@ -917,7 +919,7 @@ export function Probe({ section = 'discover' }: { section?: 'discover' | 'server
                             onChange={() => servers.toggleSelected(item.id, item.ip)}
                           />
                         </Td>
-                        {visibleServerColumns.includes('ip') && <Td><div className="font-mono text-[12px] font-medium">{item.ip}</div></Td>}
+                        {visibleServerColumns.includes('ip') && <Td><div className="flex flex-col gap-1"><div className="font-mono text-[12px] font-medium">{item.ip}</div><GeoInfo geo={item.geo} labels={item.labels} /></div></Td>}
                         {visibleServerColumns.includes('group') && <Td>{item.group ? <Badge variant={groupVariant(groupColorMap.get(item.group))} dot>{item.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>}
                         {visibleServerColumns.includes('tags') && <Td>{item.labels.length ? <div className="flex flex-wrap gap-1">{item.labels.map((label) => <Badge key={label} tone="muted">{label}</Badge>)}</div> : <span className="text-xs text-muted-foreground">—</span>}</Td>}
                         {visibleServerColumns.includes('route') && <Td>{item.latestRoute ? <Badge tone={item.latestRoute.ok ? item.latestRoute.isCn2 ? 'success' : 'warning' : 'muted'}>{item.latestRoute.ok ? item.latestRoute.isCn2 ? 'CN2' : '非 CN2' : '路由失败'}</Badge> : <span className="text-xs text-muted-foreground">未测试</span>}</Td>}
@@ -1235,13 +1237,12 @@ function ServerDialog({ server, groups, onClose, onSaved }: {
   onSaved: () => void;
 }) {
   const [ip, setIp] = useState(server?.ip ?? '');
-  const [labels, setLabels] = useState((server?.labels ?? []).join(','));
+  const [labels, setLabels] = useState(manualGeoLabels(server?.labels ?? [], server?.manualLabels).join(','));
   const [group, setGroup] = useState(server?.group ?? '');
   const [saving, setSaving] = useState(false);
 
   const submit = async () => {
     if (!ip.trim()) { toast.error('请填写服务器地址'); return; }
-    if (!group.trim()) { toast.error('请选择或输入分组'); return; }
     setSaving(true);
     try {
       const payload = {
@@ -1268,14 +1269,15 @@ function ServerDialog({ server, groups, onClose, onSaved }: {
           <Input value={ip} onChange={(e) => setIp(e.target.value)} placeholder="1.2.3.4 或 frps.example.com" autoFocus />
         </div>
         <div className="flex flex-col gap-1.5">
-          <Label className="text-xs">标签（可选，多个用逗号分隔）</Label>
+          {server?.geo && <GeoInfo geo={server.geo} detailed />}
+          <Label className="text-xs">手动标签（可选，多个用逗号分隔）</Label>
           <Input value={labels} onChange={(e) => setLabels(e.target.value)} placeholder="CN2,家宽" />
         </div>
         <div className="flex flex-col gap-1.5">
-          <Label className="text-xs">分组（必选，可输入新分组）</Label>
+          <Label className="text-xs">业务分组（可选，可输入新分组）</Label>
           <Input
             value={group} onChange={(e) => setGroup(e.target.value)}
-            placeholder="选择建议或输入新分组" list="probe-group-options"
+            placeholder="例如：生产入口、备用池" list="probe-group-options"
           />
           <datalist id="probe-group-options">
             {groups.map((name) => <option key={name} value={name} />)}
@@ -1348,7 +1350,7 @@ function ServerImportStatus({ task }: { task: ServerImportTask }) {
   );
 }
 
-/** 批量导入弹窗：粘贴 IP 行（每行「IP」或「IP 标签」）或 JSON 数组；分组必选。 */
+/** 批量导入弹窗：粘贴 IP 行（每行「IP」或「IP 标签」）或 JSON 数组；业务分组可选。 */
 function ImportDialog({ groups, onClose, onSubmitted, task }: {
   groups: string[];
   onClose: () => void;
@@ -1361,7 +1363,6 @@ function ImportDialog({ groups, onClose, onSubmitted, task }: {
 
   const submit = async () => {
     if (!text.trim()) { toast.error('请粘贴要导入的内容'); return; }
-    if (!group) { toast.error('请选择导入分组'); return; }
     if (new TextEncoder().encode(text).length > 16 * 1024 * 1024) {
       setSizeError('内容超过 16 MiB 上限，请拆分后导入');
       return;
@@ -1380,14 +1381,15 @@ function ImportDialog({ groups, onClose, onSubmitted, task }: {
     <Overlay title="批量导入服务器" onClose={onClose} wide>
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
-          <Label className="text-xs">导入分组（必选）</Label>
-          <Select value={group} onValueChange={setGroup} disabled={task.hasPendingSubmission}>
-            <SelectTrigger><SelectValue placeholder="选择分组（可在「分组管理」中提前创建）" /></SelectTrigger>
+          <Label className="text-xs">业务分组（可选）</Label>
+          <Select value={group || "__ungrouped__"} onValueChange={(value) => setGroup(value === "__ungrouped__" ? "" : value)} disabled={task.hasPendingSubmission}>
+            <SelectTrigger aria-label="导入业务分组"><SelectValue placeholder="选择业务分组" /></SelectTrigger>
             <SelectContent>
               <SelectGroup>
+                <SelectItem value="__ungrouped__">不分组</SelectItem>
                 {groups.length
                   ? groups.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)
-                  : <div className="px-3 py-2 text-xs text-muted-foreground">还没有分组，请先在「分组管理」创建</div>}
+                  : <span className="px-3 py-2 text-xs text-muted-foreground">可在业务分组管理中创建</span>}
               </SelectGroup>
             </SelectContent>
           </Select>
@@ -1396,7 +1398,7 @@ function ImportDialog({ groups, onClose, onSubmitted, task }: {
           <Label className="text-xs">导入内容</Label>
           <Textarea
             rows={10} value={text} onChange={(e) => setText(e.target.value)} readOnly={task.hasPendingSubmission}
-            placeholder={'每行一台：IP 或「IP 标签」\n1.2.3.4\n5.6.7.8 香港VPS\n\n也支持 JSON：[{"ip":"1.2.3.4","label":"A","group":"g"}]'}
+            placeholder={'每行一台：IP 或「IP 标签」\n1.2.3.4\n5.6.7.8 备用入口\n\n也支持 JSON：[{"ip":"1.2.3.4","label":"A","group":"g"}]'}
             className="max-h-56 min-h-36 overflow-y-auto font-mono text-xs"
           />
           {sizeError && <p role="alert" className="text-xs text-destructive">{sizeError}</p>}
@@ -1492,8 +1494,8 @@ function GroupDialog({ groups, groupCounts, onClose, onChanged }: {
       <div className="flex flex-col gap-4">
         <div className="flex items-end gap-2">
           <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-            <Label className="text-xs">新建分组</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="如：阿里云ECS深圳" onKeyDown={(e) => { if (e.key === 'Enter') create(); }} />
+            <Label className="text-xs">新建业务分组</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="如：生产入口、备用池" onKeyDown={(e) => { if (e.key === 'Enter') create(); }} />
           </div>
           <Button onClick={create} disabled={busy || !name.trim()}><Plus size={13} />创建</Button>
         </div>
@@ -1531,7 +1533,7 @@ function GroupDialog({ groups, groupCounts, onClose, onChanged }: {
                           ))}
                         </div>
                         <span className="ml-auto whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">
-                          {count > 0 ? `${count} 台` : <span title="测通服务器后勾选批量改入该分组（即入池），再到负载均衡绑定域名">空 · 待入组</span>}
+                          {count > 0 ? `${count} 台` : <span title="按业务用途选择服务器加入分组；测试状态和域名成员分别维护">空分组</span>}
                         </span>
                         <Button size="icon-sm" variant="ghost" onClick={() => startRename(item)} disabled={busy}
                           aria-label={`重命名分组 ${item}`} title="重命名分组（服务器/发现记录/负载均衡绑定同步更新）">
@@ -1550,13 +1552,13 @@ function GroupDialog({ groups, groupCounts, onClose, onChanged }: {
             <div className="rounded-md border border-dashed border-input p-4 text-center text-xs text-muted-foreground">还没有分组</div>
           )}
         </div>
-        <p className="text-[11px] leading-4 text-muted-foreground">颜色用于在服务器库 / 网段发现 / 负载均衡中快速区分不同情况的分组；重命名会同步更新服务器、发现结果与负载均衡绑定；删除只移除预创建记录。</p>
+        <p className="text-[11px] leading-4 text-muted-foreground">业务分组可选，按用途手动维护（如生产入口、备用池）；归属地与 ASN 由自动标签表示。颜色用于快速区分业务分组；重命名会同步更新服务器、发现结果与负载均衡绑定；删除只移除预创建记录。</p>
       </div>
     </Overlay>
   );
 }
 
-/** 勾选批量修改弹窗：改分组（必选）或改标签（可空=清除）；服务器表改组成功后引导去负载均衡绑域名。
+/** 勾选批量修改弹窗：业务分组可清空，手动标签按增减项更新。
  * applyDiscover=true 时作用于网段发现结果表。 */
 function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover, snapshotMode, onSubmitBulk, onClose, onSaved }: {
   kind: 'group' | 'label';
@@ -1571,13 +1573,25 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const navigate = useNavigate();
   const [group, setGroup] = useState('');
   const [addLabels, setAddLabels] = useState<string[]>([]);
   const [removeLabels, setRemoveLabels] = useState<string[]>([]);
   const [attached, setAttached] = useState<LabelCount[]>([]);
   const [custom, setCustom] = useState('');
   const [saving, setSaving] = useState(false);
+  const [automaticNames, setAutomaticNames] = useState<Set<string>>(new Set());
+  const [catalogReady, setCatalogReady] = useState(kind !== 'label');
+  const [catalogError, setCatalogError] = useState('');
+  useEffect(() => {
+    if (kind !== 'label') return;
+    let cancelled = false;
+    Promise.all([probeApi.tags(), probeApi.tagCategories()]).then(([tags, categories]) => {
+      if (!cancelled) { setAutomaticNames(readOnlyTagNames(tags.items, categories.items)); setCatalogReady(true); }
+    }).catch((cause) => { if (!cancelled) setCatalogError(cause instanceof Error ? cause.message : '标签目录读取失败'); });
+    return () => { cancelled = true; };
+  }, [kind]);
+  const manualAttached = attached.filter(({ label }) => !automaticNames.has(label));
+  const manualCloud = cloudLabels.filter(({ label }) => !automaticNames.has(label));
 
   // 所选行已贴标签聚合（跨页由服务端预览接口聚合）；ids 序列化做依赖，避免父组件渲染重复请求
   const idsKey = ids.join(',');
@@ -1592,27 +1606,30 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
   }, [kind, idsKey, applyDiscover, snapshotMode, cloudLabels]);
 
   const toggleAdd = (label: string) => {
+    if (!catalogReady || automaticNames.has(label)) return;
     setAddLabels((current) => current.includes(label)
       ? current.filter((v) => v !== label)
       : [...current, label]);
     setRemoveLabels((current) => current.filter((v) => v !== label));
   };
   const toggleRemove = (label: string) => {
+    if (!catalogReady || automaticNames.has(label)) return;
     setRemoveLabels((current) => current.includes(label)
       ? current.filter((v) => v !== label)
       : [...current, label]);
     setAddLabels((current) => current.filter((v) => v !== label));
   };
   const addCustom = () => {
-    const parts = custom.split(',').map((v) => v.trim()).filter(Boolean);
+    if (!catalogReady) return;
+    const parts = custom.split(',').map((v) => v.trim()).filter((label) => !!label && !automaticNames.has(label));
     if (!parts.length) return;
     setAddLabels((current) => [...current, ...parts.filter((v) => !current.includes(v))]);
     setCustom('');
   };
 
   const submit = async () => {
+    if (kind === 'label' && !catalogReady) return;
     if (!canSubmitServerBatch(ids.length, !!onSubmitBulk, !!applyDiscover)) return;
-    if (kind === 'group' && !group) { toast.error('请选择分组'); return; }
     if (kind === 'label' && !addLabels.length && (snapshotMode || !removeLabels.length)) {
       toast.error('请至少选择要添加或移除的标签');
       return;
@@ -1630,10 +1647,7 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
         const changes = legacyServerBatchPayload(kind, group, addLabels, removeLabels, !!snapshotMode);
         const result = onSubmitBulk ? await onSubmitBulk(changes) : await probeApi.batchUpdateServers(ids, changes);
         if (kind === 'group') {
-          toast.success(onSubmitBulk ? `批量更新任务已提交（入组 ${group}）` : `已更新 ${(result as { updated: number }).updated} 台（入组 ${group}）`, {
-            duration: 6000,
-            action: { label: '去负载均衡绑域名', onClick: () => navigate('/lb') },
-          });
+          toast.success(onSubmitBulk ? `业务分组更新任务已提交（${group || '不分组'}）` : `已更新 ${(result as { updated: number }).updated} 台（${group || '不分组'}）`);
         } else {
           toast.success(onSubmitBulk ? '批量标签更新任务已提交' : `已更新 ${(result as { updated: number }).updated} 台`);
         }
@@ -1660,11 +1674,12 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
       <div className="flex flex-col gap-4">
         {kind === 'group' ? (
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">目标分组</Label>
-            <Select value={group} onValueChange={setGroup}>
+            <Label className="text-xs">目标业务分组（可清空）</Label>
+            <Select value={group || "__ungrouped__"} onValueChange={(value) => setGroup(value === "__ungrouped__" ? "" : value)}>
               <SelectTrigger><SelectValue placeholder="选择分组" /></SelectTrigger>
               <SelectContent>
                 <SelectGroup>
+                  <SelectItem value="__ungrouped__">不分组</SelectItem>
                   {groups.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
                 </SelectGroup>
               </SelectContent>
@@ -1672,11 +1687,14 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
           </div>
         ) : (
           <>
+            <p className="text-xs text-muted-foreground">自动归属地与 ASN 标签只读；此处仅维护手动标签。</p>
+            {!catalogReady && !catalogError && <p role="status" className="text-xs text-muted-foreground">正在读取标签目录…</p>}
+            {catalogError && <p role="alert" className="text-xs text-destructive">{catalogError}</p>}
             {canRemoveLegacyLabels(!!snapshotMode) && <div className="flex flex-col gap-1.5">
               <Label className="text-xs">已贴标签（点击 = 从所选行移除）</Label>
-              {attached.length ? (
+              {catalogReady && manualAttached.length ? (
                 <div className="flex flex-wrap items-center gap-1.5">
-                  {attached.map(({ label, count: n }) => (
+                  {manualAttached.map(({ label, count: n }) => (
                     <button key={label} type="button" className={chipCls(removeLabels.includes(label), true)}
                       onClick={() => toggleRemove(label)}>
                       {label}<span className="ml-1 opacity-70">×{n}</span>
@@ -1687,9 +1705,9 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
             </div>}
             <div className="flex flex-col gap-1.5">
               <Label className="text-xs">标签云（点击 = 添加到所选行）</Label>
-              {cloudLabels.length ? (
+              {catalogReady && manualCloud.length ? (
                 <div className="flex max-h-28 flex-wrap items-center gap-1.5 overflow-y-auto">
-                  {cloudLabels.map(({ label }) => (
+                  {manualCloud.map(({ label }) => (
                     <button key={label} type="button" className={chipCls(addLabels.includes(label))}
                       onClick={() => toggleAdd(label)}>{label}</button>
                   ))}
@@ -1712,7 +1730,7 @@ function BatchEditDialog({ kind, ids, count, groups, cloudLabels, applyDiscover,
       </div>
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>取消</Button>
-        <Button onClick={submit} disabled={saving}>{saving ? '更新中…' : '更新'}</Button>
+        <Button onClick={submit} disabled={saving || (kind === 'label' && !catalogReady)}>{saving ? '更新中…' : '更新'}</Button>
       </div>
     </Overlay>
   );
@@ -2038,7 +2056,7 @@ function ImportSelectedDialog({ ids, count, groups, defaultGroup, onClose, onDon
     if (!ids.length) return;
     setImporting(true);
     try {
-      const result = await probeApi.discoverImport(ids, group || undefined);
+      const result = await probeApi.discoverImport(ids, group);
       toast.success(`导入完成：新增 ${result.inserted} 台，跳过已在库 ${result.skipped} 台`, {
         duration: 6000,
         action: { label: '查看服务器库', onClick: () => navigate('/servers') },
@@ -2055,11 +2073,12 @@ function ImportSelectedDialog({ ids, count, groups, defaultGroup, onClose, onDon
     <Overlay title={`导入服务器库（${count} 条）`} onClose={onClose}>
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
-          <Label className="text-xs">目标分组{defaultGroup ? '（默认取记录自身分组）' : ''}</Label>
-          <Select value={group} onValueChange={setGroup}>
+          <Label className="text-xs">业务分组（可选）{defaultGroup ? '（默认取记录自身分组）' : ''}</Label>
+          <Select value={group || "__ungrouped__"} onValueChange={(value) => setGroup(value === "__ungrouped__" ? "" : value)}>
             <SelectTrigger><SelectValue placeholder="选择分组" /></SelectTrigger>
             <SelectContent>
               <SelectGroup>
+                <SelectItem value="__ungrouped__">不分组</SelectItem>
                 {groups.length
                   ? groups.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)
                   : <div className="px-3 py-2 text-xs text-muted-foreground">还没有分组，先到「分组管理」创建</div>}

@@ -189,7 +189,36 @@ export type ProbeSpeedSummary = {
   testTime: string;
 };
 
+export type GeoIpInfo = {
+  status: 'pending' | 'ready' | 'not_found' | 'non_public' | 'error';
+  countryCode: string | null;
+  country: string | null;
+  asn: string | null;
+  asName: string | null;
+  asDomain: string | null;
+  source: 'ipinfo_lite';
+  databaseVersion: string | null;
+  lookedUpAt: string | null;
+  stale: boolean;
+};
+
+export type GeoIpStatus = {
+  enabled: boolean;
+  path: string;
+  version: string | null;
+  buildEpoch: number | null;
+  updatedAt: string | null;
+  lastCheckAt: string | null;
+  lastError: string;
+  tokenConfigured: boolean;
+  updating: boolean;
+  counts: { pending: number; ready: number; notFound: number; nonPublic: number; error: number };
+  backfill: { phase: string; cursor: number; done: boolean };
+};
+
 export type ProbeServer = {
+  manualLabels?: string[];
+  geo?: GeoIpInfo | null;
   nodeId: string;
   nodeName: string;
   port: number;
@@ -315,6 +344,7 @@ export type DiscoverQuery = {
 };
 
 export type DiscoverResult = {
+  geo?: GeoIpInfo | null;
   nodeId: string;
   nodeName: string;
   latestRoute: ProbeRouteResult | null;
@@ -403,8 +433,8 @@ export type ServerFacets = {
 };
 
 export type ServerTagFacet = { tagId: string; categoryId: string; category: string; name: string; count: number };
-export type TagCategory = { id: string; name: string; createdAt?: string };
-export type ManagedTag = { id: string; categoryId: string; category: string; name: string; createdAt?: string; serverCount: number };
+export type TagCategory = { readOnly?: boolean; source?: 'manual' | 'geoip'; id: string; name: string; createdAt?: string };
+export type ManagedTag = { readOnly?: boolean; source?: 'manual' | 'geoip'; id: string; categoryId: string; category: string; name: string; createdAt?: string; serverCount: number };
 
 export type ServerSelection = {
   selectionId: string;

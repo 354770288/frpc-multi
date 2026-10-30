@@ -56,6 +56,9 @@ class Settings:
     token_ttl_seconds: int = int(os.getenv("WEBUI_TOKEN_TTL_SECONDS", str(60 * 60 * 12)))
     database_path: Path = Path(os.getenv("DATABASE_PATH", "/data/console.db"))
     frpc_multi_role: str = _resolve_frpc_multi_role()
+    geoip_enabled: bool = _as_bool(os.getenv('GEOIP_ENABLED', 'true'))
+    geoip_database_path: Path = Path(os.getenv('GEOIP_DATABASE_PATH', '/data/geoip/ipinfo_lite.mmdb'))
+    ipinfo_token: str = os.getenv('IPINFO_TOKEN', '').strip()
 
     # ---- Console：生成一键安装命令所需 ----
     # 主控对 Agent 暴露的可达地址（Agent 出站拨号目标）。例如 frpc.example.com:8081 或 1.2.3.4:8081。

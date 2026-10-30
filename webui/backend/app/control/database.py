@@ -946,6 +946,11 @@ def _open_database(path: Path) -> sqlite3.Connection:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
         connection.execute("PRAGMA synchronous = NORMAL")
+        # Keep dense tag/filter aggregates off temporary disk files. The page
+        # cache is bounded per connection; read-only mappings share OS pages.
+        connection.execute('PRAGMA cache_size = -8192')
+        connection.execute('PRAGMA mmap_size = 268435456')
+        connection.execute('PRAGMA temp_store = MEMORY')
         return connection
     except Exception:
         connection.close()
@@ -1077,6 +1082,8 @@ def initialize_database(path: Path) -> None:
             _migrate_probe_servers(connection)
             _migrate_labels_to_multi(connection)
             _migrate_probe_tags(connection)
+            from ..geoip.schema import migrate as migrate_geoip
+            migrate_geoip(connection)
         finally:
             connection.close()
 

@@ -45,12 +45,17 @@ async def lifespan(app: FastAPI):
     scheduler_stop = None
     probe_stop = None
     bulk_stop = None
+    geoip_stop = None
     if settings.is_agent:
         from .agent.client import AgentWsClient
 
         agent_client = AgentWsClient()
         agent_task = asyncio.create_task(agent_client.run_forever())
     if settings.is_console:
+        from .geoip.service import GeoService
+        app.state.geoip = GeoService(settings.database_path, settings.geoip_database_path,
+                                     enabled=settings.geoip_enabled, token=settings.ipinfo_token)
+        geoip_stop = app.state.geoip.start()
         from .lb.scheduler import start_scheduler
 
         scheduler_stop = start_scheduler(settings)
@@ -74,6 +79,8 @@ async def lifespan(app: FastAPI):
             probe_stop()
         if bulk_stop is not None:
             bulk_stop()
+        if geoip_stop is not None:
+            geoip_stop()
 
 
 app = FastAPI(title="frpc 多实例管理面板", version="0.2.0", lifespan=lifespan)
@@ -242,6 +249,8 @@ def health(_: Annotated[str, Depends(require_auth)]):
 
 
 if settings.include_console_api:
+    from .geoip.router import router as geoip_router
+    app.include_router(geoip_router)
     app.include_router(console_router)
     app.include_router(control_router)
     app.include_router(audit_router)

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-10-30-ip-geoip",
+  "taskIntentRef": "docs/aegis/work/2026-10-30-ip-geoip/task-intent-draft.json",
+  "baselineRefs": [
+    "docs/aegis/plans/2026-10-23-server-library-scale.md",
+    "docs/aegis/plans/2026-10-30-domain-candidates.md"
+  ],
+  "scopeStatus": "符合批准范围，含实际后台让步调优",
+  "compatStatus": "功能回归及两级容量门槛通过",
+  "retirementStatus": "兼容接口保留，无额外数据源或回退",
+  "newRiskSignals": [
+    "无间隔极限写入时宽条件统计延迟，和实际后台节奏分别记录"
+  ],
+  "decision": "continue"
+}

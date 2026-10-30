@@ -22,6 +22,9 @@ services:
       WEBUI_CORS_ORIGINS: ${WEBUI_CORS_ORIGINS:-}
       DATABASE_PATH: ${DATABASE_PATH:-/data/console.db}
       FRPC_MULTI_ROLE: console
+      GEOIP_ENABLED: ${GEOIP_ENABLED:-true}
+      GEOIP_DATABASE_PATH: ${GEOIP_DATABASE_PATH:-/data/geoip/ipinfo_lite.mmdb}
+      IPINFO_TOKEN: ${IPINFO_TOKEN:-}
       # Agent 出站拨号回来时填的主控地址（写进一键安装命令）。例如 frpc.example.com:8081 或 1.2.3.4:8081。
       CONSOLE_PUBLIC_HOST: ${CONSOLE_PUBLIC_HOST:-}
       # 主控在 TLS 反代后时设为 true，安装命令会用 wss。

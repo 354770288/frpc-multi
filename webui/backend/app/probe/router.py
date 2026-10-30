@@ -76,7 +76,9 @@ def _enrich_source(items, node_id):
             'port': item.get('port', split_endpoint(item['ip'], PROBE_TEST_PORT)[1]),
             'latestRoute': lookup.get(key) if key else None,
         })
-    return enriched
+    from ..geoip.store import GeoStore, enrich
+    with GeoStore(settings.database_path).db() as connection:
+        return enrich(connection, enriched)
 
 
 def audit(username: str, action: str, *, success: bool = True, message: str = "") -> None:
@@ -223,6 +225,13 @@ def _public_server(row: dict) -> dict:
             "testTime": row["s_test_time"],
         } if has_speed else None,
     }
+
+
+def _public_saved_server(server):
+    from ..geoip.store import GeoStore, enrich
+    with GeoStore(settings.database_path).db() as connection:
+        return enrich(connection, [{'id': server.id, 'ip': server.ip, 'labels': server.labels,
+                                    'group': server.server_group}], assets=True)[0]
 
 
 def _public_conn(row: dict) -> dict:
@@ -711,6 +720,8 @@ def delete_tag(tag_id: str, user: Annotated[str, Depends(require_auth)]):
         affected = probe_store().delete_tag(tag_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     audit(user, "probe_delete_tag", message=f"{tag_id}; {affected} 台服务器")
     return {"ok": True, "affectedServers": affected}
 
@@ -755,7 +766,7 @@ def create_server(payload: ServerCreate, user: Annotated[str, Depends(require_au
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     labels_text = ", ".join(server.labels)
     audit(user, "probe_create_server", message=f"{server.ip} {labels_text}".strip())
-    return {"id": server.id, "ip": server.ip, "labels": server.labels, "group": server.server_group}
+    return _public_saved_server(server)
 
 
 @router.patch("/servers/{server_id}")
@@ -774,7 +785,7 @@ def update_server(server_id: int, payload: ServerPatch, user: Annotated[str, Dep
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     labels_text = ", ".join(server.labels)
     audit(user, "probe_update_server", message=f"{server.ip} {labels_text}".strip())
-    return {"id": server.id, "ip": server.ip, "labels": server.labels, "group": server.server_group}
+    return _public_saved_server(server)
 
 
 @router.delete("/servers/{server_id}")
@@ -1024,7 +1035,7 @@ def _fetch_targets_from_url(url: str) -> str:
 
 class DiscoverImport(BaseModel):
     ids: list[int]
-    group: str = ""
+    group: str | None = None
 
 
 class DiscoverBatchUpdate(BaseModel):
@@ -1200,7 +1211,7 @@ def rename_group(payload: GroupRename, user: Annotated[str, Depends(require_auth
         audit(user, "probe_rename_group", success=False,
               message=f"{payload.old} → {payload.new}: {exc}")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    audit(user, "probe_rename_group", message=f"{payload.old} → {new_name}（服务器/发现结果/负载均衡绑定已同步）")
+    audit(user, "probe_rename_group", message=f"{payload.old} → {new_name}（业务分组名称已同步）")
     return {"renamed": new_name}
 
 

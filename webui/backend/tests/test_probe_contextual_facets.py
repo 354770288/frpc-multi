@@ -219,7 +219,7 @@ class ContextualServerFacetTests(unittest.TestCase):
                 finally:
                     connection.close()
         TraceStore(self.path).server_facets()
-        aggregate_sql = next(sql for sql in statements if sql.lstrip().upper().startswith("WITH TAG_COUNTS"))
+        aggregate_sql = next(sql for sql in statements if sql.lstrip().upper().startswith("WITH") and 'tag_total AS' in sql)
         self.assertIn("INDEXED BY IDX_PROBE_SERVER_TAGS_TAG_SERVER", aggregate_sql.upper())
         self.assertNotIn("FACET_SERVERS", aggregate_sql.upper())
         connection = connect_database(self.path)
@@ -404,7 +404,8 @@ class ContextualServerFacetTests(unittest.TestCase):
         self.assertIn("MATERIALIZE facet_servers", plan_text)
         self.assertRegex(plan_text, r"SEARCH st USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 \(server_id=\?\)")
         self.assertNotIn("SCAN st", plan_text)
-        self.assertNotIn("COUNT(DISTINCT", aggregate_sql[0].upper())
+        # Same-name tags across categories need distinct-server counting;
+        # ordinary names reuse the shared SQL aggregate instead.
         statements.clear()
         paged = TraceStore(self.path).server_facets(
             ServerPageQuery(group_ids=("group-east",), include_tag_ids=("facet-red",), conn="pass"),
@@ -424,7 +425,6 @@ class ContextualServerFacetTests(unittest.TestCase):
         self.assertIn("MATERIALIZE facet_servers", paged_plan_text)
         self.assertRegex(paged_plan_text, r"SEARCH st USING COVERING INDEX sqlite_autoindex_probe_server_tags_1 \(server_id=\?\)")
         self.assertNotIn("SCAN st", paged_plan_text)
-        self.assertNotIn("COUNT(DISTINCT", paged_sql.upper())
         self.assertEqual(len(paged["tagItems"]), 1)
         self.assertEqual((paged["tagPage"], paged["tagPageSize"], paged["tagTotal"]), (1, 1, 2))
 
@@ -433,8 +433,8 @@ class ContextualServerFacetTests(unittest.TestCase):
             group_ids=("group-east",), include_tag_ids=("facet-red",), conn="pass", sort="group", page_size=50,
         )
         server_page = TraceStore(self.path).query_servers(page_query)
-        page_sql = next(sql for sql in statements if sql.lstrip().upper().startswith("SELECT S.*"))
-        where_sql = page_sql.upper().split(" WHERE ", 1)[1]
+        page_sql = next(sql for sql in statements if sql.lstrip().upper().startswith("WITH PAGE AS"))
+        where_sql = page_sql.upper().split(") SELECT S.*", 1)[0].split(" WHERE ", 1)[1]
         self.assertIn("S.CONN_SCORE = 4", where_sql)
         self.assertNotIn("JSON_EXTRACT", where_sql)
         explain_connection = connect_database(self.path)
@@ -446,12 +446,13 @@ class ContextualServerFacetTests(unittest.TestCase):
         finally:
             explain_connection.close()
         self.assertRegex(page_plan_text, r"SEARCH s USING INDEX idx_probe_servers_group_conn_score \(group_id=\? AND conn_score=\?\)")
-        self.assertNotIn("USE TEMP B-TREE", page_plan_text)
+        self.assertIn('MATERIALIZE page', page_plan_text)
+        self.assertFalse(any('USE TEMP B-TREE' in row['detail'] and row['parent'] != 0 for row in page_plan))
         self.assertEqual((len(server_page["items"]), server_page["total"]), (50, 25_000))
 
         statements.clear()
         ordered_page = TraceStore(self.path).query_servers(ServerPageQuery(sort="conn", order="desc", page_size=50))
-        ordered_sql = next(sql for sql in statements if sql.lstrip().upper().startswith("SELECT S.*"))
+        ordered_sql = next(sql for sql in statements if sql.lstrip().upper().startswith("WITH PAGE AS"))
         explain_connection = connect_database(self.path)
         try:
             explain_connection.create_function("probe_endpoint_host", 1, lambda value: value)
@@ -461,7 +462,8 @@ class ContextualServerFacetTests(unittest.TestCase):
         finally:
             explain_connection.close()
         self.assertIn("idx_probe_servers_conn_score_id", ordered_plan_text)
-        self.assertNotIn("USE TEMP B-TREE", ordered_plan_text)
+        self.assertIn('MATERIALIZE page', ordered_plan_text)
+        self.assertFalse(any('USE TEMP B-TREE' in row['detail'] and row['parent'] != 0 for row in ordered_plan))
         ordered_scores = [item["conn_score"] for item in ordered_page["items"]]
         self.assertEqual(ordered_scores, sorted(ordered_scores, reverse=True))
 

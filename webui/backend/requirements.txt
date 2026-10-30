@@ -4,3 +4,4 @@ pydantic==2.12.5
 websockets==14.1
 # Cloudflare API 客户端（负载均衡 DDNS）与 fastapi.testclient 均依赖 httpx。
 httpx==0.28.1
+maxminddb==3.2.0

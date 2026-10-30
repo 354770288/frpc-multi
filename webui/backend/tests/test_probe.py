@@ -668,7 +668,7 @@ class ProbeStoreTests(unittest.TestCase):
 
         TraceStore(self.store.database_path).server_facets()
         self.assertTrue(any("INDEXED BY idx_probe_server_tags_tag_server" in statement for statement in statements))
-        self.assertTrue(any("GROUP BY t.name" in statement for statement in statements))
+        self.assertTrue(any("GROUP BY name" in statement or "GROUP BY t.name" in statement for statement in statements))
         self.assertFalse(any("SELECT label FROM probe_servers" in statement for statement in statements))
 
     def test_query_servers_filters(self):
@@ -1336,9 +1336,9 @@ class ProbeStoreTests(unittest.TestCase):
         self.store.update_servers_batch(ids, group=None, remove_labels=["重点"])
         rows = {s.ip: s for s in self.store.list_servers()}
         self.assertEqual(rows["10.1.1.1"].label, "")  # remove 后无标签
-        # 空分组拒绝
-        with self.assertRaises(ValueError):
-            self.store.update_servers_batch(ids, group="  ")
+        # 业务分组可选，空值清除分组。
+        self.store.update_servers_batch(ids, group="  ")
+        self.assertTrue(all(self.store.get_server(server_id).server_group == '' for server_id in ids))
         with self.assertRaises(ValueError):
             self.store.update_servers_batch(ids, group=None)
 
@@ -2303,7 +2303,7 @@ class DiscoverApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["detail"], "所选记录不存在")
-        store.import_discover_results.assert_called_once_with([999999], group="")
+        store.import_discover_results.assert_called_once_with([999999], group=None)
         store.get_discover_results_by_ids.assert_not_called()
 
     def test_discover_lifecycle_and_import(self):
@@ -2432,7 +2432,7 @@ class DiscoverApiTests(unittest.TestCase):
         )
         self.assertEqual(
             set(body["items"][0]),
-            {"id", "ip", "port", "latencyMs", "group", "labels", "inLibrary", "discoveredAt", "latestRoute"},
+            {"id", "ip", "port", "latencyMs", "group", "labels", "inLibrary", "discoveredAt", "latestRoute", "geo"},
         )
         self.assertNotIn("labels", body)
         facets = client.get("/api/probe/discover/facets", headers=headers).json()

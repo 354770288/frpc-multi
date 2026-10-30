@@ -12,6 +12,7 @@ import {
   WifiOff,
   XCircle,
 } from 'lucide-react';
+import { GeoIpCard } from './GeoIpCard';
 import { api, nodesApi } from '../lib/api';
 import { bytesToHuman, shortNodeUuid } from '../lib/format';
 import { Badge } from '../components/ui/badge';
@@ -161,6 +162,7 @@ export function SystemPage() {
               </dl>
             </CardContent>
           </Card>
+          <GeoIpCard />
         </TabsContent>
 
         <TabsContent value="nodes" className="mt-4">

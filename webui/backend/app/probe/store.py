@@ -24,6 +24,7 @@ from ..models import now_iso
 from ..control.database import connect_database, initialize_database
 from .constants import PROBE_TEST_PORT
 from .engine import speed_mbs, speed_mbps
+from ..geoip.tags import assert_manual, restore_projection
 
 T = TypeVar("T")
 ChunkItem = TypeVar("ChunkItem")
@@ -158,6 +159,21 @@ def _sync_server_tags_many(connection: sqlite3.Connection,
         return
     category_id = _other_category_id(connection)
     normalized = [(server_id, _asset_labels(labels)) for server_id, labels in entries]
+    # Legacy clients send all displayed labels. System-only names must neither
+    # be deleted nor recreated as editable manual labels.
+    system_names: dict[int, set[str]] = {}
+    manual_names: dict[int, set[str]] = {}
+    for chunk in _chunks(connection, [server_id for server_id, _ in normalized]):
+        marks = ','.join('?' for _ in chunk)
+        for row in connection.execute(
+            'SELECT st.server_id,t.name,t.source FROM probe_server_tags st JOIN probe_tags t ON t.id=st.tag_id '
+            f'WHERE st.server_id IN ({marks})', chunk,
+        ):
+            target = system_names if row['source'] == 'geoip' else manual_names
+            target.setdefault(row['server_id'], set()).add(row['name'])
+    normalized = [(server_id, [label for label in labels if label not in
+                   (system_names.get(server_id, set()) - manual_names.get(server_id, set()))])
+                  for server_id, labels in normalized]
     existing: dict[int, dict[str, list[str]]] = {server_id: {} for server_id, _ in normalized}
     if preserve_existing:
         for chunk in _chunks(connection, [server_id for server_id, _ in normalized]):
@@ -165,7 +181,7 @@ def _sync_server_tags_many(connection: sqlite3.Connection,
             for row in connection.execute(
                 "SELECT st.server_id, st.tag_id, t.name FROM probe_server_tags st "
                 "JOIN probe_tags t ON t.id = st.tag_id "
-                f"WHERE st.server_id IN ({placeholders})", chunk
+                f"WHERE st.server_id IN ({placeholders}) AND t.source='manual'", chunk
             ):
                 existing[row["server_id"]].setdefault(row["name"], []).append(row["tag_id"])
 
@@ -182,7 +198,7 @@ def _sync_server_tags_many(connection: sqlite3.Connection,
                 )))
                 relation_rows.append((server_id, tag_id))
     connection.executemany(
-        "DELETE FROM probe_server_tags WHERE server_id = ?",
+        "DELETE FROM probe_server_tags WHERE server_id = ? AND tag_id IN (SELECT id FROM probe_tags WHERE source='manual')",
         [(server_id,) for server_id, _ in normalized],
     )
     created_at = now_iso()
@@ -199,6 +215,7 @@ def _sync_server_tags_many(connection: sqlite3.Connection,
         "UPDATE probe_servers SET label = ? WHERE id = ?",
         [(_pack_labels(labels), server_id) for server_id, labels in normalized],
     )
+    restore_projection(connection, [server_id for server_id, _ in normalized])
 
 
 def _sync_server_tags(connection: sqlite3.Connection, server_id: int,
@@ -229,6 +246,7 @@ def _tag_ids(connection: sqlite3.Connection, values: Iterable[str]) -> list[str]
     missing = [tag_id for tag_id in ids if tag_id not in found]
     if missing:
         raise ValueError(f"标签不存在: {', '.join(missing)}")
+    assert_manual(connection, ids)
     return ids
 
 
@@ -292,7 +310,7 @@ def _assign_server_tag_ids(connection: sqlite3.Connection, server_id: int,
                            tag_ids: Iterable[str], *, replace: bool = False) -> None:
     ids = _tag_ids(connection, tag_ids)
     if replace:
-        connection.execute("DELETE FROM probe_server_tags WHERE server_id=?", (server_id,))
+        connection.execute("DELETE FROM probe_server_tags WHERE server_id=? AND tag_id IN (SELECT id FROM probe_tags WHERE source='manual')", (server_id,))
     if ids:
         connection.executemany(
             "INSERT OR IGNORE INTO probe_server_tags(server_id,tag_id) VALUES(?,?)",
@@ -663,6 +681,14 @@ class ProbeStore:
                 raise KeyError(f"服务器不存在: {server_id}")
             new_ip = validate_probe_addr(ip) if ip is not None else server["ip"]
             new_labels = _asset_labels(labels) if labels is not None else _server_labels_from_relation(connection, server_id)
+            if new_ip != server['ip']:
+                manual_names = {row['name'] for row in connection.execute(
+                    'SELECT t.name FROM probe_server_tags st JOIN probe_tags t ON t.id=st.tag_id '
+                    "WHERE st.server_id=? AND t.source='manual'", (server_id,))}
+                automatic_names = {row['name'] for row in connection.execute(
+                    'SELECT t.name FROM probe_server_tags st JOIN probe_tags t ON t.id=st.tag_id '
+                    "WHERE st.server_id=? AND t.source='geoip'", (server_id,))}
+                new_labels = [name for name in new_labels if name not in automatic_names - manual_names]
             new_group = (server_group or "").strip() if server_group is not None else server["server_group"]
             new_ip_sort = _ip_sort_for(new_ip)
             resolved_group = _canonical_group_name(connection, new_group)
@@ -673,6 +699,10 @@ class ProbeStore:
             )
             if labels is not None:
                 _sync_server_tags(connection, server_id, new_labels)
+            elif new_ip != server['ip']:
+                # The IP trigger changed system associations. Rebuild the packed
+                # compatibility projection even when the edit omitted labels.
+                _refresh_server_projections(connection, [server_id])
             if tag_ids is not None:
                 _assign_server_tag_ids(
                     connection, server_id, tag_ids, replace=labels is None
@@ -813,8 +843,8 @@ class ProbeStore:
 
     def list_tag_categories(self) -> list[dict]:
         def read(connection):
-            return [dict(row) for row in connection.execute(
-                "SELECT c.id, c.name, c.created_at AS createdAt, COUNT(t.id) AS tagCount "
+            return [dict(row, readOnly=bool(row['readOnly'])) for row in connection.execute(
+                "SELECT c.id, c.name, c.source, (c.source='geoip') AS readOnly, c.created_at AS createdAt, COUNT(t.id) AS tagCount "
                 "FROM probe_tag_categories c LEFT JOIN probe_tags t ON t.category_id=c.id "
                 "GROUP BY c.id, c.name, c.created_at ORDER BY c.name"
             )]
@@ -845,6 +875,7 @@ class ProbeStore:
             raise ValueError("分类名称不能为空")
 
         def write(connection):
+            assert_manual(connection, [category_id], categories=True)
             row = connection.execute(
                 "SELECT id FROM probe_tag_categories WHERE id=?", (category_id,)
             ).fetchone()
@@ -865,8 +896,8 @@ class ProbeStore:
         def read(connection):
             where = "WHERE t.category_id=?" if category_id is not None else ""
             params = (category_id,) if category_id is not None else ()
-            return [dict(row) for row in connection.execute(
-                "SELECT t.id, t.category_id AS categoryId, c.name AS category, t.name, "
+            return [dict(row, readOnly=bool(row['readOnly'])) for row in connection.execute(
+                "SELECT t.id, t.category_id AS categoryId, c.name AS category, t.name, t.source, (t.source='geoip') AS readOnly, "
                 "t.created_at AS createdAt, COUNT(DISTINCT st.server_id) AS serverCount "
                 "FROM probe_tags t JOIN probe_tag_categories c ON c.id=t.category_id "
                 "LEFT JOIN probe_server_tags st ON st.tag_id=t.id "
@@ -880,6 +911,7 @@ class ProbeStore:
         tag_id, created_at = str(uuid.uuid4()), now_iso()
 
         def write(connection):
+            assert_manual(connection, [category_id], categories=True)
             if connection.execute(
                 "SELECT 1 FROM probe_tag_categories WHERE id=?", (category_id,)
             ).fetchone() is None:
@@ -903,6 +935,9 @@ class ProbeStore:
 
         def write(connection):
             connection.execute("BEGIN IMMEDIATE")
+            assert_manual(connection, [tag_id])
+            if category_id is not None:
+                assert_manual(connection, [category_id], categories=True)
             row = connection.execute(
                 "SELECT id, name, category_id FROM probe_tags WHERE id=?", (tag_id,)
             ).fetchone()
@@ -930,6 +965,7 @@ class ProbeStore:
     def delete_tag(self, tag_id: str) -> int:
         def write(connection):
             connection.execute("BEGIN IMMEDIATE")
+            assert_manual(connection, [tag_id])
             if connection.execute("SELECT 1 FROM probe_tags WHERE id=?", (tag_id,)).fetchone() is None:
                 raise KeyError(f"标签不存在: {tag_id}")
             _capture_tag_servers(connection, [tag_id])
@@ -948,6 +984,7 @@ class ProbeStore:
 
         def write(connection):
             connection.execute("BEGIN IMMEDIATE")
+            assert_manual(connection, [source_id, target_id])
             source = connection.execute(
                 "SELECT id FROM probe_tags WHERE id=?", (source_id,)
             ).fetchone()
@@ -1203,11 +1240,17 @@ class ProbeStore:
             else:
                 where.append("d.label LIKE ? ESCAPE '\\'")
                 params.append(_label_like_pattern(query.label))
-        library_exists = "EXISTS (SELECT 1 FROM probe_servers s WHERE s.ip = d.ip)"
+        # Both columns are NOT NULL. IN reuses the unique IP index without
+        # reopening a correlated lookup for every discovery candidate.
+        library_exists = "d.ip IN (SELECT ip FROM probe_servers)"
         if query.library == "imported":
             where.append(library_exists)
         elif query.library == "new":
-            where.append(f"NOT {library_exists}")
+            # Ordered EXCEPT merges the two unique IP indexes. Keep the outer
+            # row membership so legacy discoveries on multiple ports still
+            # count individually rather than being collapsed by the set.
+            where.append('d.ip IN (SELECT ip FROM (SELECT ip FROM probe_discover_results '
+                         'EXCEPT SELECT ip FROM probe_servers ORDER BY ip))')
         where_sql = " WHERE " + " AND ".join(where) if where else ""
         direction = query.order.upper()
         if query.sort == "ip":
@@ -1222,7 +1265,7 @@ class ProbeStore:
             total = connection.execute(
                 "SELECT COUNT(*) FROM probe_discover_results d" + where_sql, params
             ).fetchone()[0]
-            rows = connection.execute(
+            rows = [] if total == 0 else connection.execute(
                 "SELECT d.id, d.ip, d.port, d.latency_ms, d.server_group, d.label, "
                 f"d.discovered_at, {library_exists} AS in_library "
                 "FROM probe_discover_results d" + where_sql +
@@ -1243,21 +1286,25 @@ class ProbeStore:
     def discover_facets(self) -> dict:
         """Return global discovery facets, independent of any current page/filter."""
         def read(connection):
-            packed = [row["label"] for row in connection.execute(
-                "SELECT label FROM probe_discover_results WHERE label != ''")]
+            labels = [dict(row) for row in connection.execute(
+                "WITH packed AS (SELECT label,COUNT(*) AS n FROM probe_discover_results "
+                "WHERE label!='' GROUP BY label) "
+                "SELECT j.value AS label,SUM(p.n) AS count FROM packed p "
+                "JOIN json_each('[' || replace(json_quote(trim(p.label, ',')), ',', '\",\"') || ']') j "
+                "WHERE j.value!='' GROUP BY j.value ORDER BY count DESC,label"
+            )]
             groups = connection.execute(
                 "SELECT server_group, COUNT(*) AS count FROM probe_discover_results "
                 "WHERE server_group != '' GROUP BY server_group ORDER BY count DESC, server_group"
             ).fetchall()
             counts = connection.execute(
                 "SELECT COUNT(*) AS total, "
-                "SUM(CASE WHEN EXISTS (SELECT 1 FROM probe_servers s WHERE s.ip = d.ip) "
-                "THEN 1 ELSE 0 END) AS imported "
+                "SUM(d.ip IN (SELECT ip FROM probe_servers)) AS imported "
                 "FROM probe_discover_results d"
             ).fetchone()
             imported = counts["imported"] or 0
             return {
-                "labels": _aggregate_labels(packed),
+                "labels": labels,
                 "groups": [{"group": row["server_group"], "count": row["count"]} for row in groups],
                 "imported": imported,
                 "new": counts["total"] - imported,
@@ -1288,20 +1335,21 @@ class ProbeStore:
         return self._with_connection(read)
 
     def import_discover_results(
-        self, ids: Iterable[int], *, group: str = ""
+        self, ids: Iterable[int], *, group: str | None = None
     ) -> DiscoverImportResult:
         """Atomically return selected, inserted, and skipped row counts."""
         normalized = _normalize_ids(ids)
         if not normalized:
             return DiscoverImportResult(0, 0, 0)
-        override = group.strip()
+        # Omission inherits discovery metadata; explicit empty means ungrouped.
+        override = group.strip() if group is not None else None
 
         def write(connection):
             with connection:
                 # Reserve the write transaction before selecting so selected_count
                 # and the inserts are decided against one atomic database state.
                 connection.execute("BEGIN IMMEDIATE")
-                resolved_override = _canonical_group_name(connection, override)
+                resolved_override = _canonical_group_name(connection, override) if override is not None else None
                 selected = {}
                 for chunk in _chunks(connection, normalized):
                     placeholders = ",".join("?" for _ in chunk)
@@ -1322,7 +1370,7 @@ class ProbeStore:
                         candidates[row["ip"]] = (
                             row["ip"], _ip_sort_for(row["ip"]),
                             _asset_labels(_unpack_labels(row["label"])),
-                            resolved_override or row["server_group"], timestamp
+                            resolved_override if resolved_override is not None else row["server_group"], timestamp
                         )
                 if not candidates:
                     return DiscoverImportResult(existing_selected, 0, 0)
@@ -1418,8 +1466,6 @@ class ProbeStore:
         if group is None and not add_labels and not remove_labels:
             raise ValueError("至少提供分组或标签之一")
         clean_group = (group or "").strip() if group is not None else None
-        if group is not None and not clean_group:
-            raise ValueError("分组不能为空")
         adds = _normalize_labels(add_labels)
         removes = _normalize_labels(remove_labels)
 
@@ -1499,8 +1545,6 @@ class ProbeStore:
         if group is None and not add_labels and not remove_labels and not add_tag_ids and not remove_tag_ids:
             raise ValueError("至少提供分组或标签之一")
         clean_group = (group or "").strip() if group is not None else None
-        if group is not None and not clean_group:
-            raise ValueError("分组不能为空")
         adds = _normalize_labels(add_labels)
         removes = _normalize_labels(remove_labels)
 
@@ -1636,12 +1680,12 @@ class ProbeStore:
             include_ids = (*include_ids, query.tag_id.strip())
         if include_ids:
             placeholders = ",".join("?" for _ in include_ids)
-            if query.tag_mode == "all":
-                where.append(f"(SELECT COUNT(DISTINCT st.tag_id) FROM probe_server_tags st WHERE st.server_id=s.id AND st.tag_id IN ({placeholders})) = ?")
+            if query.tag_mode == "all" and len(include_ids) > 1:
+                where.append(f"s.id IN (SELECT st.server_id FROM probe_server_tags st WHERE st.tag_id IN ({placeholders}) GROUP BY st.server_id HAVING COUNT(DISTINCT st.tag_id)=?)")
                 params.extend(include_ids)
                 params.append(len(include_ids))
             else:
-                where.append(f"EXISTS (SELECT 1 FROM probe_server_tags st WHERE st.server_id=s.id AND st.tag_id IN ({placeholders}))")
+                where.append(f"s.id IN (SELECT st.server_id FROM probe_server_tags st WHERE st.tag_id IN ({placeholders}))")
                 params.extend(include_ids)
         exclude_ids = tuple(dict.fromkeys(str(value).strip() for value in query.exclude_tag_ids if str(value).strip()))
         if exclude_ids:
@@ -1667,9 +1711,9 @@ class ProbeStore:
         return [("(s.time_sort IS NULL)", "ASC"), ("s.time_sort", direction), ("s.id", direction)]
 
     @staticmethod
-    def _server_from_sql(ip_index: str | None = None) -> str:
+    def _server_from_sql(ip_index: str | None = None, *, source: str = 'probe_servers') -> str:
         indexed = f" INDEXED BY {ip_index}" if ip_index else ""
-        return f"""FROM probe_servers s{indexed}
+        return f"""FROM {source} s{indexed}
             LEFT JOIN main.probe_current_results c ON c.server_ip=probe_endpoint_host(s.ip)
                 AND c.kind='connectivity' AND c.port={PROBE_TEST_PORT}
                 AND probe_endpoint_port(s.ip)={PROBE_TEST_PORT}
@@ -1760,11 +1804,31 @@ class ProbeStore:
         def read(connection):
             if self.node_id is None:
                 self._source_views(connection)
-            where_sql, params = self._server_where(query)
-            # Counts only need the connectivity projection when connectivity is filtered.
-            sql = f"SELECT COUNT(*) {self._server_count_from_sql(query)}" + where_sql
-            return int(connection.execute(sql, params).fetchone()[0])
+            return self._server_total(connection, query)
         return self._with_connection(read)
+
+    def _server_total(self, connection, query):
+        # Cascading foreign keys guarantee every membership belongs to an asset.
+        # Pure tag counts can stay on the covering membership index instead of
+        # fetching tens of thousands of otherwise unused asset rows.
+        ids = list(dict.fromkeys(str(value).strip() for value in query.include_tag_ids if str(value).strip()))
+        if query.tag_id and query.tag_id.strip() and query.tag_id.strip() not in ids:
+            ids.append(query.tag_id.strip())
+        if (ids and not query.q.strip() and query.group is None and not query.group_ids
+                and query.label is None and query.conn == 'all' and not query.exclude_tag_ids):
+            marks = ','.join('?' for _ in ids)
+            if len(ids) == 1:
+                sql = 'SELECT COUNT(*) FROM probe_server_tags WHERE tag_id=?'
+                params = ids
+            else:
+                grouped = f'SELECT server_id FROM probe_server_tags WHERE tag_id IN ({marks}) GROUP BY server_id'
+                if query.tag_mode == 'all':
+                    grouped += ' HAVING COUNT(DISTINCT tag_id)=?'
+                sql = 'SELECT COUNT(*) FROM (' + grouped + ')'
+                params = [*ids, len(ids)] if query.tag_mode == 'all' else ids
+            return int(connection.execute(sql, params).fetchone()[0])
+        where_sql, params = self._server_where(query)
+        return int(connection.execute('SELECT COUNT(*) FROM probe_servers s' + where_sql, params).fetchone()[0])
 
     def query_servers(self, query: ServerPageQuery) -> dict:
         """Legacy offset page, kept compatible for existing clients."""
@@ -1774,9 +1838,12 @@ class ProbeStore:
             where_sql, params = self._server_where(query)
             terms = self._server_order_terms(query)
             order_sql = ", ".join(f"{expr} {direction}" for expr, direction in terms)
-            total_sql = f"SELECT COUNT(*) {self._server_count_from_sql(query)}" + where_sql
-            total = int(connection.execute(total_sql, params).fetchone()[0])
-            rows = connection.execute(self._server_select_sql() + " " + self._server_from_sql() + where_sql + f" ORDER BY {order_sql} LIMIT ? OFFSET ?",
+            total = self._server_total(connection, query)
+            index = (' INDEXED BY idx_probe_servers_ip' + ('_desc' if query.order == 'desc' else '')) if query.sort == 'ip' else ''
+            rows = connection.execute(
+                'WITH page AS MATERIALIZED (SELECT s.* FROM probe_servers s' + index + where_sql +
+                f' ORDER BY {order_sql} LIMIT ? OFFSET ?) ' + self._server_select_sql() + ' ' +
+                self._server_from_sql(source='page') + f' ORDER BY {order_sql}',
                 (*params, query.page_size, (query.page - 1) * query.page_size)).fetchall()
             return {"items": [dict(row) for row in rows], "page": query.page,
                     "pageSize": query.page_size, "total": total, "sort": query.sort, "order": query.order}
@@ -1805,8 +1872,9 @@ class ProbeStore:
             def page_query(condition: str, condition_params: Sequence[object], limit: int, order_sql: str):
                 suffix = (" AND " if where_sql else " WHERE ") + condition
                 return connection.execute(
-                    self._server_select_sql() + " " + self._server_from_sql(ip_index) + where_sql + suffix +
-                    f" ORDER BY {order_sql} LIMIT ?",
+                    f'WITH page AS MATERIALIZED (SELECT s.* FROM probe_servers s INDEXED BY {ip_index}' +
+                    where_sql + suffix + f' ORDER BY {order_sql} LIMIT ?) ' + self._server_select_sql() + ' ' +
+                    self._server_from_sql(source='page') + f' ORDER BY {order_sql}',
                     (*params, *condition_params, limit),
                 ).fetchall()
 
@@ -1892,52 +1960,47 @@ class ProbeStore:
             tag_page_params = (tag_page_size, (tag_page - 1) * tag_page_size) if paged else ()
             tag_first_scan = (
                 not tag_query.q.strip() and tag_query.group is None and not tag_query.group_ids
-                and tag_query.label is None and tag_query.conn == "all"
+                and tag_query.label is None
             )
             if tag_first_scan:
-                # Broad contexts are cheaper when the tag index drives aggregation.
-                # The server-first path remains for selective query/group/conn filters.
-                tag_counts_sql = (
-                    "tag_counts AS ("
-                    "SELECT t.id AS tag_id,c.id AS category_id,c.name AS category,t.name AS name,"
-                    "COUNT(*) AS count "
-                    "FROM probe_server_tags st INDEXED BY idx_probe_server_tags_tag_server "
-                    "JOIN probe_tags t ON t.id=st.tag_id "
-                    "JOIN probe_tag_categories c ON c.id=t.category_id "
-                    "WHERE (?='' OR c.name LIKE ? ESCAPE '\\' COLLATE NOCASE "
-                    "OR t.name LIKE ? ESCAPE '\\' COLLATE NOCASE) "
-                    "GROUP BY st.tag_id), "
-                    "tag_page AS (SELECT * FROM tag_counts "
-                    "ORDER BY category COLLATE BINARY,name COLLATE BINARY,tag_id COLLATE BINARY" + tag_page_limit + "), "
-                    "tag_total AS (SELECT COUNT(*) AS total FROM tag_counts), "
-                    "legacy_labels AS ("
-                    "SELECT t.name AS name,COUNT(DISTINCT st.server_id) AS count "
-                    "FROM probe_server_tags st INDEXED BY idx_probe_server_tags_tag_server "
-                    "JOIN probe_tags t ON t.id=st.tag_id GROUP BY t.name)"
-                )
+                prefix = ''
+                relations = 'FROM probe_server_tags st INDEXED BY idx_probe_server_tags_tag_server'
+                duplicate_context = ''
                 query_params = (tag_search, search_pattern, search_pattern, *tag_page_params)
+                if tag_query.conn != 'all':
+                    prefix = 'facet_servers AS MATERIALIZED (SELECT s.id ' + tag_source + tag_where + '), '
+                    duplicate_context = ' AND st.server_id IN (SELECT id FROM facet_servers)'
+                    relations += ' WHERE st.server_id IN (SELECT id FROM facet_servers)'
+                    query_params = (*tag_params, *query_params)
             else:
-                tag_counts_sql = (
-                    "facet_servers AS MATERIALIZED (SELECT s.id " + tag_source + tag_where + "), "
-                    "tag_counts AS ("
-                    "SELECT t.id AS tag_id,c.id AS category_id,c.name AS category,t.name AS name,"
-                    "COUNT(*) AS count "
-                    "FROM facet_servers fs CROSS JOIN probe_server_tags st ON st.server_id=fs.id "
-                    "JOIN probe_tags t ON t.id=st.tag_id "
-                    "JOIN probe_tag_categories c ON c.id=t.category_id "
-                    "WHERE (?='' OR c.name LIKE ? ESCAPE '\\' COLLATE NOCASE "
-                    "OR t.name LIKE ? ESCAPE '\\' COLLATE NOCASE) "
-                    "GROUP BY t.id,c.id,c.name,t.name), "
-                    "tag_page AS (SELECT * FROM tag_counts "
-                    "ORDER BY category COLLATE BINARY,name COLLATE BINARY,tag_id COLLATE BINARY" + tag_page_limit + "), "
-                    "tag_total AS (SELECT COUNT(*) AS total FROM tag_counts), "
-                    "legacy_server_names AS ("
-                    "SELECT fs.id AS server_id,t.name AS name "
-                    "FROM facet_servers fs CROSS JOIN probe_server_tags st ON st.server_id=fs.id "
-                    "JOIN probe_tags t ON t.id=st.tag_id GROUP BY fs.id,t.name), "
-                    "legacy_labels AS (SELECT name,COUNT(*) AS count FROM legacy_server_names GROUP BY name)"
-                )
+                prefix = 'facet_servers AS MATERIALIZED (SELECT s.id ' + tag_source + tag_where + '), '
+                relations = 'FROM facet_servers fs CROSS JOIN probe_server_tags st ON st.server_id=fs.id'
+                duplicate_context = ' AND st.server_id IN (SELECT id FROM facet_servers)'
                 query_params = (*tag_params, tag_search, search_pattern, search_pattern, *tag_page_params)
+
+            # Aggregate the large relation once before joining small dictionaries.
+            # Legacy name counts can reuse that aggregate except when multiple
+            # category tags share a name, which requires distinct-server counting.
+            tag_counts_sql = prefix + (
+                'raw_counts AS MATERIALIZED (SELECT st.tag_id,COUNT(*) AS count ' + relations +
+                ' GROUP BY st.tag_id), '
+                'all_tag_counts AS MATERIALIZED ('
+                'SELECT r.tag_id,c.id AS category_id,c.name AS category,t.name,r.count '
+                'FROM raw_counts r JOIN probe_tags t ON t.id=r.tag_id '
+                'JOIN probe_tag_categories c ON c.id=t.category_id), '
+                'tag_counts AS (SELECT * FROM all_tag_counts '
+                "WHERE (?='' OR category LIKE ? ESCAPE '\\' COLLATE NOCASE "
+                "OR name LIKE ? ESCAPE '\\' COLLATE NOCASE)), "
+                'tag_page AS (SELECT * FROM tag_counts '
+                'ORDER BY category COLLATE BINARY,name COLLATE BINARY,tag_id COLLATE BINARY' + tag_page_limit + '), '
+                'tag_total AS (SELECT COUNT(*) AS total FROM tag_counts), '
+                'legacy_names AS (SELECT name,COUNT(*) AS multiplicity,SUM(count) AS count '
+                'FROM all_tag_counts GROUP BY name), '
+                'legacy_labels AS (SELECT name,CASE WHEN multiplicity=1 THEN count ELSE ('
+                'SELECT COUNT(DISTINCT st.server_id) FROM probe_tags t '
+                'JOIN probe_server_tags st ON st.tag_id=t.id WHERE t.name=legacy_names.name' +
+                duplicate_context + ') END AS count FROM legacy_names)'
+            )
 
             # One aggregate statement yields the bounded candidate page, exact
             # candidate total, and the legacy per-name projection.

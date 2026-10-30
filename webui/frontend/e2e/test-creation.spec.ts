@@ -1123,7 +1123,7 @@ test('server import tracks delayed progress, restores after reload, pages failur
   await page.goto('/servers');
   await page.getByRole('button', { name: '批量导入' }).click();
   await page.getByPlaceholder(/每行一台/).fill('192.0.2.1\nbad-row-1\nbad-row-2');
-  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('combobox', { name: '导入业务分组', exact: true }).click();
   await page.getByRole('option', { name: 'QA' }).click();
   await page.getByRole('button', { name: '导入', exact: true }).click();
   await expect(page.getByText('导入任务已提交，可在任务进度中查看结果')).toBeVisible();
@@ -1169,7 +1169,7 @@ test('server import restores and replays an uncertain submission with the same b
   await page.getByRole('button', { name: '批量导入' }).click();
   const importText = '198.51.100.10\n198.51.100.11';
   await page.getByPlaceholder(/每行一台/).fill(importText);
-  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('combobox', { name: '导入业务分组', exact: true }).click();
   await page.getByRole('option', { name: 'QA' }).click();
   const postStarted = page.waitForRequest((request) => request.url().endsWith('/api/probe/server-import-jobs') && request.method() === 'POST');
   await page.getByRole('button', { name: '导入', exact: true }).click();
@@ -1225,7 +1225,7 @@ test('server import failure retry reuses its persisted key after an uncertain re
   await page.goto('/servers');
   await page.getByRole('button', { name: '批量导入' }).click();
   await page.getByPlaceholder(/每行一台/).fill('bad-row');
-  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('combobox', { name: '导入业务分组', exact: true }).click();
   await page.getByRole('option', { name: 'QA' }).click();
   await page.getByRole('button', { name: '导入', exact: true }).click();
   await expect(page.getByText('failure page unavailable')).toBeVisible();
@@ -1262,7 +1262,7 @@ test('an uncertain new import keeps its key and blocks old retry/close actions',
   await page.goto('/servers');
   await page.getByRole('button', { name: '批量导入' }).click();
   await page.getByPlaceholder(/每行一台/).fill('bad-row');
-  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('combobox', { name: '导入业务分组', exact: true }).click();
   await page.getByRole('option', { name: 'QA' }).click();
   await page.getByRole('button', { name: '导入', exact: true }).click();
   await expect(page.getByText('失败明细（已载入 1 条）')).toBeVisible();
@@ -1270,7 +1270,7 @@ test('an uncertain new import keeps its key and blocks old retry/close actions',
   await page.getByRole('button', { name: '批量导入' }).click();
   const pendingText = '198.51.100.21\n198.51.100.22';
   await page.getByPlaceholder(/每行一台/).fill(pendingText);
-  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('combobox', { name: '导入业务分组', exact: true }).click();
   await page.getByRole('option', { name: 'QA' }).click();
   await page.getByRole('button', { name: '导入', exact: true }).click();
   await expect(page.getByLabel('服务器导入任务').getByText('uncertain new submission')).toBeVisible();
@@ -1320,7 +1320,7 @@ test('a delayed status read for an old import cannot overwrite a newly accepted 
   await expect.poll(() => oldReadStarted).toBe(true);
   await page.getByRole('button', { name: '批量导入' }).click();
   await page.getByPlaceholder(/每行一台/).fill('192.0.2.31\n192.0.2.32');
-  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('combobox', { name: '导入业务分组', exact: true }).click();
   await page.getByRole('option', { name: 'QA' }).click();
   await page.getByRole('button', { name: '导入', exact: true }).click();
   await expect(page.getByLabel('服务器导入任务').getByText('new-job-failure')).toBeVisible();
@@ -1371,7 +1371,7 @@ test('a delayed failure page for an old import does not block a new quick failur
   await expect.poll(() => oldFailureStarted).toBe(true);
   await page.getByRole('button', { name: '批量导入' }).click();
   await page.getByPlaceholder(/每行一台/).fill('new-row');
-  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('combobox', { name: '导入业务分组', exact: true }).click();
   await page.getByRole('option', { name: 'QA' }).click();
   await page.getByRole('button', { name: '导入', exact: true }).click();
 
@@ -1404,7 +1404,7 @@ test('permanent import failures stay visible without a retry action', async ({ p
   await page.goto('/servers');
   await page.getByRole('button', { name: '批量导入' }).click();
   await page.getByPlaceholder(/每行一台/).fill('unusable-row');
-  await page.getByRole('combobox').filter({ hasText: /选择分组/ }).click();
+  await page.getByRole('combobox', { name: '导入业务分组', exact: true }).click();
   await page.getByRole('option', { name: 'QA' }).click();
   await page.getByRole('button', { name: '导入', exact: true }).click();
   const taskCard = page.getByLabel('服务器导入任务');

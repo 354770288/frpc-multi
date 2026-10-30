@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "本地 IPinfo Lite 识别、自动标签和独立业务分类",
+  "scope": "发现命中与已测试 IPv4 资产；Console 本地事实和维护入口",
+  "changeKinds": [
+    "feature",
+    "schema",
+    "api"
+  ],
+  "riskHints": [
+    "系统与人工标签同名",
+    "SQLite 大规模聚合"
+  ]
+}

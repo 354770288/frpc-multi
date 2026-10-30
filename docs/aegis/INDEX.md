@@ -11,6 +11,10 @@
 
 | Date | Kind | Path | Title |
 | --- | --- | --- | --- |
+| 2026-10-30 | work | docs/aegis/work/2026-10-30-ip-geoip/10-intent.md | 本地 IP 归属地任务边界 |
+| 2026-10-30 | work | docs/aegis/work/2026-10-30-ip-geoip/20-checkpoint.md | 本地 IP 归属地实施检查点 |
+| 2026-10-31 | work | docs/aegis/work/2026-10-30-ip-geoip/90-evidence.md | 本地 IP 归属地回归与容量证据 |
+| 2026-10-31 | work | docs/aegis/work/2026-10-30-ip-geoip/99-reflection.md | 本地 IP 归属地交付结论 |
 | 2026-10-23 | plan | docs/aegis/plans/2026-10-23-server-library-scale.md | 服务器分类、大规模发现与国内主备测试改造计划（修订版） |
 | 2026-10-23 | work | docs/aegis/work/2026-10-23-server-library-scale/10-intent.md | 服务器分类与大规模数据交互 intent |
 | 2026-10-23 | work | docs/aegis/work/2026-10-23-server-library-scale/20-checkpoint.md | 服务器分类与大规模数据交互 checkpoint |
@@ -63,3 +67,12 @@
 | 2026-10-22 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/gate-input-pack.json | 2026-10-22-frontend-workflow gate input pack |
 | 2026-10-22 | work | docs/aegis/work/2026-10-22-frontend-workflow/proof-bundle.md | 2026-10-22-frontend-workflow proof bundle |
 | 2026-10-23 | artifact | docs/aegis/work/2026-10-22-frontend-workflow/evidence-bundle-draft-production-rollout.json | 2026-10-22-frontend-workflow evidence production-rollout |
+| 2026-10-31 | adr | docs/aegis/adr/ADR-0002-local-ip-geography.md | ADR-0002 - Console 本地归属地事实与自动标签投影 |
+| 2026-10-31 | artifact | docs/aegis/work/2026-10-30-ip-geoip/task-intent-draft.json | 本地归属地 task-intent-draft.json |
+| 2026-10-31 | artifact | docs/aegis/work/2026-10-30-ip-geoip/impact-statement-draft.json | 本地归属地 impact-statement-draft.json |
+| 2026-10-31 | artifact | docs/aegis/work/2026-10-30-ip-geoip/drift-check-draft.json | 本地归属地 drift-check-draft.json |
+| 2026-10-31 | artifact | docs/aegis/work/2026-10-30-ip-geoip/evidence-bundle-draft-regression.json | 2026-10-30-ip-geoip evidence regression |
+| 2026-10-31 | artifact | docs/aegis/work/2026-10-30-ip-geoip/gate-input-pack.json | 2026-10-30-ip-geoip gate input pack |
+| 2026-10-31 | work | docs/aegis/work/2026-10-30-ip-geoip/proof-bundle.md | 2026-10-30-ip-geoip proof bundle |
+| 2026-10-31 | artifact | docs/aegis/work/2026-10-30-ip-geoip/capacity-100000.json | 本地归属地 100000 IP 容量报告 |
+| 2026-10-31 | artifact | docs/aegis/work/2026-10-30-ip-geoip/capacity-1000000.json | 本地归属地 1000000 IP 容量报告 |

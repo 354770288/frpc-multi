@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "regression",
+  "type": "test",
+  "source": "docs/aegis/work/2026-10-30-ip-geoip/90-evidence.md",
+  "summary": "后端全量 421 项、前端 24 项、浏览器 54 项及独立语义对照通过；大规模报告单独归档。",
+  "verifier": "unittest/Vitest/Playwright/独立复审"
+}

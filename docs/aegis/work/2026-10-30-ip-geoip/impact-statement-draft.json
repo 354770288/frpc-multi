@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "affectedLayers": [
+    "Console SQLite",
+    "鉴权 API",
+    "前端资产和系统页"
+  ],
+  "owners": [
+    "GeoService",
+    "GeoStore",
+    "ProbeStore"
+  ],
+  "invariants": [
+    "归属地事实唯一",
+    "人工属性保留",
+    "域名成员独立"
+  ],
+  "compatBoundary": "保留旧标签与端点接口，不改生产部署或 DNS",
+  "nonGoals": [
+    "IPv6 查询",
+    "逐 IP 在线 API",
+    "清理业务分组"
+  ]
+}
