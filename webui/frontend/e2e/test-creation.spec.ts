@@ -657,8 +657,13 @@ test('manual target lists above 5000 are blocked and point to frozen server snap
   page.on('request',(request)=>{if(request.url().endsWith('/api/probe/jobs') && request.method()==='POST')submissions++;});
   await page.goto('/tests/new');
   await page.getByLabel('目标范围').selectOption('manual');
-  const targets=Array.from({length:5001},(_,index)=>`192.0.2.${index+1}`).join('\n');
-  await page.locator('textarea').fill(targets);
+  // Use distinct valid addresses to test the count boundary.
+  const targets=Array.from({length:5001},(_,index)=>`198.18.${Math.floor(index/256)}.${index%256}`).join('\n');
+  // Simulate a large paste without the headless browser's slow text-insertion path.
+  await page.locator('textarea').evaluate((element, value) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(element, value);
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+  }, targets);
   await expect(page.getByRole('alert').filter({hasText:'手动目标共 5001 个，超过 5000 个上限'})).toBeVisible();
   await expect(page.getByRole('link',{name:'前往服务器库冻结匹配结果'})).toHaveAttribute('href','/servers');
   await expect(page.getByRole('button',{name:'下一步'})).toBeDisabled();
@@ -979,7 +984,10 @@ test('test node policy auto-includes external fallbacks and keeps Console fixed 
 
 test('unknown domain health is not counted as healthy',async ({page})=>{
   await page.goto('/lb');
-  await expect(page.getByText(/0\/1 已确认健康 · 1 待检查/)).toBeVisible();
+  const row = page.getByRole('row').filter({ hasText: 'qa.example.com' });
+  await expect(row.getByText(/0\s*\/\s*1 健康/)).toBeVisible();
+  await expect(row.getByText('1 待检查', { exact: true })).toBeVisible();
+  await expect(row.getByText('待检查', { exact: true })).toBeVisible();
   await page.screenshot({path:'test-results/lb-unknown-1280.png',fullPage:true});
   await expect(page.getByRole('button',{name:'候选服务器'})).toBeVisible();
 });

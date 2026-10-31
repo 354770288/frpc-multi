@@ -15,6 +15,8 @@ import { Input } from '../../components/ui/input';
 import { formatLastSeen } from '../../lib/format';
 
 export const SELECTION_REASONS: Record<LbSelection['reason'], string> = {
+  preferred_server: '手动固定目标健康，保持当前选择',
+  primary_observation: '按最近一次被接受的测量选优',
   console_observation: '按最近一次被接受的测量选优',
   no_healthy_candidates: '没有健康候选，等待健康检查恢复',
   keep_healthy_current: '当前 IP 仍健康；观测缺失或过期时保留当前指向',
