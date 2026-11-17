@@ -1,5 +1,8 @@
 # Aegis Index
 
+- Current handoff: `chat/PERF_OPT_HANDOFF_2026-08-29.md`（顶部更新于 2026-11-17）
+- Latest checkpoint: `docs/aegis/work/2026-11-17-online-fixes/20-checkpoint.md`
+- Latest release evidence: `docs/aegis/work/2026-11-17-online-fixes/90-evidence.md`（线上功能版本 b75b558）
 - Baseline: `docs/aegis/baseline/2026-08-30-initial-baseline.md`
 - Plan: `docs/aegis/plans/2026-08-30-discovery-performance.md`
 - Active plan: `docs/aegis/plans/2026-10-23-server-library-scale.md`
@@ -11,6 +14,12 @@
 
 | Date | Kind | Path | Title |
 | --- | --- | --- | --- |
+| 2026-11-17 | handoff | chat/PERF_OPT_HANDOFF_2026-08-29.md | 最新交接入口，含当前规则、发布及待办；8 月内容为历史 |
+| 2026-11-17 | work | docs/aegis/work/2026-11-17-online-fixes/20-checkpoint.md | HTTP 请求标识与单域名业务分组同步检查点 |
+| 2026-11-17 | work | docs/aegis/work/2026-11-17-online-fixes/90-evidence.md | b75b558 验证、生产修复和回滚证据 |
+| 2026-10-30 | plan | docs/aegis/plans/2026-10-30-domain-candidates.md | 域名独立候选池与手动固定方案，归属规则见最新修正 |
+| 2026-10-30 | work | docs/aegis/work/2026-10-30-domain-candidates/20-checkpoint.md | 域名候选池原实现检查点及后续接续入口 |
+| 2026-10-30 | work | docs/aegis/work/2026-10-30-domain-candidates/90-evidence.md | 候选池实现与隔离迁移证据 |
 | 2026-10-30 | work | docs/aegis/work/2026-10-30-ip-geoip/10-intent.md | 本地 IP 归属地任务边界 |
 | 2026-10-30 | work | docs/aegis/work/2026-10-30-ip-geoip/20-checkpoint.md | 本地 IP 归属地实施检查点 |
 | 2026-10-31 | work | docs/aegis/work/2026-10-30-ip-geoip/90-evidence.md | 本地 IP 归属地回归与容量证据 |

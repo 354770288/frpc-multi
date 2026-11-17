@@ -1,5 +1,9 @@
 # 服务器分类与大规模数据交互改造 Checkpoint
 
+## 最新接续（2026-11-17）
+
+当前线上功能版本 b75b558；最新规则、HTTP 兼容修复、单域名归属与业务分组同步，以及备份位置见 [当前交接](../../../../chat/PERF_OPT_HANDOFF_2026-08-29.md) 和 [最新修复记录](../2026-11-17-online-fixes/20-checkpoint.md)。以下 e67e8a2 等状态为本专项当时的阶段记录；容量证据仍有效，真实网络分布、恢复演练和既有游标问题仍待核实。
+
 ## TodoCheckpointDraft
 
 - [x] 2026-10-30 policy update: remove every daily execution/source selector and node filter; auto-order all external standby nodes and fix Console as the last fallback, including generation transport and source-free discovery/history reads.

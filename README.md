@@ -111,6 +111,7 @@ docs/                  # 详细文档（见下）
 
 | 文档 | 内容 |
 | --- | --- |
+| 🧭 [当前交接](chat/PERF_OPT_HANDOFF_2026-08-29.md) | 当前线上版本、业务规则、备份回滚、验证与剩余事项（2026-11-17 更新） |
 | 🧪 [部署与验证](docs/DEPLOY_VERIFY.md) | 用 GHCR 镜像在 VPS 上完整部署、验证清单、常见问题 |
 | 🤖 [Agent 安装](docs/AGENT_INSTALL.md) | 一键安装、compose 方式、TLS/反代、升级与排查 |
 | 🔧 [运维手册](docs/OPERATIONS.md) | 日常巡检、健康检查、资源限制、升级回滚、备份恢复 |
