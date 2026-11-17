@@ -15,6 +15,6 @@
 - 共享 createRequestId 已替换 5 处调用，native 不存在时使用 getRandomValues 生成 UUID v4，保留已有持久化重试键。
 - 单域名候选约束、域名同步分组、成员事务和页面刷新已验证；424 项后端、31 项前端单测及目标浏览器回归通过。
 - 新建备份 console-before-domain-group-fix-20261117.db 完整性正常，回滚镜像 rollback-bugs-20261117 已保留。
-- 线上连通性测试批次已自然完成，最终备份 console-before-domain-group-final-20261117.db 完整性正常；进入发布。
+- 线上连通性测试批次自然完成后发布 b75b558；最终备份 console-before-domain-group-final-20261117.db 完整性正常。US1 9 台按用户指示统一归入美国US1，其他域名保持原组，候选集合及 DNS 指向保留。
 
 最小改动边界：统一请求标识生成，不重写任务协议；在现有候选事务所有者内同步业务分组，不恢复通过分组动态推导 DNS 候选。验证采用受控 API 缺失浏览器回归、分组事务及冲突回滚测试、现有后端和前端构建。
