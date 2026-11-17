@@ -532,6 +532,8 @@ export type LbDomain = {
   /** Legacy migration field; new domains use explicit server membership. */
   group: string;
   groupId: string | null;
+  syncGroupId: string | null;
+  syncGroup: string;
   ttl: number;
   syncMode: 'manual' | 'scheduled';
   intervalSeconds: number;

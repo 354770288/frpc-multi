@@ -1076,14 +1076,17 @@ class ProbeStore:
         """Delete an unused group; all consumer references are protected."""
 
         def write(connection):
+            connection.execute("BEGIN IMMEDIATE")
             group = _group_row(connection, name)
             if group is None:
+                connection.commit()
                 return False
             references = connection.execute(
                 "SELECT EXISTS(SELECT 1 FROM probe_servers WHERE group_id = ?) OR "
                 "EXISTS(SELECT 1 FROM probe_discover_results WHERE group_id = ?) OR "
-                "EXISTS(SELECT 1 FROM lb_domains WHERE group_id = ?)",
-                (group["id"], group["id"], group["id"]),
+                "EXISTS(SELECT 1 FROM lb_domains WHERE group_id = ?) OR "
+                "EXISTS(SELECT 1 FROM lb_domains WHERE sync_group_id = ?)",
+                (group["id"], group["id"], group["id"], group["id"]),
             ).fetchone()[0]
             if references:
                 raise ValueError("分组仍被服务器、发现结果或负载均衡域名引用")

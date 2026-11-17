@@ -1,6 +1,6 @@
 """负载均衡（DDNS 域名池）数据存储。
 
-lb_settings 存 Cloudflare API Token；lb_domains 是候选域名（绑定服务器库健康分组）；
+lb_settings 存 Cloudflare API Token；lb_domains 保存域名候选与服务器同步分组；
 lb_sync_logs 记录每次同步的增删明细。访问模式照 ProbeStore：短连接。
 """
 
@@ -24,6 +24,10 @@ _MANAGED_COMMENT = "frpc-multi-lb"
 _MAX_DOMAIN_SERVER_IDS = 5_000
 _DOMAIN_SERVER_ID_CHUNK = 500
 _UNSET = object()
+
+
+class DomainMembershipConflict(ValueError):
+    """An asset is already assigned to another domain candidate set."""
 
 
 def _resolve_group(connection, value: str) -> tuple[str, str]:
@@ -84,6 +88,66 @@ def _require_domain(connection, domain_id: int) -> None:
         raise KeyError(f"候选域名不存在: {domain_id}")
 
 
+def _domain_query(where: str) -> str:
+    return (
+        "SELECT d.*, COALESCE(g.name, '') AS sync_group FROM lb_domains d "
+        "LEFT JOIN probe_groups g ON g.id = d.sync_group_id " + where
+    )
+
+
+def _resolve_sync_group(connection, value: str | None, default_name: str) -> tuple[str, str]:
+    clean = (value or default_name).strip()
+    if not clean:
+        clean = default_name
+    row = connection.execute(
+        "SELECT id, name FROM probe_groups WHERE id = ? OR name = ? LIMIT 1", (clean, clean)
+    ).fetchone()
+    if row is None:
+        # Explicit values must identify a group; defaults are created on demand.
+        if value is not None:
+            raise ValueError("指定的服务器分组不存在")
+        name, group_id = _resolve_group(connection, clean)
+        return group_id, name
+    return str(row["id"]), str(row["name"])
+
+
+def _assert_domain_members_available(connection, domain_id: int | None, server_ids: list[int]) -> None:
+    """Reject domain overlap even when legacy overlap prevented the unique index."""
+    for start in range(0, len(server_ids), _DOMAIN_SERVER_ID_CHUNK):
+        batch = server_ids[start:start + _DOMAIN_SERVER_ID_CHUNK]
+        if not batch:
+            continue
+        placeholders = ",".join("?" for _ in batch)
+        params: list[object] = list(batch)
+        exclusion = ""
+        if domain_id is not None:
+            exclusion = " AND d.id != ?"
+            params.append(domain_id)
+        rows = connection.execute(
+            "SELECT m.server_id, d.name FROM lb_domain_servers m "
+            "JOIN lb_domains d ON d.id = m.domain_id "
+            f"WHERE m.server_id IN ({placeholders}){exclusion} ORDER BY m.server_id,d.name",
+            params,
+        ).fetchall()
+        if rows:
+            conflicts = ", ".join(f"{row['server_id']} ({row['name']})" for row in rows[:20])
+            raise DomainMembershipConflict(f"服务器已属于其他候选域名: {conflicts}")
+
+
+def _assert_domain_has_no_legacy_overlap(connection, domain_id: int) -> None:
+    row = connection.execute(
+        "SELECT m.server_id, other.name FROM lb_domain_servers m "
+        "JOIN lb_domain_servers overlap ON overlap.server_id = m.server_id "
+        "JOIN lb_domains other ON other.id = overlap.domain_id "
+        "WHERE m.domain_id = ? AND other.id != ? ORDER BY m.server_id, other.name LIMIT 1",
+        (domain_id, domain_id),
+    ).fetchone()
+    if row:
+        raise DomainMembershipConflict(
+            f"服务器已属于其他候选域名: {row['server_id']} ({row['name']})"
+        )
+
+
 def _bounded_page(limit: int, offset: int) -> tuple[int, int]:
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError("limit 必须是正整数")
@@ -124,6 +188,8 @@ class LbDomain:
     zone_name: str
     group_name: str
     group_id: str | None
+    sync_group_id: str | None
+    sync_group: str
     ttl: int
     sync_mode: str  # manual | scheduled
     interval_seconds: int
@@ -144,6 +210,8 @@ def _domain_from_row(row) -> LbDomain:
         zone_name=row["zone_name"],
         group_name=row["group_name"],
         group_id=row["group_id"],
+        sync_group_id=row["sync_group_id"],
+        sync_group=row["sync_group"] or "",
         ttl=int(row["ttl"]),
         sync_mode=row["sync_mode"],
         interval_seconds=int(row["interval_seconds"]),
@@ -201,14 +269,14 @@ class LbStore:
 
     def list_domains(self) -> list[LbDomain]:
         def read(connection):
-            rows = connection.execute("SELECT * FROM lb_domains ORDER BY name").fetchall()
+            rows = connection.execute(_domain_query("ORDER BY d.name")).fetchall()
             return [_domain_from_row(row) for row in rows]
 
         return self._with_connection(read)
 
     def get_domain(self, domain_id: int) -> LbDomain:
         def read(connection):
-            return connection.execute("SELECT * FROM lb_domains WHERE id = ?", (domain_id,)).fetchone()
+            return connection.execute(_domain_query("WHERE d.id = ?"), (domain_id,)).fetchone()
 
         row = self._with_connection(read)
         if row is None:
@@ -217,7 +285,7 @@ class LbStore:
 
     def get_domain_by_name(self, name: str) -> LbDomain | None:
         def read(connection):
-            return connection.execute("SELECT * FROM lb_domains WHERE name = ?", (name,)).fetchone()
+            return connection.execute(_domain_query("WHERE d.name = ?"), (name,)).fetchone()
 
         row = self._with_connection(read)
         return _domain_from_row(row) if row else None
@@ -225,7 +293,8 @@ class LbStore:
     def create_domain(self, *, name: str, zone_id: str, zone_name: str, group_name: str = "",
                       ttl: int = 60, sync_mode: str = "manual", interval_seconds: int = 300,
                       enabled: bool = True, server_ids: Iterable[int] | None = None,
-                      preferred_server_id: int | None = None) -> LbDomain:
+                      preferred_server_id: int | None = None,
+                      sync_group_id: str | None = None) -> LbDomain:
         clean_name = validate_domain_name(name)
         if sync_mode not in {"manual", "scheduled"}:
             raise ValueError("同步模式必须是 manual 或 scheduled")
@@ -244,6 +313,7 @@ class LbStore:
 
         def write(connection):
             try:
+                connection.execute("BEGIN IMMEDIATE")
                 # group_name remains a compatibility adapter: when explicitly
                 # supplied without candidates, take one snapshot and discard
                 # the live group relationship.
@@ -251,23 +321,32 @@ class LbStore:
                 if snapshot_ids is None and clean_group:
                     resolved_name, group_id = _resolve_group(connection, clean_group)
                     snapshot_ids = _group_server_ids(connection, group_id, resolved_name)
-                # Keep the legacy columns detached even when a legacy caller
-                # supplied a group; only the materialized members persist.
+                resolved_sync_id, _ = _resolve_sync_group(
+                    connection, sync_group_id if sync_group_id is not None else (clean_group or None), clean_name
+                )
+                # Keep legacy compatibility columns detached; sync_group_id is
+                # the stable owner for future domain-member group synchronization.
                 resolved_name, group_id = "", None
                 cursor = connection.execute(
-                    "INSERT INTO lb_domains (name, zone_id, zone_name, group_name, group_id, ttl, sync_mode, "
+                    "INSERT INTO lb_domains (name, zone_id, zone_name, group_name, group_id, sync_group_id, ttl, sync_mode, "
                     "interval_seconds, enabled, preferred_server_id, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (clean_name, zone_id.strip(), validate_domain_name(zone_name),
-                     resolved_name, group_id, ttl, sync_mode, interval_seconds,
+                     resolved_name, group_id, resolved_sync_id, ttl, sync_mode, interval_seconds,
                      1 if enabled else 0, preferred_server_id, now_iso()),
                 )
                 domain_id = int(cursor.lastrowid)
                 if snapshot_ids:
                     _validate_existing_servers(connection, snapshot_ids)
+                    _assert_domain_members_available(connection, domain_id, snapshot_ids)
                     connection.executemany(
                         "INSERT INTO lb_domain_servers(domain_id, server_id) VALUES (?, ?)",
                         [(domain_id, server_id) for server_id in snapshot_ids],
+                    )
+                    connection.execute(
+                        "UPDATE probe_servers SET server_group = (SELECT name FROM probe_groups WHERE id = ?), "
+                        "group_id = ? WHERE id IN (SELECT server_id FROM lb_domain_servers WHERE domain_id = ?)",
+                        (resolved_sync_id, resolved_sync_id, domain_id),
                     )
                 if preferred_server_id is not None and not connection.execute(
                     "SELECT 1 FROM lb_domain_servers WHERE domain_id = ? AND server_id = ?",
@@ -288,6 +367,7 @@ class LbStore:
     def update_domain(self, domain_id: int, *, group_name: str | None = None, ttl: int | None = None,
                       sync_mode: str | None = None, interval_seconds: int | None = None,
                       enabled: bool | None = None,
+                      sync_group_id: str | None | object = _UNSET,
                       preferred_server_id: int | None | object = _UNSET) -> LbDomain:
         domain = self.get_domain(domain_id)
         new_mode = sync_mode if sync_mode is not None else domain.sync_mode
@@ -308,31 +388,61 @@ class LbStore:
                 new_preferred = _normalize_server_ids([preferred_server_id])[0]
 
         def write(connection):
+            connection.execute("BEGIN IMMEDIATE")
+            _require_domain(connection, domain_id)
             if new_preferred is not None:
                 _validate_existing_servers(connection, [new_preferred])
+            sync_group_changed = sync_group_id is not _UNSET
+            resolved_sync_id = domain.sync_group_id
+            if sync_group_changed:
+                _assert_domain_has_no_legacy_overlap(connection, domain_id)
+                resolved_sync_id, _ = _resolve_sync_group(connection, sync_group_id, domain.name)
             # An explicit legacy group edit replaces the candidate snapshot;
             # ordinary domain edits leave membership untouched.
             replacement_ids = None
             if group_name is not None:
+                _assert_domain_has_no_legacy_overlap(connection, domain_id)
                 new_group = (group_name or "").strip()
                 if new_group:
                     resolved_name, group_id = _resolve_group(connection, new_group)
                     replacement_ids = _group_server_ids(connection, group_id, resolved_name)
                 else:
                     resolved_name, group_id = "", None
+                _validate_existing_servers(connection, replacement_ids or [])
+                _assert_domain_members_available(connection, domain_id, replacement_ids or [])
+                connection.execute(
+                    "UPDATE probe_servers SET server_group = '', group_id = NULL "
+                    "WHERE id IN (SELECT server_id FROM lb_domain_servers WHERE domain_id = ?) "
+                    "AND group_id = (SELECT sync_group_id FROM lb_domains WHERE id = ?)",
+                    (domain_id, domain_id),
+                )
+            active_sync_id = resolved_sync_id
+            active_sync_name = connection.execute(
+                "SELECT name FROM probe_groups WHERE id = ?", (active_sync_id,)
+            ).fetchone()[0]
             connection.execute(
-                "UPDATE lb_domains SET group_name = ?, group_id = ?, ttl = ?, sync_mode = ?, "
+                "UPDATE lb_domains SET group_name = ?, group_id = ?, sync_group_id = ?, ttl = ?, sync_mode = ?, "
                 "interval_seconds = ?, enabled = ?, preferred_server_id = ? WHERE id = ?",
-                ("", None, new_ttl, new_mode, new_interval,
+                ("", None, resolved_sync_id, new_ttl, new_mode, new_interval,
                  1 if new_enabled else 0, new_preferred, domain_id),
             )
+            if sync_group_changed and group_name is None:
+                connection.execute(
+                    "UPDATE probe_servers SET server_group = (SELECT name FROM probe_groups WHERE id = ?), "
+                    "group_id = ? WHERE id IN (SELECT server_id FROM lb_domain_servers WHERE domain_id = ?)",
+                    (resolved_sync_id, resolved_sync_id, domain_id),
+                )
             if group_name is not None:
                 connection.execute("DELETE FROM lb_domain_servers WHERE domain_id = ?", (domain_id,))
                 if replacement_ids:
-                    _validate_existing_servers(connection, replacement_ids)
                     connection.executemany(
                         "INSERT INTO lb_domain_servers(domain_id, server_id) VALUES (?, ?)",
                         [(domain_id, server_id) for server_id in replacement_ids],
+                    )
+                    connection.execute(
+                        "UPDATE probe_servers SET server_group = ?, group_id = ? "
+                        "WHERE id IN (SELECT server_id FROM lb_domain_servers WHERE domain_id = ?)",
+                        (active_sync_name, active_sync_id, domain_id),
                     )
             if new_preferred is not None and not connection.execute(
                 "SELECT 1 FROM lb_domain_servers WHERE domain_id = ? AND server_id = ?",
@@ -352,12 +462,23 @@ class LbStore:
             connection.execute("BEGIN IMMEDIATE")
             _require_domain(connection, domain_id)
             _validate_existing_servers(connection, ids)
+            domain_row = connection.execute(
+                "SELECT d.sync_group_id, g.name AS sync_group FROM lb_domains d "
+                "LEFT JOIN probe_groups g ON g.id = d.sync_group_id WHERE d.id = ?", (domain_id,)
+            ).fetchone()
+            _assert_domain_members_available(connection, domain_id, ids)
             before = connection.total_changes
             connection.executemany(
                 "INSERT OR IGNORE INTO lb_domain_servers(domain_id, server_id) VALUES (?, ?)",
                 [(domain_id, server_id) for server_id in ids],
             )
             added = connection.total_changes - before
+            if ids:
+                connection.executemany(
+                    "UPDATE probe_servers SET server_group = ?, group_id = ? WHERE id = ?",
+                    [(domain_row["sync_group"], domain_row["sync_group_id"], server_id)
+                     for server_id in ids],
+                )
             connection.commit()
             return added
 
@@ -371,19 +492,32 @@ class LbStore:
             connection.execute("BEGIN IMMEDIATE")
             _require_domain(connection, domain_id)
             _validate_existing_servers(connection, ids)
+            if ids:
+                # Clear only servers still in this domain's sync group and still
+                # present in its membership set. Retries cannot disturb outsiders.
+                connection.executemany(
+                    "UPDATE probe_servers SET server_group = '', group_id = NULL "
+                    "WHERE id = ? "
+                    "AND group_id = (SELECT sync_group_id FROM lb_domains WHERE id = ?) "
+                    "AND EXISTS (SELECT 1 FROM lb_domain_servers m "
+                    "WHERE m.domain_id = ? AND m.server_id = probe_servers.id) "
+                    "AND NOT EXISTS (SELECT 1 FROM lb_domain_servers other "
+                    "WHERE other.server_id = probe_servers.id AND other.domain_id != ?)",
+                    [(server_id, domain_id, domain_id, domain_id) for server_id in ids],
+                )
             before = connection.total_changes
             connection.executemany(
                 "DELETE FROM lb_domain_servers WHERE domain_id = ? AND server_id = ?",
                 [(domain_id, server_id) for server_id in ids],
             )
             removed = connection.total_changes - before
-            if ids:
-                placeholders = ",".join("?" for _ in ids)
-                connection.execute(
-                    "UPDATE lb_domains SET preferred_server_id = NULL "
-                    f"WHERE id = ? AND preferred_server_id IN ({placeholders})",
-                    (domain_id, *ids),
-                )
+            connection.execute(
+                "UPDATE lb_domains SET preferred_server_id = NULL WHERE id = ? "
+                "AND preferred_server_id IS NOT NULL AND NOT EXISTS ("
+                "SELECT 1 FROM lb_domain_servers m WHERE m.domain_id = lb_domains.id "
+                "AND m.server_id = lb_domains.preferred_server_id)",
+                (domain_id,),
+            )
             connection.commit()
             return removed
 

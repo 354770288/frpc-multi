@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { LbDomain, LbHealth } from './types';
 import { domainRows, filterDomainRows, readDomainFilters } from './lbDomainView';
 
-const base: LbDomain = { id: 1, name: 'edge.example.com', zoneId: 'z', zoneName: 'example.com', group: '', groupId: null, ttl: 60, syncMode: 'manual', intervalSeconds: 300, enabled: true, lastSyncAt: null, lastSyncOk: null, lastSyncMessage: '', currentIp: '192.0.2.1', createdAt: 'now', poolSize: 2, preferredServerId: null };
+const base: LbDomain = { id: 1, name: 'edge.example.com', zoneId: 'z', zoneName: 'example.com', group: '', groupId: null, syncGroupId: null, syncGroup: 'edge.example.com', ttl: 60, syncMode: 'manual', intervalSeconds: 300, enabled: true, lastSyncAt: null, lastSyncOk: null, lastSyncMessage: '', currentIp: '192.0.2.1', createdAt: 'now', poolSize: 2, preferredServerId: null };
 const health: LbHealth = { states: [
   { ip: '192.0.2.1', ok: true, consecutiveFail: 0, lastCheck: 'now', lastOk: 'now', detail: '', port: 7000 },
 ], domains: [{ domainId: 1, name: base.name, group: '', currentIp: base.currentIp, bestIp: base.currentIp, poolIps: ['192.0.2.1', '192.0.2.2'], selection: { nodeId: 'console', maxAgeHours: 24, healthSource: 'console', bestIp: base.currentIp, reason: 'keep_healthy_current', observedAt: null, validCandidates: 0 } }] };

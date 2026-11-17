@@ -3,6 +3,7 @@
 import importlib
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -111,6 +112,92 @@ class LbStoreTests(unittest.TestCase):
         self.assertFalse(updated.enabled)
         self.store.delete_domain(domain.id)
         self.assertEqual(self.store.list_domains(), [])
+
+    def test_domain_membership_owns_one_sync_group_atomically(self):
+        alpha = self.probe.create_server(ip="192.0.2.10", server_group="old-alpha", labels=["keep"])
+        beta = self.probe.create_server(ip="192.0.2.11", server_group="old-beta")
+        domain = self.store.create_domain(name="pool.example.com", zone_id="z", zone_name="example.com")
+        group_id = domain.sync_group_id
+        self.assertEqual(domain.sync_group, "pool.example.com")
+
+        self.assertEqual(self.store.add_domain_servers(domain.id, [alpha.id, beta.id]), 2)
+        for server_id in (alpha.id, beta.id):
+            server = self.probe.get_server(server_id)
+            self.assertEqual(server.server_group, "pool.example.com")
+            actual_id = self.probe._with_connection(lambda connection: connection.execute(
+                "SELECT group_id FROM probe_servers WHERE id = ?", (server_id,)).fetchone()[0])
+            self.assertEqual(actual_id, group_id)
+        self.assertEqual(self.probe.get_server(alpha.id).labels, ["keep"])
+
+        with self.assertRaisesRegex(ValueError, "已属于其他候选域名"):
+            self.store.add_domain_servers(self.store.create_domain(
+                name="other.example.com", zone_id="z", zone_name="example.com").id, [alpha.id])
+
+        # The second member's out-of-band group change survives a repeated remove;
+        # the first is cleared because it still belongs to this domain sync group.
+        self.probe.update_server(alpha.id, server_group="manual")
+        self.assertEqual(self.store.remove_domain_servers(domain.id, [alpha.id]), 1)
+        self.assertEqual(self.probe.get_server(alpha.id).server_group, "manual")
+        self.assertEqual(self.store.remove_domain_servers(domain.id, [alpha.id]), 0)
+        self.assertEqual(self.probe.get_server(alpha.id).server_group, "manual")
+
+        next_group = self.probe.create_group("new-sync-group")
+        updated = self.store.update_domain(domain.id, sync_group_id=next_group)
+        self.assertEqual(updated.sync_group, next_group)
+        self.assertEqual(self.probe.get_server(beta.id).server_group, "new-sync-group")
+
+    def test_sync_group_delete_is_guarded_and_mixed_migration_does_not_move_assets(self):
+        from app.control.database import _migrate_lb_domain_sync_groups, connect_database
+
+        one = self.probe.create_server(ip="192.0.2.20", server_group="US1")
+        two = self.probe.create_server(ip="192.0.2.21", server_group="other")
+        domain = self.store.create_domain(name="mixed.example.com", zone_id="z", zone_name="example.com",
+                                          server_ids=[one.id, two.id])
+        with self.assertRaisesRegex(ValueError, "仍被.*引用"):
+            self.probe.delete_group(domain.sync_group)
+        self.probe.update_server(one.id, server_group="US1")
+        self.probe.update_server(two.id, server_group="other")
+
+        original_group_ids = self.store._with_connection(lambda connection: {
+            int(row["id"]): row["group_id"] for row in connection.execute(
+                "SELECT id, group_id FROM probe_servers WHERE id IN (?, ?)", (one.id, two.id))
+        })
+        connection = connect_database(self.store.database_path)
+        try:
+            connection.execute("UPDATE lb_domains SET sync_group_id = NULL WHERE id = ?", (domain.id,))
+            connection.commit()
+            _migrate_lb_domain_sync_groups(connection)
+        finally:
+            connection.close()
+        migrated = self.store.get_domain(domain.id)
+        self.assertEqual(migrated.sync_group, domain.name)
+        self.assertEqual(self.store._with_connection(lambda connection: {
+            int(row["id"]): row["group_id"] for row in connection.execute(
+                "SELECT id, group_id FROM probe_servers WHERE id IN (?, ?)", (one.id, two.id))
+        }), original_group_ids)
+
+    def test_large_candidate_batches_stay_below_sqlite_variable_limit(self):
+        from app.lb import store as lb_store_module
+
+        items = [{"ip": f"198.18.{index // 254}.{index % 254 + 1}"} for index in range(1_000)]
+        self.probe.import_servers(items)
+        server_ids = self.probe._with_connection(lambda connection: [
+            int(row[0]) for row in connection.execute(
+                "SELECT id FROM probe_servers WHERE ip LIKE '198.18.%' ORDER BY id")
+        ])
+        domain = self.store.create_domain(name="batch.example.com", zone_id="z", zone_name="example.com")
+        real_connect = lb_store_module.connect_database
+
+        def limited_connect(path):
+            connection = real_connect(path)
+            connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+            return connection
+
+        with patch.object(lb_store_module, "connect_database", limited_connect):
+            self.assertEqual(self.store.add_domain_servers(domain.id, server_ids), len(server_ids))
+            self.store.update_domain(domain.id, preferred_server_id=server_ids[-1])
+            self.assertEqual(self.store.remove_domain_servers(domain.id, server_ids), len(server_ids))
+        self.assertIsNone(self.store.get_domain(domain.id).preferred_server_id)
 
     def test_sync_result_logging(self):
         domain = self.store.create_domain(name="a.example.com", zone_id="z", zone_name="example.com",

@@ -376,8 +376,13 @@ function DomainDialog({ domain, zones, onClose, onSaved, onNeedZones }: {
   const [mode, setMode] = useState<'manual' | 'scheduled'>(domain?.syncMode ?? 'manual');
   const [interval, setIntervalValue] = useState(String(Math.round((domain?.intervalSeconds ?? 300) / 60)));
   const [enabled, setEnabled] = useState(domain?.enabled ?? true);
+  const [syncGroupId, setSyncGroupId] = useState(domain?.syncGroupId ?? '__domain_name__');
+  const [groups, setGroups] = useState<{ id?: string | null; name: string }[]>([]);
+  const [groupsError, setGroupsError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [confirmGroupChange, setConfirmGroupChange] = useState(false);
   const [zoneList, setZoneList] = useState<CloudflareZone[]>(zones);
+  const originalSyncGroupId = domain?.syncGroupId ?? '__domain_name__';
 
   useEffect(() => {
     if (!zoneList.length) {
@@ -386,9 +391,19 @@ function DomainDialog({ domain, zones, onClose, onSaved, onNeedZones }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    probeApi.groups().then((result) => {
+      if (!controller.signal.aborted) setGroups(result.filter((group) => group.id));
+    }).catch((error) => {
+      if (!controller.signal.aborted) setGroupsError(error instanceof Error ? error.message : '分组列表加载失败');
+    });
+    return () => controller.abort();
+  }, []);
+
   const selectedZone = zoneList.find((zone) => zone.id === zoneId);
 
-  const submit = async () => {
+  const submit = async (confirmedGroupChange = false) => {
     if (!zoneId) { toast.error('请选择 Zone'); return; }
     if (!name.trim()) { toast.error('请填写域名'); return; }
     if (selectedZone && name.trim().toLowerCase() !== selectedZone.name.toLowerCase()
@@ -401,11 +416,16 @@ function DomainDialog({ domain, zones, onClose, onSaved, onNeedZones }: {
     if (mode === 'scheduled' && (!/^\d+(\.5)?$/.test(interval) || intervalSeconds < 60 || intervalSeconds > 86400)) {
       toast.error('同步间隔需在 1 分钟 - 24 小时'); return;
     }
+    if (domain && domain.poolSize > 0 && syncGroupId !== (domain.syncGroupId ?? '__domain_name__') && !confirmedGroupChange) {
+      setConfirmGroupChange(true);
+      return;
+    }
     setSaving(true);
     try {
       if (domain) {
         const saved = await lbApi.updateDomain(domain.id, {
           ttl: Number(ttl), syncMode: mode, intervalSeconds, enabled,
+          ...(syncGroupId !== originalSyncGroupId ? { syncGroupId: syncGroupId === '__domain_name__' ? null : syncGroupId } : {}),
         });
         toast.success('候选域名已更新');
         onSaved(saved);
@@ -413,6 +433,7 @@ function DomainDialog({ domain, zones, onClose, onSaved, onNeedZones }: {
         const saved = await lbApi.createDomain({
           name: name.trim(), zoneId, zoneName: selectedZone!.name,
           ttl: Number(ttl), syncMode: mode, intervalSeconds, enabled,
+          ...(syncGroupId === '__domain_name__' ? {} : { syncGroupId }),
         });
         toast.success('域名已创建，下一步请添加候选服务器');
         onSaved(saved);
@@ -472,6 +493,19 @@ function DomainDialog({ domain, zones, onClose, onSaved, onNeedZones }: {
             <Input value={interval} onChange={(e) => setIntervalValue(e.target.value)} inputMode="numeric" />
           </div>
         )}
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-xs">同步业务分组</Label>
+          <Select value={syncGroupId} onValueChange={setSyncGroupId}>
+            <SelectTrigger aria-label="同步业务分组"><SelectValue placeholder="选择业务分组" /></SelectTrigger>
+            <SelectContent><SelectGroup>
+              <SelectItem value="__domain_name__">域名同名分组 · {name.trim() || '保存后按域名命名'}</SelectItem>
+              {domain?.syncGroupId && !groups.some((group) => group.id === domain.syncGroupId) && <SelectItem value={domain.syncGroupId}>{domain.syncGroup || '当前分组'}</SelectItem>}
+              {groups.map((group) => group.id && <SelectItem key={group.id} value={group.id}>{group.name}</SelectItem>)}
+            </SelectGroup></SelectContent>
+          </Select>
+          {groupsError && <p role="alert" className="text-xs text-destructive">分组列表加载失败：{groupsError}</p>}
+          <p className="text-xs text-muted-foreground">新增候选服务器会加入此分组。已有域名的分组选择会在保存时更新该域名全部 {domain?.poolSize ?? 0} 台候选服务器。</p>
+        </div>
         <p className="text-sm text-muted-foreground">启用域名仍会按主控健康检查自动故障切换；这里设置的是平时的 DNS 同步方式。</p>
         <div className="flex items-center justify-between rounded-md bg-muted px-3 py-2">
           <span className="text-xs">启用（停用后不参与定时同步与故障切换）</span>
@@ -480,8 +514,17 @@ function DomainDialog({ domain, zones, onClose, onSaved, onNeedZones }: {
       </div>
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="outline" onClick={onClose}>取消</Button>
-        <Button onClick={submit} disabled={saving}>{saving ? '保存中…' : '保存'}</Button>
+        <Button onClick={() => void submit()} disabled={saving}>{saving ? '保存中…' : '保存'}</Button>
       </div>
+      {confirmGroupChange && domain && <ConfirmOverlay
+        title="更新候选服务器分组？"
+        description={`保存后，${domain.name} 的 ${domain.poolSize} 台候选服务器将移动到「${syncGroupId === '__domain_name__' ? `${domain.name}（域名同名分组）` : groups.find((group) => group.id === syncGroupId)?.name ?? domain.syncGroup}」。`}
+        confirmLabel={saving ? '保存中…' : '确认并保存'}
+        onCancel={() => { if (!saving) setConfirmGroupChange(false); }}
+        onConfirm={() => void submit(true)}
+        confirmDisabled={saving}
+        keepOpenOnConfirm
+      />}
     </Overlay>
   );
 }

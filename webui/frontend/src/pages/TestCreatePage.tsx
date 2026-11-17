@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { probeApi } from '../lib/api';
+import { createRequestId } from '../lib/requestId';
 import type { GroupInfo, ProbeMode, ServerSelection, TestNode, TestNodeExecutionPolicy } from '../lib/types';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -18,7 +19,7 @@ function selectionIdempotencyKey(selectionId: string, mode: Exclude<ProbeMode, '
     const current = JSON.parse(sessionStorage.getItem(SELECTION_SUBMISSION_KEY) || 'null') as PendingSelectionSubmission | null;
     if (current?.selectionId === selectionId && current.mode === mode && current.idempotencyKey) return current.idempotencyKey;
   } catch { /* replace stale session data below */ }
-  const pending = { selectionId, mode, idempotencyKey: crypto.randomUUID() } satisfies PendingSelectionSubmission;
+  const pending = { selectionId, mode, idempotencyKey: createRequestId() } satisfies PendingSelectionSubmission;
   sessionStorage.setItem(SELECTION_SUBMISSION_KEY, JSON.stringify(pending));
   return pending.idempotencyKey;
 }

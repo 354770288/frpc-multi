@@ -63,6 +63,8 @@ export function DomainCandidatesDialog({ domain, onClose, onChanged }: {
   const [cursorTrail, setCursorTrail] = useState<(string | undefined)[]>([undefined]);
   const [libraryLoading, setLibraryLoading] = useState(true);
   const [libraryError, setLibraryError] = useState('');
+  const [membershipError, setMembershipError] = useState('');
+  const [libraryRefresh, setLibraryRefresh] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
   const [adding, setAdding] = useState(false);
   const [switchTarget, setSwitchTarget] = useState<LbDomainServer | null>(null);
@@ -137,7 +139,7 @@ export function DomainCandidatesDialog({ domain, onClose, onChanged }: {
         if (requestId === libraryRequest.current) setLibraryLoading(false);
       });
     return () => controller.abort();
-  }, [domain.id, query, conn, libraryCursor, cursorTrail]);
+  }, [domain.id, query, conn, libraryCursor, cursorTrail, libraryRefresh]);
 
   const toggleServer = (serverId: number) => setSelectedIds((current) => {
     const next = new Set(current);
@@ -151,6 +153,7 @@ export function DomainCandidatesDialog({ domain, onClose, onChanged }: {
     const ids = [...selectedIds].filter((id) => !knownMemberIds.has(id));
     if (!ids.length) return;
     setAdding(true);
+    setMembershipError('');
     try {
       const result = await lbApi.addDomainServers(domain.id, ids);
       setSelectedIds(new Set());
@@ -159,10 +162,13 @@ export function DomainCandidatesDialog({ domain, onClose, onChanged }: {
       setMembers(refreshed.items);
       setMemberTotal(refreshed.total);
       setMemberError('');
+      setLibraryRefresh((current) => current + 1);
       toast.success(`候选服务器列表已更新，共 ${result.total} 台`);
       onChanged();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : '添加候选服务器失败');
+      const message = error instanceof Error ? error.message : '添加候选服务器失败';
+      setMembershipError(message);
+      toast.error(message);
     } finally {
       setAdding(false);
     }
@@ -176,6 +182,7 @@ export function DomainCandidatesDialog({ domain, onClose, onChanged }: {
       setMemberTotal((current) => Math.max(0, current - 1));
       setSelectedIds((current) => { const next = new Set(current); next.delete(server.id); return next; });
       setRemovalTarget(null);
+      setLibraryRefresh((current) => current + 1);
       toast.success(`已移除 ${server.ip}`);
       onChanged();
     } catch (error) {
@@ -221,7 +228,7 @@ export function DomainCandidatesDialog({ domain, onClose, onChanged }: {
           <div className="flex items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-medium">已加入候选池</h3>
-              <p className="text-xs text-muted-foreground">手动固定的服务器在保持健康时优先使用；故障切换后固定选择会清除，并恢复候选排序。成员调整不会立即写 DNS；启用域名仍按既有策略自动切换，空候选池同步会清理托管 A 记录。</p>
+              <p className="text-xs text-muted-foreground">同步业务分组：{domain.syncGroup || domain.name}。候选加入时会归入此组；一个服务器只能属于一个域名候选池，跨域名重复添加会被拒绝。手动固定的服务器在保持健康时优先使用；成员调整不会立即写 DNS。</p>
             </div>
             <Badge tone="muted">{memberTotal} 台</Badge>
           </div>
@@ -263,6 +270,7 @@ export function DomainCandidatesDialog({ domain, onClose, onChanged }: {
             <Badge tone="muted">{libraryTotal === null ? '…' : `${libraryTotal} 条结果`}</Badge>
           </div>
           {libraryError && <p role="alert" className="text-xs text-destructive">{libraryError}</p>}
+          {membershipError && <p role="alert" className="text-xs text-destructive">添加失败：{membershipError}</p>}
           <div className="max-h-60 overflow-auto rounded-md border">
             <table className="w-full min-w-[550px] text-left text-xs">
               <thead className="sticky top-0 bg-muted/80"><tr><th className="w-10 px-3 py-2">选</th><th className="px-3 py-2">服务器</th><th className="px-3 py-2">连通性</th><th className="px-3 py-2">最近速度</th></tr></thead>

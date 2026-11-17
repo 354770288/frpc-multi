@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { probeApi } from '../../lib/api';
+import { createRequestId } from '../../lib/requestId';
 import type { ServerImportFailure, ServerImportJob } from '../../lib/types';
 
 const JOB_KEY = 'probe_server_import_job';
@@ -135,7 +136,7 @@ export function useServerImport(onCompleted?: () => void) {
     if (submissionLock.current || isActive(job) || pendingRequest || pendingRetry) return;
     submissionLock.current = true;
     setSubmitting(true);
-    const request = { text, ...(group ? { group } : {}), idempotencyKey: crypto.randomUUID() };
+    const request = { text, ...(group ? { group } : {}), idempotencyKey: createRequestId() };
     if (!savePendingRequest(request)) {
       submissionLock.current = false;
       setSubmitting(false);
@@ -182,7 +183,7 @@ export function useServerImport(onCompleted?: () => void) {
     retryLock.current = true;
     setRetrying(true);
     setError(null);
-    const request = pendingRetry?.jobId === job.jobId ? pendingRetry : { jobId: job.jobId, idempotencyKey: crypto.randomUUID() };
+    const request = pendingRetry?.jobId === job.jobId ? pendingRetry : { jobId: job.jobId, idempotencyKey: createRequestId() };
     if (!pendingRetry || pendingRetry.jobId !== job.jobId) {
       if (!savePendingRetry(request)) {
         retryLock.current = false;

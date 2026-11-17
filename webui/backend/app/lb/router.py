@@ -16,7 +16,7 @@ from ..auth import require_auth
 from ..probe.store import ProbeStore
 from ..settings import settings
 from .cloudflare import CloudflareClient, CloudflareError
-from .store import LbStore, validate_domain_name
+from .store import DomainMembershipConflict, LbStore, validate_domain_name
 from .syncer import summarize, sync_domain, _sync_lock
 
 router = APIRouter(prefix="/api/lb", dependencies=[Depends(require_auth)])
@@ -57,6 +57,8 @@ def _public_domain(domain, store: ProbeStore) -> dict:
         "zoneName": domain.zone_name,
         "group": domain.group_name,
         "groupId": domain.group_id,
+        "syncGroupId": domain.sync_group_id,
+        "syncGroup": domain.sync_group,
         "ttl": domain.ttl,
         "syncMode": domain.sync_mode,
         "intervalSeconds": domain.interval_seconds,
@@ -173,6 +175,7 @@ class DomainCreate(BaseModel):
     zoneId: str
     zoneName: str
     group: str = ""
+    syncGroupId: str | None = None
     serverIds: list[Annotated[int, Field(strict=True, gt=0)]] | None = Field(default=None, max_length=5000)
     ttl: int = 60
     syncMode: str = "manual"
@@ -182,6 +185,7 @@ class DomainCreate(BaseModel):
 
 class DomainPatch(BaseModel):
     group: str | None = None
+    syncGroupId: str | None = None
     ttl: int | None = None
     syncMode: str | None = None
     intervalSeconds: int | None = None
@@ -219,12 +223,20 @@ def create_domain(payload: DomainCreate, user: Annotated[str, Depends(require_au
     store = lb_store()
     try:
         _check_domain_in_zone(payload.name, payload.zoneName)
-        domain = store.create_domain(
+        create_options = dict(
             name=payload.name, zone_id=payload.zoneId, zone_name=payload.zoneName,
             group_name=payload.group, ttl=payload.ttl, sync_mode=payload.syncMode,
             interval_seconds=payload.intervalSeconds, enabled=payload.enabled,
             server_ids=payload.serverIds,
         )
+        if "syncGroupId" in payload.model_fields_set:
+            create_options["sync_group_id"] = payload.syncGroupId
+        domain = store.create_domain(
+            **create_options,
+        )
+    except DomainMembershipConflict as exc:
+        audit(user, "lb_create_domain", success=False, message=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         audit(user, "lb_create_domain", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -243,12 +255,17 @@ def _get_domain_or_404(domain_id: int, store: LbStore):
 def update_domain(domain_id: int, payload: DomainPatch, user: Annotated[str, Depends(require_auth)]):
     store = lb_store()
     try:
+        update_options = dict(
+            group_name=payload.group, ttl=payload.ttl, sync_mode=payload.syncMode,
+            interval_seconds=payload.intervalSeconds, enabled=payload.enabled,
+        )
+        if "syncGroupId" in payload.model_fields_set:
+            update_options["sync_group_id"] = payload.syncGroupId
         with _sync_lock:
-            domain = store.update_domain(
-                domain_id,
-                group_name=payload.group, ttl=payload.ttl, sync_mode=payload.syncMode,
-                interval_seconds=payload.intervalSeconds, enabled=payload.enabled,
-            )
+            domain = store.update_domain(domain_id, **update_options)
+    except DomainMembershipConflict as exc:
+        audit(user, "lb_update_domain", success=False, message=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         audit(user, "lb_update_domain", success=False, message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -301,6 +318,9 @@ def _change_domain_servers(domain_id: int, payload: DomainServersUpdate, user: s
             method = store.remove_domain_servers if remove else store.add_domain_servers
             method(domain_id, payload.serverIds)
             total = store.domain_server_count(domain_id)
+    except DomainMembershipConflict as exc:
+        audit(user, 'lb_add_candidates', success=False, message=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

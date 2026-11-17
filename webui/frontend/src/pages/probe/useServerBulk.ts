@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { probeApi } from '../../lib/api';
+import { createRequestId } from '../../lib/requestId';
 import type { ServerBulkFailure, ServerBulkJob, ServerSelection, ServerQuery } from '../../lib/types';
 
 const SELECTION_KEY = 'probe_server_bulk_selection';
@@ -90,7 +91,7 @@ export function useServerBulk(active: boolean) {
     else if (ids) target = await probeApi.createServerSelection({ ids });
     if (!target || target.state !== 'ready') throw new Error('选择快照尚未就绪');
     const isSame = pendingMatches && pending?.selectionId === target.selectionId;
-    const request = isSame ? pending! : { selectionId: target.selectionId, operation, payload, idempotencyKey: crypto.randomUUID(), ...(ids ? { ids: [...ids] } : {}) };
+    const request = isSame ? pending! : { selectionId: target.selectionId, operation, payload, idempotencyKey: createRequestId(), ...(ids ? { ids: [...ids] } : {}) };
     setPending(request); setError(null);
     try {
       const next = await probeApi.createServerBulkJob({ selectionId: request.selectionId, operation: request.operation, payload: request.payload, idempotencyKey: request.idempotencyKey });
@@ -104,7 +105,7 @@ export function useServerBulk(active: boolean) {
 
   const retryFailed = useCallback(async () => {
     if (!job) return;
-    const request = pending?.retryJobId === job.jobId ? pending : { selectionId: job.selectionId, operation: job.operation, payload: {}, idempotencyKey: crypto.randomUUID(), retryJobId: job.jobId };
+    const request = pending?.retryJobId === job.jobId ? pending : { selectionId: job.selectionId, operation: job.operation, payload: {}, idempotencyKey: createRequestId(), retryJobId: job.jobId };
     setPending(request); setError(null);
     try {
       const next = await probeApi.retryServerBulkFailures(job.jobId, request.idempotencyKey);

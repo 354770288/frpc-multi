@@ -1,5 +1,9 @@
 import { test, expect } from '@playwright/test';
 
+async function removeCryptoRandomUUID(page: import('@playwright/test').Page) {
+  await page.addInitScript(() => Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: undefined }));
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('frpc-webui-auth', JSON.stringify({ token: 'local-fixture', username: 'qa', expiresAt: Date.now()/1000+3600 })));
   await page.route('**/api/**', async (route) => {
@@ -107,6 +111,7 @@ test('new test requires an explicit target and review before submitting', async 
 });
 
 test('frozen server snapshot deep link shows count and submits by selection ID only', async ({page})=>{
+  await removeCryptoRandomUUID(page);
   let submitted:Record<string,unknown>|null=null;
   const assetPageRequests:string[]=[];
   page.on('request',(request)=>{
@@ -132,6 +137,7 @@ test('frozen server snapshot deep link shows count and submits by selection ID o
 });
 
 test('selection submission keeps its idempotency key after an uncertain response and reload',async ({page})=>{
+  await removeCryptoRandomUUID(page);
   const submissions:Record<string,unknown>[]=[];
   await page.route('**/api/probe/jobs',async (route)=>{
     if(route.request().method()!=='POST')return route.fallback();
@@ -1086,6 +1092,7 @@ test('primary pages fit a narrow viewport',async ({page})=>{
 });
 
 test('server import tracks delayed progress, restores after reload, pages failures and retries them', async ({ page }) => {
+  await removeCryptoRandomUUID(page);
   let currentJob = 'import-qa-job';
   let polls = 0;
   let retrySubmitted = false;
@@ -1154,6 +1161,7 @@ test('server import tracks delayed progress, restores after reload, pages failur
 });
 
 test('server import restores and replays an uncertain submission with the same body and key', async ({ page }) => {
+  await removeCryptoRandomUUID(page);
   const submissions: Record<string, unknown>[] = [];
   const json = (value: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
   await page.route('**/api/probe/server-import-jobs**', async (route) => {
@@ -1202,6 +1210,7 @@ test('server import restores and replays an uncertain submission with the same b
 });
 
 test('server import failure retry reuses its persisted key after an uncertain response', async ({ page }) => {
+  await removeCryptoRandomUUID(page);
   const retryBodies: Record<string, unknown>[] = [];
   let retryPosts = 0;
   let retryState = false;
@@ -1423,6 +1432,7 @@ test('permanent import failures stay visible without a retry action', async ({ p
 });
 
 test('all-matching snapshot update reports progress, pages failures, and retries them into a new job', async ({ page }) => {
+  await removeCryptoRandomUUID(page);
   const selectionRequests: Record<string, unknown>[] = [];
   const jobRequests: Record<string, unknown>[] = [];
   const retryRequests: Record<string, unknown>[] = [];

@@ -195,7 +195,9 @@ class GeoIpTests(unittest.TestCase):
         self.drain()
         server = self.probe.create_server(ip='1.0.0.1', labels=['manual'], server_group='生产')
         lb = LbStore(self.path)
-        domain = lb.create_domain(name='geo.example.com', zone_id='zone', zone_name='example.com', server_ids=[server.id])
+        group_id = next(group['id'] for group in self.probe.list_groups_with_colors() if group['name'] == '生产')
+        domain = lb.create_domain(name='geo.example.com', zone_id='zone', zone_name='example.com',
+                                  server_ids=[server.id], sync_group_id=group_id)
         old = self.record()
         updated = dict(old, country_code='JP', country='Japan', asn='AS2497', as_name='IIJ')
         self.geo.store.save_batch([updated], old['database_version'])

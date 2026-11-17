@@ -12,14 +12,16 @@ test('domains use explicit paged candidates and manual switches preserve failure
   let failSwitch = true;
   let currentId: number | null = null;
   let preferredId: number | null = null;
+  let failAdd = true;
+  const groupById: Record<number, string> = { 101: 'west', 102: 'east' };
   const measuredAt = '2026-10-30T05:00:00.000Z';
   const server = (id: number, ip: string) => ({
-    id, ip, port: 7000, group: id === 101 ? 'west' : 'east', labels: [], createdAt: 'now', latestRoute: null,
+    id, ip, port: 7000, group: groupById[id] ?? '', labels: [], createdAt: 'now', latestRoute: null,
     latestConnectivity: { frpsReachable: true, tunnelEstablished: true, firewallOpen: true, detail: 'ok', testTime: measuredAt },
     latestSpeed: { downloadOk: true, uploadOk: true, downloadMbps: id === 101 ? 0 : 80, uploadMbps: 40, testTime: measuredAt },
   });
   const candidate = (id: number, ip: string, preferred = false, current = false) => ({
-    id, ip, group: id === 101 ? 'west' : 'east',
+    id, ip, group: groupById[id] ?? '',
     latestConnectivity: { frpsReachable: true, tunnelEstablished: true, firewallOpen: true, detail: 'ok', testTime: measuredAt },
     latestSpeed: { downloadOk: true, uploadOk: true, downloadMbps: id === 101 ? 0 : 80, uploadMbps: 40, testTime: measuredAt }, preferred, current,
   });
@@ -32,9 +34,10 @@ test('domains use explicit paged candidates and manual switches preserve failure
     if (path === '/api/lb/domains' && request.method() === 'GET') return route.fulfill(json(domains));
     if (path === '/api/lb/domains' && request.method() === 'POST') {
       domainCreateBody = request.postDataJSON();
-      domains = [{ id: 8, name: 'edge.example.com', zoneId: 'z1', zoneName: 'example.com', group: '', ttl: 60, syncMode: 'manual', intervalSeconds: 300, enabled: true, lastSyncAt: null, lastSyncOk: null, lastSyncMessage: '', currentIp: null, createdAt: 'now', poolSize: 0, preferredServerId: null }];
+      domains = [{ id: 8, name: 'edge.example.com', zoneId: 'z1', zoneName: 'example.com', group: '', groupId: null, syncGroupId: null, syncGroup: 'edge.example.com', ttl: 60, syncMode: 'manual', intervalSeconds: 300, enabled: true, lastSyncAt: null, lastSyncOk: null, lastSyncMessage: '', currentIp: null, createdAt: 'now', poolSize: 0, preferredServerId: null }];
       return route.fulfill(json(domains[0]));
     }
+    if (path === '/api/probe/servers/groups' && request.method() === 'GET') return route.fulfill(json([{ id: 'group-west', name: 'west', color: '' }, { id: 'group-east', name: 'east', color: '' }]));
     if (path === '/api/lb/cloudflare') return route.fulfill(json({ configured: true, tokenMasked: 'qa…token' }));
     if (path === '/api/lb/cloudflare/verify') return route.fulfill(json({ ok: true, zones: [{ id: 'z1', name: 'example.com' }] }));
     if (path === '/api/lb/selection-config') return route.fulfill(json({ nodeId: 'remote', maxAgeHours: 24, healthSource: 'console' }));
@@ -48,7 +51,11 @@ test('domains use explicit paged candidates and manual switches preserve failure
     }
     if (path === '/api/lb/domains/8/servers' && request.method() === 'POST') {
       addedIds = (request.postDataJSON() as { serverIds: number[] }).serverIds;
-      for (const id of addedIds) if (!members.some((item) => item.id === id)) members.push(candidate(id, id === 101 ? '192.0.2.101' : '192.0.2.102'));
+      if (failAdd) return route.fulfill(json({ detail: '服务器 101 已属于 edge.other.example.com 候选池，添加发生冲突' }, 409));
+      for (const id of addedIds) if (!members.some((item) => item.id === id)) {
+        groupById[id] = 'edge.example.com';
+        members.push(candidate(id, id === 101 ? '192.0.2.101' : '192.0.2.102'));
+      }
       currentId = 102;
       domains = domains.map((item) => ({ ...item, currentIp: '192.0.2.102' }));
       return route.fulfill(json({ ok: true, total: members.length }));
@@ -56,6 +63,7 @@ test('domains use explicit paged candidates and manual switches preserve failure
     if (path === '/api/lb/domains/8/servers' && request.method() === 'DELETE') {
       removedIds = (request.postDataJSON() as { serverIds: number[] }).serverIds;
       members = members.filter((item) => !removedIds.includes(item.id as number));
+      for (const id of removedIds) if (groupById[id] === 'edge.example.com') groupById[id] = '';
       return route.fulfill(json({ ok: true, total: members.length }));
     }
     if (path === '/api/probe/servers/cursor') {
@@ -79,6 +87,10 @@ test('domains use explicit paged candidates and manual switches preserve failure
   await page.getByRole('button', { name: '新增域名' }).click();
   await page.getByRole('combobox').first().click();
   await page.getByRole('option', { name: 'example.com' }).click();
+  await page.getByRole('combobox', { name: '同步业务分组' }).click();
+  await expect(page.getByRole('option', { name: 'west', exact: true })).toBeVisible();
+  await expect(page.getByRole('option', { name: 'east', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
   await page.getByPlaceholder('frps.example.com').fill('edge.example.com');
   await page.getByRole('switch').click();
   await expect(page.getByText('绑定服务器分组')).toHaveCount(0);
@@ -97,11 +109,21 @@ test('domains use explicit paged candidates and manual switches preserve failure
   await expect(page.getByText('已选 2 台（新增 2）')).toBeVisible();
   await page.getByRole('button', { name: '添加所选' }).click();
   expect(addedIds).toEqual([101, 102]);
+  await expect(page.getByRole('alert').filter({ hasText: '已属于 edge.other.example.com 候选池' })).toBeVisible();
+  await expect(page.getByText('已选 2 台（新增 2）')).toBeVisible();
+  expect(members).toHaveLength(0);
+  failAdd = false;
+  await page.getByRole('button', { name: '添加所选' }).click();
+  await expect(page.getByText('同步业务分组：edge.example.com')).toBeVisible();
+  await page.getByRole('button', { name: '服务器库上一页' }).click();
+  await expect(page.getByRole('table').nth(1).getByRole('row').filter({ hasText: 'edge.example.com · 已加入' })).toBeVisible();
   await expect(page.getByRole('table').first().getByTitle(measuredAt)).toHaveCount(4);
   await expect(page.getByText('192.0.2.101')).toBeVisible();
   await page.getByRole('button', { name: '移除 192.0.2.101' }).click();
   expect(removedIds).toEqual([101]);
   await expect(page.getByRole('table').first().getByText('192.0.2.101')).toHaveCount(0);
+  await expect(page.getByRole('table').nth(1).getByText('192.0.2.101')).toBeVisible();
+  await expect(page.getByRole('table').nth(1).getByRole('row').filter({ hasText: '未分组' })).toBeVisible();
 
   const failureSwitch = page.getByRole('button', { name: '固定并同步 DNS' });
   await failureSwitch.click();

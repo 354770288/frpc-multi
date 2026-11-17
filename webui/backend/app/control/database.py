@@ -296,6 +296,7 @@ CREATE TABLE IF NOT EXISTS lb_domains (
     zone_name TEXT NOT NULL,
     group_name TEXT NOT NULL,
     group_id TEXT,
+    sync_group_id TEXT,
     ttl INTEGER NOT NULL DEFAULT 60,
     sync_mode TEXT NOT NULL DEFAULT 'manual',
     interval_seconds INTEGER NOT NULL DEFAULT 300,
@@ -398,6 +399,8 @@ def _migrate_lb_domains(connection: sqlite3.Connection) -> None:
             "ALTER TABLE lb_domains ADD COLUMN preferred_server_id INTEGER "
             "REFERENCES probe_servers(id) ON DELETE SET NULL"
         )
+    if columns and "sync_group_id" not in columns:
+        connection.execute("ALTER TABLE lb_domains ADD COLUMN sync_group_id TEXT")
 
 
 def _migrate_lb_domain_servers(connection: sqlite3.Connection) -> None:
@@ -428,6 +431,62 @@ def _migrate_lb_domain_servers(connection: sqlite3.Connection) -> None:
         # Snapshot is now authoritative. Clear legacy bindings even on retry
         # after the marker was committed by an earlier application version.
         connection.execute("UPDATE lb_domains SET group_name = '', group_id = NULL")
+    except Exception:
+        connection.rollback()
+        raise
+    else:
+        connection.commit()
+
+
+def _migrate_lb_domain_sync_groups(connection: sqlite3.Connection) -> None:
+    """Give each domain a stable server-group FK without moving any assets."""
+    if not _column_names(connection, "lb_domains") or not _column_names(connection, "probe_groups"):
+        return
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        domains = connection.execute(
+            "SELECT id, name, sync_group_id FROM lb_domains ORDER BY id"
+        ).fetchall()
+        for domain in domains:
+            if domain["sync_group_id"]:
+                continue
+            groups = connection.execute(
+                "SELECT s.group_id, COUNT(*) AS n FROM lb_domain_servers m "
+                "JOIN probe_servers s ON s.id = m.server_id "
+                "WHERE m.domain_id = ? GROUP BY s.group_id", (domain["id"],)
+            ).fetchall()
+            # Preserve a common existing group. Mixed or ungrouped membership
+            # falls back to the domain-name group; migration never reassigns assets.
+            group_id = (
+                str(groups[0]["group_id"])
+                if len(groups) == 1 and groups[0]["group_id"] not in (None, "")
+                else None
+            )
+            if group_id is None:
+                row = connection.execute(
+                    "SELECT id FROM probe_groups WHERE name = ?", (domain["name"],)
+                ).fetchone()
+                if row is None:
+                    group_id = str(uuid.uuid4())
+                    connection.execute(
+                        "INSERT INTO probe_groups(id,name,color,created_at) VALUES(?,?,'',?)",
+                        (group_id, domain["name"], "1970-01-01T00:00:00+00:00"),
+                    )
+                else:
+                    group_id = str(row["id"])
+            connection.execute(
+                "UPDATE lb_domains SET sync_group_id = ? WHERE id = ?",
+                (group_id, domain["id"]),
+            )
+        # Install the database guard only when legacy membership has no overlaps.
+        overlap = connection.execute(
+            "SELECT 1 FROM lb_domain_servers GROUP BY server_id HAVING COUNT(*) > 1 LIMIT 1"
+        ).fetchone()
+        if overlap is None:
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_lb_domain_servers_one_domain "
+                "ON lb_domain_servers(server_id)"
+            )
     except Exception:
         connection.rollback()
         raise
@@ -1076,6 +1135,7 @@ def initialize_database(path: Path) -> None:
             connection.commit()
             _migrate_lb_domain_servers(connection)
             connection.commit()
+            _migrate_lb_domain_sync_groups(connection)
             # 各迁移自带 BEGIN IMMEDIATE/COMMIT，必须都在外层 commit 之后调用，
             # 避免撞上前面 DML 留下的隐式事务
             _migrate_probe_discover_results(connection)

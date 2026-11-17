@@ -429,9 +429,11 @@ export const lbApi = {
   domains: () => api<LbDomain[]>('/api/lb/domains'),
   createDomain: (payload: {
     name: string; zoneId: string; zoneName: string; serverIds?: number[];
+    syncGroupId?: string | null;
     ttl?: number; syncMode?: 'manual' | 'scheduled'; intervalSeconds?: number; enabled?: boolean;
   }) => api<LbDomain>('/api/lb/domains', { method: 'POST', body: JSON.stringify(payload) }),
   updateDomain: (id: number, payload: {
+    syncGroupId?: string | null;
     ttl?: number; syncMode?: 'manual' | 'scheduled'; intervalSeconds?: number; enabled?: boolean;
   }) => api<LbDomain>(`/api/lb/domains/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   domainServers: (id: number, query: { page: number; pageSize: number; q?: string }, signal?: AbortSignal) => {

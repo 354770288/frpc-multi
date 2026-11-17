@@ -34,6 +34,14 @@ class DomainCandidatesApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(self.base + '/servers', headers=self.headers).json()['total'], 1)
         self.assertEqual(self.client.post(self.base + '/servers', headers=self.headers,
                                          json={'serverIds': [self.second.id]}).status_code, 200)
+        self.assertEqual(self.probe.get_server(self.second.id).server_group, self.domain['syncGroup'])
+        other = self.client.post('/api/lb/domains', headers=self.headers, json={
+            'name': 'other.example.com', 'zoneId': 'zone', 'zoneName': 'example.com',
+        }).json()
+        conflict = self.client.post(f'/api/lb/domains/{other["id"]}/servers', headers=self.headers,
+                                    json={'serverIds': [self.second.id]})
+        self.assertEqual(conflict.status_code, 409, conflict.text)
+        self.assertEqual(self.probe.get_server(self.second.id).server_group, self.domain['syncGroup'])
         page = self.client.get(self.base + '/servers?page=2&pageSize=1', headers=self.headers).json()
         self.assertEqual((page['total'], page['pageSize'], len(page['items'])), (2, 1, 1))
         self.assertEqual(page['items'][0]['id'], self.second.id)
@@ -45,6 +53,7 @@ class DomainCandidatesApiTests(unittest.TestCase):
                                       json={'serverIds': [self.first.id]})
         self.assertEqual(deleted.status_code, 200)
         self.assertEqual(deleted.json()['total'], 1)
+        self.assertEqual(self.probe.get_server(self.first.id).server_group, '')
 
     def test_manual_switch_persists_pin_and_rejects_nonmember_without_dns_writes(self):
         self.client.put('/api/lb/cloudflare', headers=self.headers, json={'token': 'test-token'})
