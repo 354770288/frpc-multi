@@ -199,6 +199,32 @@ class WebUiBackendEnhancementTests(unittest.TestCase):
             self.assertEqual([n["id"] for n in upg["skipped"]], [node_cur.id])
             self.assertEqual(upgraded_calls, ["old-sha-000"])
 
+    def test_summary_fetches_online_nodes_concurrently(self) -> None:
+        import asyncio
+        import time
+
+        nstore = NodeStore(self.db_path)
+        nodes = [nstore.create_node(name=f"node-{i}") for i in range(4)]
+
+        class SlowConn:
+            async def call(self, method: str, payload=None, timeout: float = 10.0):
+                await asyncio.sleep(0.15)
+                return {"total": 1, "running": 1, "stopped": 0, "error": 0, "instances": []}
+
+        slow = SlowConn()
+        hub_mod = importlib.import_module("app.control.hub")
+        with (
+            mock.patch.object(hub_mod.hub, "is_online", return_value=True),
+            mock.patch.object(hub_mod.hub, "get", return_value=slow),
+            TestClient(self.main_mod.app) as client,
+        ):
+            t0 = time.monotonic()
+            res = client.get("/api/summary", headers=self.headers)
+            elapsed = time.monotonic() - t0
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json()["onlineCount"], len(nodes))
+            self.assertLess(elapsed, 0.45, f"expected concurrent fetch < 0.45s, got {elapsed:.3f}s")
+
 
 if __name__ == "__main__":
     unittest.main()

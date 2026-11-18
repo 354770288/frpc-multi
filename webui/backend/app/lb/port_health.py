@@ -56,14 +56,12 @@ def get_hub_event_loop() -> asyncio.AbstractEventLoop | None:
         return _hub_loop
 
 
-async def collect_and_sync_node_ports_async(
-    lb_store: LbStore,
+async def fetch_enriched_node_instances_async(
     node_id: int,
-    node_name: str,
     node_uuid: str,
     summary_data: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """从单个在线部署节点同步实例业务端口映射到 lb_instance_ports（兼容新旧 Agent），并返回内联了 summary 的实例列表。"""
+    """拉取单个在线部署节点实例列表并补齐 summary（纯网络/内存操作，不执行数据库写入，可安全并发 gather）。"""
     if not hub.is_online(node_uuid):
         return (summary_data or {}).get("instances") or []
     connection = hub.get(node_uuid)
@@ -106,6 +104,20 @@ async def collect_and_sync_node_ports_async(
         for key in stale_keys:
             _legacy_summary_cache.pop(key, None)
 
+    return enriched
+
+
+async def collect_and_sync_node_ports_async(
+    lb_store: LbStore,
+    node_id: int,
+    node_name: str,
+    node_uuid: str,
+    summary_data: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """从单个在线部署节点同步实例业务端口映射到 lb_instance_ports（兼容新旧 Agent），并返回内联了 summary 的实例列表。"""
+    if not hub.is_online(node_uuid):
+        return (summary_data or {}).get("instances") or []
+    enriched = await fetch_enriched_node_instances_async(node_id, node_uuid, summary_data)
     lb_store.replace_node_instance_ports(node_id, node_name, enriched)
     return enriched
 
@@ -113,13 +125,19 @@ async def collect_and_sync_node_ports_async(
 async def refresh_all_online_node_ports_async(database_path: Path) -> None:
     node_store = NodeStore(database_path)
     lb_store = LbStore(database_path)
-    for node in node_store.list_nodes():
-        if not hub.is_online(node.uuid):
-            continue
-        try:
-            await collect_and_sync_node_ports_async(lb_store, node.id, node.name, node.uuid)
-        except Exception:  # noqa: BLE001
-            continue
+    online_nodes = [node for node in node_store.list_nodes() if hub.is_online(node.uuid)]
+    if not online_nodes:
+        return
+    results = await asyncio.gather(
+        *(fetch_enriched_node_instances_async(node.id, node.uuid) for node in online_nodes),
+        return_exceptions=True,
+    )
+    for node, result in zip(online_nodes, results):
+        if isinstance(result, list):
+            try:
+                lb_store.replace_node_instance_ports(node.id, node.name, result)
+            except Exception:  # noqa: BLE001
+                continue
 
 
 def refresh_online_node_ports_from_thread(database_path: Path, *, timeout: float = 12.0) -> None:

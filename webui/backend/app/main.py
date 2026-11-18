@@ -183,9 +183,30 @@ async def summary(
     instances: list[dict] = []
     node_summaries: list[dict] = []
 
-    for node in nodes:
-        online = hub.is_online(node.uuid)
-        if not online:
+    from .lb.port_health import fetch_enriched_node_instances_async
+    from .lb.store import LbStore
+
+    async def _probe_node(node):
+        if not hub.is_online(node.uuid):
+            return node, False, None, None, False, None
+        try:
+            data = await hub.get(node.uuid).call(wsproto.M_SUMMARY, timeout=10.0)
+        except Exception as exc:  # noqa: BLE001
+            return node, True, None, None, False, exc
+        raw_node_instances = data.get("instances", [])
+        sync_ok = False
+        try:
+            raw_node_instances = await fetch_enriched_node_instances_async(node.id, node.uuid, data)
+            sync_ok = True
+        except Exception:  # noqa: BLE001
+            pass
+        return node, True, data, raw_node_instances, sync_ok, None
+
+    probed_nodes = await asyncio.gather(*(_probe_node(node) for node in nodes))
+    lb_store = LbStore(settings.database_path)
+
+    for node, was_online, data, raw_node_instances, sync_ok, exc in probed_nodes:
+        if not was_online:
             node_summaries.append(
                 {
                     "id": node.id,
@@ -200,9 +221,7 @@ async def summary(
                 }
             )
             continue
-        try:
-            data = await hub.get(node.uuid).call(wsproto.M_SUMMARY, timeout=10.0)
-        except Exception as exc:  # noqa: BLE001
+        if exc is not None or data is None:
             store.update_node(node.id, status="offline")
             node_summaries.append(
                 {
@@ -220,19 +239,16 @@ async def summary(
             )
             continue
 
-        store.update_node(node.id, status="online", last_seen_at=now_iso())
-        raw_node_instances = data.get("instances", [])
-        try:
-            from .lb.port_health import collect_and_sync_node_ports_async
-            from .lb.store import LbStore
-            raw_node_instances = await collect_and_sync_node_ports_async(
-                LbStore(settings.database_path), node.id, node.name, node.uuid, data,
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        seen_at = now_iso()
+        store.update_node(node.id, status="online", last_seen_at=seen_at)
+        if sync_ok and isinstance(raw_node_instances, list):
+            try:
+                lb_store.replace_node_instance_ports(node.id, node.name, raw_node_instances)
+            except Exception:  # noqa: BLE001
+                pass
         for key in totals:
             totals[key] += int(data.get(key, 0) or 0)
-        for item in raw_node_instances:
+        for item in (raw_node_instances or []):
             instances.append({**item, "nodeId": node.id, "nodeName": node.name})
         node_summaries.append(
             {
@@ -240,7 +256,7 @@ async def summary(
                 "name": node.name,
                 "uuid": node.uuid,
                 "status": "online",
-                "lastSeenAt": now_iso(),
+                "lastSeenAt": seen_at,
                 "total": int(data.get("total", 0) or 0),
                 "running": int(data.get("running", 0) or 0),
                 "stopped": int(data.get("stopped", 0) or 0),
