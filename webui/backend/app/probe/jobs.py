@@ -20,6 +20,7 @@ from ..control.database import connect_database, initialize_database
 from ..models import now_iso
 from .constants import PROBE_TEST_PORT
 from .discover import DiscoverParams, DiscoverRunner, parse_targets
+from .ephemeral_tcping import ephemeral_tcping_broker
 from .store import validate_probe_addr, split_probe_endpoint as split_endpoint
 from .selection_jobs import (
     SELECTION_PRODUCER_RETRY_DAYS, create_primary_selection_job,
@@ -725,6 +726,10 @@ class ProbeJobStore:
             except (TypeError, ValueError):
                 protocol_features = set()
             caps=set(capabilities or json.loads(node['capabilities'])) & set(json.loads(node['capabilities']))
+            if 'discover' in caps:
+                ephemeral = ephemeral_tcping_broker.claim_for_node(node_id)
+                if ephemeral is not None:
+                    return ephemeral
             self._materialize_selection_chunk(c, node_id, caps)
             active=c.execute("SELECT * FROM probe_tasks WHERE state IN ('running','cancelling')").fetchall()
             local=[t for t in active if t['node_id']==node_id]
@@ -781,6 +786,10 @@ class ProbeJobStore:
             self._expire(c)
             cancelled=[]
             for a in attempts:
+                if ephemeral_tcping_broker.is_ephemeral_task(a.get('taskId')):
+                    if not ephemeral_tcping_broker.touch_heartbeat(node_id, str(a.get('taskId', '')), str(a.get('attemptId', ''))):
+                        cancelled.append(a)
+                    continue
                 task=c.execute('SELECT * FROM probe_tasks WHERE id=? AND node_id=?',(a['taskId'],node_id)).fetchone()
                 generation = a.get('generation')
                 generation_ok = task and (generation == task['generation'] or (task['generation'] == 0 and generation is None))
@@ -796,6 +805,8 @@ class ProbeJobStore:
         return t if generation_ok and t['state']=='running' and t['attempt_id']==attempt else None
 
     def progress(self,node_id,task_id,attempt_id,seq,*,generation=None,hits=(),progress=None):
+        if ephemeral_tcping_broker.is_ephemeral_task(task_id):
+            return ephemeral_tcping_broker.record_progress(node_id, task_id, attempt_id, seq, hits=hits)
         if len(hits)>4096: raise ValueError('hits batch exceeds 4096')
         with self._db() as c:
             t=self._valid(c,node_id,task_id,attempt_id,generation)
@@ -825,6 +836,10 @@ class ProbeJobStore:
         c.execute('INSERT OR IGNORE INTO probe_results(task_id,attempt_id,job_id,node_id,kind,server_ip,port,test_time,data,generation) VALUES(?,?,?,?,?,?,?,?,?,?)',(task,attempt_id,job,node,kind,ip,port,stamp,_json(result),generation))
 
     def report(self,node_id,task_id,attempt_id,*,generation=None,result=None,infra_error=None):
+        if ephemeral_tcping_broker.is_ephemeral_task(task_id):
+            return ephemeral_tcping_broker.record_report(
+                node_id, task_id, attempt_id, result=result, infra_error=infra_error,
+            )
         with self._db() as c:
             self._expire(c)
             cancelling=c.execute("SELECT * FROM probe_tasks WHERE id=? AND node_id=? AND attempt_id=? AND state='cancelling'",(task_id,node_id,attempt_id)).fetchone()

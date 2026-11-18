@@ -79,8 +79,7 @@ class EngineHelperTests(unittest.TestCase):
             server.close()
 
     def test_tcping_refused(self):
-        port = busy_port()
-        # 监听队列存在但由本进程持有 → 连接可建立，因此用未监听端口验证拒绝路径
+        # 用关闭后的未监听端口验证连接拒绝路径
         server = socket.socket()
         server.bind(("127.0.0.1", 0))
         port = server.getsockname()[1]

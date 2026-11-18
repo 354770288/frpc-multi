@@ -273,7 +273,7 @@ def _public_speed(row: dict) -> dict:
 class ServerSelectionCreate(BaseModel):
     ids: list[int] | None = None
     allMatching: bool = False
-    q: str = ""
+    q: str = Field(default="", max_length=256)
     group: str | None = None
     label: str | None = None
     groupIds: list[str] = []
@@ -397,7 +397,7 @@ class ServerBatchImport(BaseModel):
 def list_servers(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, alias="pageSize", ge=1, le=200),
-    q: str = "",
+    q: str = Query(default="", max_length=256),
     group: str | None = None,
     label: str | None = None,
     tagId: str | None = None,
@@ -432,7 +432,7 @@ def list_servers(
 def list_servers_cursor(
     page_size: int = Query(default=50, alias="pageSize", ge=1, le=200),
     cursor: str | None = None,
-    q: str = "",
+    q: str = Query(default="", max_length=256),
     group: str | None = None,
     groupIds: str = "",
     label: str | None = None,
@@ -461,7 +461,7 @@ def list_servers_cursor(
 
 @router.get("/servers/count")
 def count_servers(
-    q: str = "", group: str | None = None, groupIds: str = "", label: str | None = None,
+    q: str = Query(default="", max_length=256), group: str | None = None, groupIds: str = "", label: str | None = None,
     tagId: str | None = None, includeTagIds: str = "", excludeTagIds: str = "",
     tagMode: Literal["any", "all"] = "any",
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
@@ -480,7 +480,7 @@ def count_servers(
 
 @router.get("/servers/facets")
 def server_facets(
-    q: str = "", group: str | None = None, groupIds: str = "", label: str | None = None,
+    q: str = Query(default="", max_length=256), group: str | None = None, groupIds: str = "", label: str | None = None,
     tagId: str | None = None, includeTagIds: str = "", excludeTagIds: str = "",
     tagMode: Literal["any", "all"] = "any",
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
@@ -1112,7 +1112,7 @@ def discover_stop(user: Annotated[str, Depends(require_auth)]):
 def discover_results(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, alias="pageSize", ge=1, le=200),
-    q: str = "",
+    q: str = Query(default="", max_length=256),
     group: str | None = None,
     label: str | None = None,
     library: Literal["all", "imported", "new"] = "all",

@@ -1,8 +1,9 @@
 # Aegis Index
 
-- Current handoff: `chat/PERF_OPT_HANDOFF_2026-08-29.md`（顶部更新于 2026-11-17）
-- Latest checkpoint: `docs/aegis/work/2026-11-17-online-fixes/20-checkpoint.md`
-- Latest release evidence: `docs/aegis/work/2026-11-17-online-fixes/90-evidence.md`（线上功能版本 b75b558）
+- Current handoff: `chat/PERF_OPT_HANDOFF_2026-08-29.md`（顶部更新于 2026-11-18）
+- Latest checkpoint: `docs/aegis/work/2026-11-18-delivery/20-checkpoint.md`
+- Latest verification evidence: `docs/aegis/work/2026-11-18-delivery/90-evidence.md`
+- Latest online release evidence: `docs/aegis/work/2026-11-17-online-fixes/90-evidence.md`（线上运行版本 `b75b558`）
 - Baseline: `docs/aegis/baseline/2026-08-30-initial-baseline.md`
 - Plan: `docs/aegis/plans/2026-08-30-discovery-performance.md`
 - Active plan: `docs/aegis/plans/2026-10-23-server-library-scale.md`
@@ -14,7 +15,11 @@
 
 | Date | Kind | Path | Title |
 | --- | --- | --- | --- |
-| 2026-11-17 | handoff | chat/PERF_OPT_HANDOFF_2026-08-29.md | 最新交接入口，含当前规则、发布及待办；8 月内容为历史 |
+| 2026-11-18 | handoff | chat/PERF_OPT_HANDOFF_2026-08-29.md | 最新交接入口，含业务端口 GFW 检测、主页异常窗口、游标修复、恢复演练及 CI 门禁 |
+| 2026-11-18 | work | docs/aegis/work/2026-11-18-delivery/20-checkpoint.md | 优选域名业务端口 GFW 检测、主页异常窗口、Probe 拆分与工程加固检查点 |
+| 2026-11-18 | work | docs/aegis/work/2026-11-18-delivery/90-evidence.md | 全量单测、构建、备份恢复演练、响应分布统计与 CI 门禁验证证据 |
+| 2026-11-18 | artifact | docs/aegis/work/2026-11-18-delivery/restore-rehearsal.md | Console 数据库在线备份与隔离原子恢复演练报告 |
+| 2026-11-18 | artifact | docs/aegis/work/2026-11-18-delivery/response-distributions.md | 目标网络响应分布只读统计报告（隔离仿真基准） |
 | 2026-11-17 | work | docs/aegis/work/2026-11-17-online-fixes/20-checkpoint.md | HTTP 请求标识与单域名业务分组同步检查点 |
 | 2026-11-17 | work | docs/aegis/work/2026-11-17-online-fixes/90-evidence.md | b75b558 验证、生产修复和回滚证据 |
 | 2026-10-30 | plan | docs/aegis/plans/2026-10-30-domain-candidates.md | 域名独立候选池与手动固定方案，归属规则见最新修正 |

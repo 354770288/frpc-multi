@@ -813,17 +813,22 @@ test('server cursor restores browser back and forward URLs',async ({page})=>{
   const cursorRequests:string[]=[];
   page.on('request',(request)=>{if(new URL(request.url()).pathname==='/api/probe/servers/cursor')cursorRequests.push(request.url());});
   await page.goto('/servers?nodeId=remote&pageSize=25');
+  await expect(page.getByText('192.0.2.1:7000',{exact:true})).toBeVisible();
   await page.getByRole('button',{name:'下一页'}).click();
   await expect(page).toHaveURL(/page=2/);
   await expect(page).toHaveURL(/cursor=cursor-page2/);
+  await expect(page.getByText('192.0.2.2',{exact:true})).toBeVisible();
+  const countBeforeBack=cursorRequests.length;
   await page.goBack();
   await expect(page).toHaveURL(/page=1/);
   await expect(page).not.toHaveURL(/cursor=/);
-  await expect.poll(()=>cursorRequests.some((value)=>!new URL(value).searchParams.has('cursor'))).toBe(true);
+  await expect.poll(()=>cursorRequests.slice(countBeforeBack).some((value)=>!new URL(value).searchParams.has('cursor'))).toBe(true);
   await expect(page.getByText('192.0.2.1:7000',{exact:true})).toBeVisible();
+  const countBeforeForward=cursorRequests.length;
   await page.goForward();
   await expect(page).toHaveURL(/page=2/);
   await expect(page).toHaveURL(/cursor=cursor-page2/);
+  await expect.poll(()=>cursorRequests.slice(countBeforeForward).some((value)=>new URL(value).searchParams.get('cursor')==='cursor-page2')).toBe(true);
   await expect(page.getByText('192.0.2.2',{exact:true})).toBeVisible();
 });
 

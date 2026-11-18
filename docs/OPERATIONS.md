@@ -306,13 +306,29 @@ AGENT_IMAGE=ghcr.io/354770288/frpc-multi:latest
 FRP_IMAGE=ghcr.io/fatedier/frpc:v0.68.1
 ```
 
-升级主控：
+升级主控（标准安全流程）：
+
+1. 等待在途穿透/测速批次自然完成，不要为升级强行中断运行中测试。
+2. 执行在线一致性热备并保留旧运行镜像标签：
 
 ```bash
 cd /opt/frpc-multi
-bash scripts/backup-configs.sh
+bash scripts/backup-console.sh
+docker tag ghcr.io/354770288/frpc-multi:latest frpc-multi:rollback-$(date +%Y%m%d)
+```
+
+3. 可选：对刚生成的备份执行隔离迁移预检（不修改原备份）：
+
+```bash
+python3 scripts/rehearse-restore.py --verify-backup backups/console-db-YYYYMMDD-HHMMSS.db
+```
+
+4. 拉取新镜像并切换服务：
+
+```bash
 docker compose -f compose.console.yaml pull
 docker compose -f compose.console.yaml up -d
+CHECK_ROLE=console bash scripts/check-health.sh
 ```
 
 升级 Agent：面板节点行点"升级 Agent"，或在 Agent 机器上重新运行一键安装命令（脚本会用新镜像重建容器）。
@@ -321,20 +337,50 @@ frp 镜像升级后如果实例表现更差，立即回滚 `.env` 中的 `FRP_IM
 
 ## 备份与恢复
 
-创建配置备份：
+### 1. 主控 Console 数据库备份与恢复
+
+创建零停机 SQLite 在线热备（默认输出到 `/opt/frpc-multi/backups/console-db-YYYYMMDD-HHMMSS.db`，权限 `0600` 并自动执行 `PRAGMA integrity_check`）：
+
+```bash
+cd /opt/frpc-multi
+bash scripts/backup-console.sh
+```
+
+> `bash scripts/backup-configs.sh` 在检测到本机运行 `frpc-console` 容器时也会自动联动执行 `backup-console.sh`。
+
+回滚或恢复 Console 数据库时，**必须先停止 `frpc-console` 容器，另存当前数据库，同时清除目标目录下的 `-wal` 与 `-shm` 残留文件后再覆盖恢复**（防止 SQLite 启动时将旧故障现场的 WAL 帧重放到恢复的备份上）：
+
+```bash
+cd /opt/frpc-multi
+docker compose -f compose.console.yaml stop frpc-console
+
+# 数据卷默认宿主机目录：/var/lib/docker/volumes/frpc-multi-console_console-data/_data
+VOL_DIR="/var/lib/docker/volumes/frpc-multi-console_console-data/_data"
+sudo cp -a "$VOL_DIR/console.db" "$PWD/backups/console-before-rollback-$(date +%Y%m%d-%H%M%S).db"
+sudo rm -f "$VOL_DIR/console.db-wal" "$VOL_DIR/console.db-shm"
+sudo install -m 600 backups/console-db-YYYYMMDD-HHMMSS.db "$VOL_DIR/console.db"
+
+# 如涉及 Schema 迁移回退，使用升级前保留的回滚镜像标签启动
+CONSOLE_IMAGE=frpc-multi:rollback-YYYYMMDD docker compose -f compose.console.yaml up -d
+CHECK_ROLE=console bash scripts/check-health.sh
+```
+
+本地或升级前可执行端到端隔离恢复自检演练：
+
+```bash
+python3 scripts/rehearse-restore.py --self-test
+```
+
+### 2. Agent 实例配置备份与恢复
+
+在 Agent 服务器创建配置备份：
 
 ```bash
 cd /opt/frpc-multi
 bash scripts/backup-configs.sh
 ```
 
-备份文件默认保存在：
-
-```text
-/opt/frpc-multi/backups/
-```
-
-恢复时先停止相关实例，解压备份覆盖配置，再重建容器：
+恢复 Agent 实例配置时先停止相关实例，解压备份覆盖配置，再重建容器：
 
 ```bash
 cd /opt/frpc-multi

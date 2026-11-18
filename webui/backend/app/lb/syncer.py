@@ -54,10 +54,11 @@ def sync_domain(domain: LbDomain, probe_store: ProbeStore, lb_store: LbStore,
         domain = lb_store.get_domain(domain.id)
         candidates = list(lb_store.iter_domain_candidate_rows(domain.id))
         pool_ips = {split_addr(row["ip"], 7000)[0] for row in candidates}
+        blocked_ips = lb_store.gfw_blocked_ips()
         monitor = monitor or _default_monitor()
         selection = selection_for_domain(domain, probe_store, monitor, lb_store=lb_store)
         target_ip = selection["bestIp"] if pool_ips else None
-        healthy_size = sum(1 for ip in pool_ips if monitor.is_healthy(ip))
+        healthy_size = sum(1 for ip in pool_ips if monitor.is_healthy(ip) and ip not in blocked_ips)
 
         if target_server_id is not None:
             requested = (next((row for row in candidates if row["id"] == target_server_id), None)
@@ -71,6 +72,14 @@ def sync_domain(domain: LbDomain, probe_store: ProbeStore, lb_store: LbStore,
                 _finish(lb_store, domain, result)
                 return result
             requested_ip = split_addr(requested["ip"], 7000)[0]
+            if requested_ip in blocked_ips:
+                result = SyncResult(
+                    ok=False, target_ip=domain.current_ip, previous_ip=domain.current_ip,
+                    pool_size=len(pool_ips), healthy_size=healthy_size,
+                    errors=[f"指定服务器 {requested_ip} 已被标记为防火墙端口屏蔽，请先解除屏蔽"], selection=selection,
+                )
+                _finish(lb_store, domain, result)
+                return result
             if not monitor.is_healthy(requested_ip):
                 result = SyncResult(
                     ok=False, target_ip=domain.current_ip, previous_ip=domain.current_ip,

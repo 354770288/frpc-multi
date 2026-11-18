@@ -1,13 +1,13 @@
-# frpc-multi 当前交接（更新于 2026-11-17）
+# frpc-multi 当前交接（更新于 2026-11-18）
 
 > 接续工作先读本节，再读最新检查点与证据。下方 8 月记录保留用于追溯，其中的环境地址、测试数量和业务规则不代表当前状态。凭据仅通过 Netcatty vault 或现有受保护配置获取，不写入交接文档。
 
 ## 当前版本与接续入口
 
-- 仓库：`/Users/zm/Documents/frpc-multi`，分支 `main`；本轮更新前工作区干净，与 `origin/main` 同步。
-- 当前线上功能提交：`b75b5587081e67c4815e9a62d7fe3f9a2a2f3247`；其后 `f13d19c` 仅归档发布文档。交接文档提交也不会改变运行镜像版本。
-- 入口：[线上 Console](http://23.19.228.204:8081/)。2026-11-17 发布后已核对 revision、HTTP 200、关键认证 API、数据库完整性及候选归属。
-- 最新事实：[线上修复检查点](../docs/aegis/work/2026-11-17-online-fixes/20-checkpoint.md)、[验证及发布证据](../docs/aegis/work/2026-11-17-online-fixes/90-evidence.md)。历史容量依据见 [服务器库容量证据](../docs/aegis/work/2026-10-23-server-library-scale/90-evidence.md)。
+- 仓库：`/Users/zm/Documents/frpc-multi`，分支 `main`；本轮开发在本地隔离环境完成全部代码、测试、演练与文档归档，尚未推送或部署至线上（生产零扰动）。
+- 当前线上运行提交：仍为 `b75b5587081e67c4815e9a62d7fe3f9a2a2f3247`（`frpc-multi:fixes-b75b558`）。
+- 入口：[线上 Console](http://23.19.228.204:8081/)。2026-11-17 发布状态见 [线上修复检查点](../docs/aegis/work/2026-11-17-online-fixes/20-checkpoint.md) 与 [发布证据](../docs/aegis/work/2026-11-17-online-fixes/90-evidence.md)。
+- 最新交付事实（2026-11-18）：[本轮检查点](../docs/aegis/work/2026-11-18-delivery/20-checkpoint.md)、[全量验证证据](../docs/aegis/work/2026-11-18-delivery/90-evidence.md)、[隔离备份恢复演练报告](../docs/aegis/work/2026-11-18-delivery/restore-rehearsal.md)、[目标网络响应分布报告](../docs/aegis/work/2026-11-18-delivery/response-distributions.md)。历史容量依据见 [服务器库容量证据](../docs/aegis/work/2026-10-23-server-library-scale/90-evidence.md)。
 
 ## 最新业务规则（优先于历史方案）
 
@@ -18,34 +18,42 @@
 5. 域名设置 `syncGroupId` / `syncGroup`。新增候选与移入该业务分组同事务；移除只清理真实成员且仍属于该配置组的归属，保留后来人工改组。显式改变同步分组会更新该域名现有全部候选，但不直接写 DNS。业务分组本身不反向扩展域名候选。
 6. 手动“切换并同步 DNS”或“固定并同步 DNS”成功后，目标健康期间保持固定；健康失败后按原规则回落，成功切换后解除固定，不自动回切。保留健康阈值、单条托管灰云 A 和非托管记录保护；空候选池同步会清理托管 A，有候选但无健康目标时保留现有记录。
 7. 本地 GeoIP 与托管自动标签已上线；人工标签、业务分组、测量状态各有独立含义。GeoIP 数据源、来源保护与容量依据见 [归属地工作记录](../docs/aegis/work/2026-10-30-ip-geoip/20-checkpoint.md)。
+8. **2026-11-18 新增：优选域名业务端口健康检查与大陆 GFW 屏蔽自动切换 + 主页异常窗口**：
+   - Console 追踪所有在线 Agent 上启用且运行中 `frpc` 实例关联到优选域名（或 `current_ip`）的 TCP `remotePort` 列表（`tcpRemotePorts`，升序去重，排除 UDP/STCP/XTCP 避免 TCP 握手误报；兼容未升级旧 Agent 回退拉取配置），持久化于 `lb_instance_ports`。
+   - 后台调度器与手动「检测业务端口」按端口号升序，经 `ephemeral_tcping_broker`（`taskId` 前缀 `lb-tcping:`）复用现有主备测试节点轮询通道对 `current_ip:port` 执行零持久化污染的单点 TCP 探测（不写 `probe_jobs` / `probe_discover_results`，不破坏正式资产固定 `7000` 端口规则）：
+     - **主节点不通 + 任一有序备用节点（外部备用或最终 `console`）通**：立即判定当前 IP 被大陆 GFW 防火墙屏蔽端口，写入 `lb_gfw_blocks` 隔离与 `gfw_blocked` 告警，并立即调用 `sync_domain` 切换候选池内其他健康未屏蔽 IP 解析到域名（若原 IP 处于手动固定态，切换成功后自动解除固定；`selection_for_domain` 与手动 `switch` 均排除活跃屏蔽 IP 防止乒乓回切；支持运维解封后手动解除屏蔽）。
+     - **主备节点均不通**：判定为业务端口异常（`port_down`），写入/更新 `lb_port_alerts`，**不盲目切换 IP**。
+     - **主节点离线或认领超时**：返回 `inconclusive`，不误判屏蔽或宕机。
+   - 工作台主页（`/workspace`，`ResourceOverview.tsx`）新增「异常监控窗口」模块，集中展示业务端口异常、GFW 屏蔽切换/隔离告警及节点离线、实例故障、DNS 同步异常，支持一键检测、解除屏蔽与忽略告警。
 
-## 本次修复与实库状态
+## 本次新增交付与历史实库状态
 
-- HTTP 环境缺少 `crypto.randomUUID()` 时，冻结快照、批量改组、导入和重试曾报错。现在统一调用 `lib/requestId.ts` 的 `createRequestId()`，native 不存在时使用 `getRandomValues` 生成 UUID v4；已经持久化的幂等键继续复用。
-- 候选管理同时刷新候选表与服务器库分组显示；跨域名失败保留选中项。旧接口替换也执行归属检查和分组同步，分组删除在写事务内检查所有引用。
-- 线上安装 `idx_lb_domain_servers_one_domain` 唯一索引，无重复归属。对存在历史重叠的其他旧库不静默删数据，保留冲突保护，迁移前应检查并显式处理。
-- 2026-11-17 用户授权将 `us1.zmfrp.eu.org` 的 9 台候选统一归入“美国US1”；`hk1.zmfrp.eu.org` / 香港1 / 2 台，`eu1.zmfrp.eu.org` / 欧洲EU1 / 2 台，`cnix.isp0.de` / 国内CN / 5 台沿用原组。
-- 发布核对时：资产 2,319、测试历史 3,179、发现记录 35,939、候选关系 18 条。候选集合与 DNS 当前指向和最终备份一致；本次未调用 DNS 同步/切换接口。这些数量是验收时快照，后续会随业务增长。
+- **2026-11-18 本地交付（待按需上线）**：
+  - 新增后端模块 `app/probe/ephemeral_tcping.py`、`app/lb/port_health.py` 及 `database.py` 三张表（`lb_instance_ports`、`lb_gfw_blocks`、`lb_port_alerts`），暴露 `GET /api/lb/port-health`、`POST /api/lb/port-health/check`、`DELETE /api/lb/gfw-blocks/{ip}`、`POST /api/lb/port-alerts/{alert_id}/dismiss`。
+  - 根治服务器库游标 `Back/Forward`“URL 恢复但缺少新页请求”缺陷（重构 `pages/probe/useServers.ts` 为 URL 权威源 + 同帧队列串联乐观投影 + `popstate` 释放），并将 2,101 行 `Probe.tsx` 模块化拆分为按路由懒加载的 `DiscoveryPage`、`ServersPage`、`TestsPage`、`ProbeDialogs`、`ProbeTableShared`、`ServerFilterControls`，补齐表头全选 `indeterminate` 半选态并移除冗余历史请求。
+  - 新增 `scripts/backup-console.sh`、`scripts/rehearse-restore.py`（固化恢复时清理 `-wal`/`-shm`）、`scripts/analyze_probe_distributions.py`，升级双角色 `scripts/check-health.sh` 与 `docs/OPERATIONS.md`。
+  - 清理 `probe/bulk.py` 与测试套件未关闭 SQLite 连接/Socket `ResourceWarning`，为 `probe/router.py` 6 处 `q` 参数增加 `max_length=256`，新增 `.github/workflows/ci.yml` 并在 `docker-publish.yml` 挂载发布前 `verify` 测试门禁。
+- **2026-11-17 线上基线状态（`b75b558`）**：
+  - HTTP 环境无 `crypto.randomUUID()` 兼容修复（`lib/requestId.ts`）、单域名排他索引 `idx_lb_domain_servers_one_domain` 与业务分组同步已在线运行。
+  - 2026-11-17 授权调整后：`us1.zmfrp.eu.org` / 美国US1 / 9 台，`hk1.zmfrp.eu.org` / 香港1 / 2 台，`eu1.zmfrp.eu.org` / 欧洲EU1 / 2 台，`cnix.isp0.de` / 国内CN / 5 台；当时核对资产 2,319、测试历史 3,179、发现记录 35,939、候选关系 18 条。
 
 ## 部署、备份与回滚
 
 - SSH 优先使用 Netcatty：主控 vault 标签 `Hostdzire-LAX`，23.19.228.204:35477；国内主节点标签 `ubuntu-work`，已更新地址为 10.144.1.5:22。8 月记录中的 10.144.1.3 已过时。复用适合会话，收尾仅关闭本次新建的会话。
 - 主控部署目录 `/opt/frpc-multi`，Compose 文件 `compose.console.yaml`，容器 `frpc-console`，数据卷 `frpc-multi-console_console-data`，数据库 `/data/console.db`。
-- 当前运行镜像标签 `frpc-multi:fixes-b75b558`；回滚标签 `frpc-multi:rollback-bugs-20261117` 对应旧 `1f09b4e`。
-- 停机前最终备份 `/data/console-before-domain-group-final-20261117.db`，权限 0600，完整性正常；较早备份 `/data/console-before-domain-group-fix-20261117.db` 也保留。
-- 卷在宿主机的目录 `/var/lib/docker/volumes/frpc-multi-console_console-data/_data`。回滚应先停止 Console、另存当前数据库，再恢复对应备份并启动旧镜像；不要仅退镜像后假定数据转换已撤销。实际恢复演练尚未执行。
-- 发布前等待连通性批次自然完成；不要为升级擅自停止用户测试。随后做只读备份隔离迁移、核对镜像 revision，再切换服务。
+- 当前线上运行镜像标签 `frpc-multi:fixes-b75b558`；回滚标签 `frpc-multi:rollback-bugs-20261117` 对应旧 `1f09b4e`。
+- 停机前最终备份 `/data/console-before-domain-group-final-20261117.db`，权限 0600，完整性正常；较早备份 `/data/console-before-domain-group-fix-20261117.db` 也保留。日常在线热备可使用新增的 `scripts/backup-console.sh`。
+- 卷在宿主机的目录 `/var/lib/docker/volumes/frpc-multi-console_console-data/_data`。回滚应先停止 Console、另存当前数据库、**删除目标路径残留的 `console.db-wal` 与 `console.db-shm`**，再恢复对应备份并启动旧镜像；标准隔离恢复演练已通过 `scripts/rehearse-restore.py --self-test` 验证（见 [演练报告](../docs/aegis/work/2026-11-18-delivery/restore-rehearsal.md)）。
+- 发布前等待连通性批次自然完成；不要为升级擅自停止用户测试。随后做只读备份隔离迁移、核对镜像 revision，再切换服务。若同步升级 Agent 镜像，`get_summary()` 将直接附带 `tcpRemotePorts`；未升级 Agent 前 Console 亦会自动走 `get_config` 兼容回退采集业务端口。
 - 停止态隔离容器 `frpc-fixes-preflight-20261117` 有意保留为验证证据。远程检查脚本 `/opt/frpc-multi/online-fixes-check-20261117.py` 的 repair 模式会执行已授权 US1 分组修复，不应在普通巡检时随意重跑；verify 模式为核对接口和归属。
 
 ## 验证与剩余事项
 
-- 本次最终后端全量 **424 项通过，70.184 秒**；前端构建、**31 项 Vitest**、协调者 **5 项目标 Playwright** 通过。另有实现 Agent 的 6 项 UUID 缺失/重试浏览器验证。
-- 后端依赖由仓库根目录 `.venv/bin/python -m pip install -r webui/backend/requirements.txt` 同步；包含已经声明的 `maxminddb==3.2.0`。从 `webui/backend` 运行 `../../.venv/bin/python -m unittest discover -s tests`，使用隔离 `DATABASE_PATH`，不要指向生产库。
-- 前端在 `webui/frontend` 运行 `npm run build`、`npm test`。目标浏览器回归覆盖 `e2e/lb-domain-candidates.spec.ts` 与 `e2e/test-creation.spec.ts` 中的冻结快照、批量更新和导入重试；Playwright 默认端口 5184，同一时间只运行一套服务。
-- 切换后浏览器需强制刷新，避免旧 bundle 继续调用缺失 API。生产验收检查 HTTP、认证 API、静态资源与数据库；未将本次验收描述为生产浏览器完整流程测试。
-- 仍待核实：此前记录的服务器库游标 Back/Forward“URL 恢复但缺少新页请求”问题，尚未确认关闭；本次没有修改该逻辑或重跑其完整浏览器套件。
-- 容量与运维待补证据：真实目标网络响应分布、实际备份恢复演练。百万资产/三类当前结果/九百万历史的隔离并发证据已存在，勿当作生产硬件或真实网络吞吐结论。
-- 后续协作者先读上述检查点、`git status` 与当前线上 revision，再决定工作范围；子 Agent 采用用户指定的 **GPT-6 Luna / high**。凭据、密码和 Token 不进入仓库或 Notion。
+- 2026-11-18 本地全量回归：**后端 434 项单测全部通过（76.88s）**，`bulk`/`import`/`selection` 41 项在 `-W error::ResourceWarning` 下 **0 告警**；**前端构建通过、37 项 Vitest 单测全部通过、全套 60 项 Playwright 浏览器测试全部通过（32.1s）**；恢复演练与分布统计脚本自检通过。
+- 后端依赖由仓库根目录 `.venv/bin/python -m pip install -r webui/backend/requirements.txt` 同步；从 `webui/backend` 运行 `../../.venv/bin/python -m unittest discover -s tests`，使用隔离 `DATABASE_PATH` / `PROJECT_DIR`，不要指向生产库。
+- 前端在 `webui/frontend` 运行 `npm test`、`npm run build`、`npx playwright test`（Playwright 默认端口 5184，同一时间只运行一套服务）。
+- 服务器库游标 Back/Forward 问题已根治并通过加强后的浏览器 E2E 验证关闭；隔离恢复演练已完成；目标网络响应分布统计工具与隔离基准报告已交付（若需真实公网样本分布，可在维护窗口对线上只读备份运行 `scripts/analyze_probe_distributions.py --db <backup.db>`）。
+- 后续若需上线本轮改动：提交并推送到 `main`（自动触发 `ci.yml` 与带门禁的 `docker-publish.yml`），按上述停机前热备与隔离预演流程切换 Console（及按需更新 Agent），切换后强制刷新浏览器缓存。凭据、密码和 Token 不进入仓库或 Notion。
 
 ---
 

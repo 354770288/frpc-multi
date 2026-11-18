@@ -20,6 +20,7 @@ from ..probe.store import ProbeStore
 from ..settings import Settings
 from .cloudflare import CloudflareClient
 from .health import PoolHealthMonitor, best_ip_for_domain, pool_health
+from .port_health import DomainPortHealthChecker, domain_port_checker
 from .store import LbDomain, LbStore
 from .syncer import sync_domain
 
@@ -48,9 +49,11 @@ def due_domains(store: LbStore, *, now: datetime | None = None) -> list[LbDomain
 
 def run_due_syncs(store: LbStore, probe_store: ProbeStore, settings: Settings,
                   *, now: datetime | None = None, monitor: PoolHealthMonitor | None = None,
-                  cf_factory: Callable[[str], CloudflareClient] | None = None) -> int:
-    """健康探测 + 到期同步 + 故障切换，返回发生同步的域名数。"""
+                  cf_factory: Callable[[str], CloudflareClient] | None = None,
+                  port_checker: DomainPortHealthChecker | None = None) -> int:
+    """健康探测 + 到期同步 + 故障切换 + 业务端口 GFW 屏蔽巡检，返回发生同步的域名数。"""
     monitor = monitor or pool_health
+    checker = port_checker or domain_port_checker
     monitor.run_due_checks(store, probe_store, settings)
 
     to_sync: dict[int, LbDomain] = {domain.id: domain for domain in due_domains(store, now=now)}
@@ -65,24 +68,28 @@ def run_due_syncs(store: LbStore, probe_store: ProbeStore, settings: Settings,
             if domain.current_ip:
                 failovers[domain.id] = best
 
-    if not to_sync:
-        return 0
+    synced_count = 0
     token = store.cloudflare_token()
-    if not token:
-        return 0
-    audit = AuditStore(settings.database_path)
-    factory = cf_factory or (lambda value: CloudflareClient(value))
-    with factory(token) as cf:
-        for domain in to_sync.values():
-            result = sync_domain(domain, probe_store, store, cf, monitor)
-            action = "lb_failover" if domain.id in failovers else "lb_sync_domain"
-            audit.create_log(
-                username="scheduler",
-                action=action,
-                success=result.ok,
-                message=f"{domain.name}: {result.message}",
-            )
-    return len(to_sync)
+    if to_sync and token:
+        audit = AuditStore(settings.database_path)
+        factory = cf_factory or (lambda value: CloudflareClient(value))
+        with factory(token) as cf:
+            for domain in to_sync.values():
+                result = sync_domain(domain, probe_store, store, cf, monitor)
+                action = "lb_failover" if domain.id in failovers else "lb_sync_domain"
+                audit.create_log(
+                    username="scheduler",
+                    action=action,
+                    success=result.ok,
+                    message=f"{domain.name}: {result.message}",
+                )
+        synced_count += len(to_sync)
+
+    port_outcome = checker.run_checks(
+        store, probe_store, settings, monitor=monitor, cf_factory=cf_factory,
+    )
+    synced_count += int(port_outcome.get("switchedCount") or 0)
+    return synced_count
 
 
 def start_scheduler(settings: Settings) -> threading.Event:

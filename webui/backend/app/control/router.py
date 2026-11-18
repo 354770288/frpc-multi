@@ -168,6 +168,20 @@ async def _run_node_action(
         instance_name=instance_name,
         success=True,
     )
+    if action != "upgrade_agent":
+        try:
+            from ..lb.port_health import collect_and_sync_node_ports_async
+            from ..lb.store import LbStore
+            nstore = node_store()
+            node_rec = nstore.get_node(node_id)
+            if action == "delete_instance" and instance_name:
+                LbStore(settings.database_path).delete_node_instance_ports(node_id, instance_name)
+            elif hub.is_online(node_rec.uuid):
+                await collect_and_sync_node_ports_async(
+                    LbStore(settings.database_path), node_rec.id, node_rec.name, node_rec.uuid,
+                )
+        except Exception:  # noqa: BLE001
+            pass
     return result
 
 
@@ -301,6 +315,11 @@ async def delete_node(
 
     if not store.delete_node(node_id):
         raise HTTPException(status_code=404, detail="节点不存在")
+    try:
+        from ..lb.store import LbStore
+        LbStore(settings.database_path).delete_node_instance_ports(node_id)
+    except Exception:  # noqa: BLE001
+        pass
     audits.create_log(
         username=user,
         action="delete_node",

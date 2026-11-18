@@ -1,3 +1,4 @@
+import contextlib
 import os
 import tempfile
 import unittest
@@ -118,7 +119,7 @@ class ProbeAsyncImportApiTests(unittest.TestCase):
                 content=f'{{"text":"192.0.2.24","group":{constant},"idempotencyKey":"{key}"}}',
             )
             self.assertEqual(rejected.status_code, 400, rejected.text)
-            with self.bulk._db() as c:
+            with contextlib.closing(self.bulk._db()) as c:
                 self.assertIsNone(c.execute("SELECT 1 FROM probe_server_import_jobs WHERE idempotency_key=?",
                                             (key,)).fetchone())
         at_limit = "😀" * 128

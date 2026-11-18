@@ -631,6 +631,7 @@ class LbStore:
         self.get_domain(domain_id)
 
         def write(connection):
+            connection.execute("DELETE FROM lb_port_alerts WHERE domain_id = ?", (domain_id,))
             connection.execute("DELETE FROM lb_sync_logs WHERE domain_id = ?", (domain_id,))
             connection.execute("DELETE FROM lb_domains WHERE id = ?", (domain_id,))
             connection.commit()
@@ -694,5 +695,346 @@ class LbStore:
                     "createdAt": row["created_at"],
                 })
             return result
+
+        return self._with_connection(read)
+
+    # ---- 部署节点实例业务端口映射 ----
+
+    def replace_node_instance_ports(self, node_id: int, node_name: str, items: Iterable[dict]) -> None:
+        timestamp = now_iso()
+        rows_to_insert: list[tuple] = []
+        for item in items:
+            inst_name = str(item.get("name", "")).strip()
+            if not inst_name:
+                continue
+            display_name = str(item.get("displayName") or inst_name).strip()
+            enabled = 1 if item.get("enabled", True) else 0
+            runtime = item.get("runtime") if isinstance(item.get("runtime"), dict) else {}
+            running = 1 if runtime.get("state") == "running" else 0
+            summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
+            raw_addr = str(summary.get("serverAddr") or "").strip().lower().rstrip(".")
+            server_port = summary.get("serverPort")
+            if isinstance(server_port, bool) or not isinstance(server_port, int):
+                server_port = None
+            raw_ports = summary.get("tcpRemotePorts")
+            if raw_ports is None:
+                raw_ports = summary.get("remotePorts") or []
+            clean_ports = sorted({
+                int(p) for p in raw_ports
+                if not isinstance(p, bool) and isinstance(p, int) and 1 <= p <= 65535
+            })
+            rows_to_insert.append((
+                int(node_id), inst_name, str(node_name or ""), display_name,
+                enabled, running, raw_addr, server_port, json.dumps(clean_ports), timestamp,
+            ))
+
+        def write(connection):
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM lb_instance_ports WHERE node_id = ?", (int(node_id),))
+            if rows_to_insert:
+                connection.executemany(
+                    "INSERT INTO lb_instance_ports ("
+                    "node_id, instance_name, node_name, display_name, enabled, running, "
+                    "server_addr, server_port, remote_ports, updated_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows_to_insert,
+                )
+            connection.commit()
+
+        self._with_connection(write)
+
+    def delete_node_instance_ports(self, node_id: int, instance_name: str | None = None) -> None:
+        def write(connection):
+            if instance_name is None:
+                connection.execute("DELETE FROM lb_instance_ports WHERE node_id = ?", (int(node_id),))
+            else:
+                connection.execute(
+                    "DELETE FROM lb_instance_ports WHERE node_id = ? AND instance_name = ?",
+                    (int(node_id), str(instance_name)),
+                )
+            connection.commit()
+
+        self._with_connection(write)
+
+    def domain_business_ports(self, domain_name: str) -> list[dict]:
+        """Return ordered TCP business ports bound to ``domain_name`` by running enabled instances."""
+        clean_domain = (domain_name or "").strip().lower().rstrip(".")
+        if not clean_domain:
+            return []
+
+        def read(connection):
+            rows = connection.execute(
+                "SELECT node_id, node_name, instance_name, display_name, remote_ports "
+                "FROM lb_instance_ports "
+                "WHERE server_addr = ? AND enabled = 1 AND running = 1 "
+                "ORDER BY node_id, instance_name",
+                (clean_domain,),
+            ).fetchall()
+            by_port: dict[int, list[dict]] = {}
+            for row in rows:
+                try:
+                    ports = json.loads(row["remote_ports"] or "[]")
+                except (TypeError, ValueError):
+                    ports = []
+                ref = {
+                    "nodeId": int(row["node_id"]),
+                    "nodeName": row["node_name"] or f"Node #{row['node_id']}",
+                    "instanceName": row["instance_name"],
+                    "displayName": row["display_name"] or row["instance_name"],
+                }
+                for port in ports:
+                    if not isinstance(port, bool) and isinstance(port, int) and 1 <= port <= 65535:
+                        by_port.setdefault(port, []).append(ref)
+            return [{"port": port, "instances": by_port[port]} for port in sorted(by_port)]
+
+        return self._with_connection(read)
+
+    # ---- GFW 防火墙屏蔽隔离状态 ----
+
+    def gfw_blocked_ips(self) -> set[str]:
+        def read(connection):
+            rows = connection.execute("SELECT ip FROM lb_gfw_blocks").fetchall()
+            return {str(row["ip"]) for row in rows}
+
+        return self._with_connection(read)
+
+    def list_gfw_blocks(self) -> list[dict]:
+        def read(connection):
+            rows = connection.execute(
+                "SELECT * FROM lb_gfw_blocks ORDER BY last_checked_at DESC, ip ASC"
+            ).fetchall()
+            return [{
+                "ip": row["ip"],
+                "domainId": row["domain_id"],
+                "domainName": row["domain_name"],
+                "blockedPort": int(row["blocked_port"]),
+                "primaryNodeId": row["primary_node_id"],
+                "primaryNodeName": row["primary_node_name"],
+                "primaryDetail": row["primary_detail"],
+                "backupNodeId": row["backup_node_id"],
+                "backupNodeName": row["backup_node_name"],
+                "backupDetail": row["backup_detail"],
+                "blockedAt": row["blocked_at"],
+                "lastCheckedAt": row["last_checked_at"],
+            } for row in rows]
+
+        return self._with_connection(read)
+
+    def mark_gfw_blocked(
+        self,
+        *,
+        ip: str,
+        domain_id: int | None,
+        domain_name: str,
+        blocked_port: int,
+        primary_node_id: str,
+        primary_node_name: str,
+        primary_detail: str,
+        backup_node_id: str,
+        backup_node_name: str,
+        backup_detail: str,
+    ) -> None:
+        clean_ip = (ip or "").strip()
+        if not clean_ip:
+            raise ValueError("IP 不能为空")
+        timestamp = now_iso()
+
+        def write(connection):
+            connection.execute(
+                "INSERT INTO lb_gfw_blocks ("
+                "ip, domain_id, domain_name, blocked_port, primary_node_id, primary_node_name, "
+                "primary_detail, backup_node_id, backup_node_name, backup_detail, blocked_at, last_checked_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(ip) DO UPDATE SET "
+                "domain_id = excluded.domain_id, domain_name = excluded.domain_name, "
+                "blocked_port = excluded.blocked_port, primary_node_id = excluded.primary_node_id, "
+                "primary_node_name = excluded.primary_node_name, primary_detail = excluded.primary_detail, "
+                "backup_node_id = excluded.backup_node_id, backup_node_name = excluded.backup_node_name, "
+                "backup_detail = excluded.backup_detail, last_checked_at = excluded.last_checked_at",
+                (
+                    clean_ip, domain_id, domain_name or "", int(blocked_port),
+                    primary_node_id or "", primary_node_name or "", (primary_detail or "")[:200],
+                    backup_node_id or "", backup_node_name or "", (backup_detail or "")[:200],
+                    timestamp, timestamp,
+                ),
+            )
+            connection.commit()
+
+        self._with_connection(write)
+
+    def clear_gfw_block(self, ip: str) -> bool:
+        clean_ip = (ip or "").strip()
+        timestamp = now_iso()
+
+        def write(connection):
+            connection.execute("BEGIN IMMEDIATE")
+            removed = connection.execute(
+                "DELETE FROM lb_gfw_blocks WHERE ip = ?", (clean_ip,)
+            ).rowcount > 0
+            connection.execute(
+                "UPDATE lb_port_alerts SET status = 'resolved', resolved_at = ? "
+                "WHERE ip = ? AND kind = 'gfw_blocked' AND status = 'active'",
+                (timestamp, clean_ip),
+            )
+            connection.commit()
+            return removed
+
+        return self._with_connection(write)
+
+    # ---- 业务端口与屏蔽异常告警 ----
+
+    @staticmethod
+    def _alert_view(row) -> dict:
+        try:
+            instances = json.loads(row["instances_json"] or "[]")
+        except (TypeError, ValueError):
+            instances = []
+        return {
+            "id": int(row["id"]),
+            "alertKey": row["alert_key"],
+            "kind": row["kind"],
+            "severity": row["severity"],
+            "status": row["status"],
+            "domainId": int(row["domain_id"]),
+            "domainName": row["domain_name"],
+            "ip": row["ip"],
+            "port": int(row["port"]),
+            "instances": instances,
+            "primaryNodeId": row["primary_node_id"],
+            "primaryNodeName": row["primary_node_name"],
+            "primaryDetail": row["primary_detail"],
+            "backupNodeId": row["backup_node_id"],
+            "backupNodeName": row["backup_node_name"],
+            "backupDetail": row["backup_detail"],
+            "switched": bool(row["switched"]),
+            "switchedToIp": row["switched_to_ip"],
+            "message": row["message"],
+            "firstSeenAt": row["first_seen_at"],
+            "lastCheckedAt": row["last_checked_at"],
+            "resolvedAt": row["resolved_at"],
+        }
+
+    def upsert_port_alert(
+        self,
+        *,
+        alert_key: str,
+        kind: str,
+        severity: str,
+        domain_id: int,
+        domain_name: str,
+        ip: str,
+        port: int,
+        instances: list[dict] | None = None,
+        primary_node_id: str = "",
+        primary_node_name: str = "",
+        primary_detail: str = "",
+        backup_node_id: str = "",
+        backup_node_name: str = "",
+        backup_detail: str = "",
+        switched: bool = False,
+        switched_to_ip: str | None = None,
+        message: str = "",
+    ) -> dict:
+        timestamp = now_iso()
+        instances_text = json.dumps(instances or [], ensure_ascii=False)
+
+        def write(connection):
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT id, status, first_seen_at FROM lb_port_alerts WHERE alert_key = ?",
+                (alert_key,),
+            ).fetchone()
+            first_seen = (
+                existing["first_seen_at"]
+                if existing is not None and existing["status"] == "active"
+                else timestamp
+            )
+            connection.execute(
+                "INSERT INTO lb_port_alerts ("
+                "alert_key, kind, severity, status, domain_id, domain_name, ip, port, "
+                "instances_json, primary_node_id, primary_node_name, primary_detail, "
+                "backup_node_id, backup_node_name, backup_detail, switched, switched_to_ip, "
+                "message, first_seen_at, last_checked_at, resolved_at"
+                ") VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) "
+                "ON CONFLICT(alert_key) DO UPDATE SET "
+                "kind = excluded.kind, severity = excluded.severity, status = 'active', "
+                "domain_id = excluded.domain_id, domain_name = excluded.domain_name, "
+                "ip = excluded.ip, port = excluded.port, instances_json = excluded.instances_json, "
+                "primary_node_id = excluded.primary_node_id, primary_node_name = excluded.primary_node_name, "
+                "primary_detail = excluded.primary_detail, backup_node_id = excluded.backup_node_id, "
+                "backup_node_name = excluded.backup_node_name, backup_detail = excluded.backup_detail, "
+                "switched = excluded.switched, switched_to_ip = excluded.switched_to_ip, "
+                "message = excluded.message, first_seen_at = ?, last_checked_at = excluded.last_checked_at, "
+                "resolved_at = NULL",
+                (
+                    alert_key, kind, severity, int(domain_id), domain_name, ip, int(port),
+                    instances_text, primary_node_id, primary_node_name, (primary_detail or "")[:200],
+                    backup_node_id, backup_node_name, (backup_detail or "")[:200],
+                    1 if switched else 0, switched_to_ip, (message or "")[:500],
+                    first_seen, timestamp, first_seen,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM lb_port_alerts WHERE alert_key = ?", (alert_key,)
+            ).fetchone()
+            connection.commit()
+            return self._alert_view(row)
+
+        return self._with_connection(write)
+
+    def resolve_domain_port_alerts(self, domain_id: int, *, kind: str | None = "port_unreachable",
+                                   keep_keys: set[str] | None = None) -> int:
+        timestamp = now_iso()
+        keep = set(keep_keys or ())
+
+        def write(connection):
+            sql = "SELECT id, alert_key FROM lb_port_alerts WHERE domain_id = ? AND status = 'active'"
+            params: list[object] = [int(domain_id)]
+            if kind is not None:
+                sql += " AND kind = ?"
+                params.append(kind)
+            rows = connection.execute(sql, params).fetchall()
+            to_resolve = [int(r["id"]) for r in rows if r["alert_key"] not in keep]
+            if not to_resolve:
+                return 0
+            placeholders = ",".join("?" for _ in to_resolve)
+            connection.execute(
+                f"UPDATE lb_port_alerts SET status = 'resolved', resolved_at = ? WHERE id IN ({placeholders})",
+                [timestamp, *to_resolve],
+            )
+            connection.commit()
+            return len(to_resolve)
+
+        return self._with_connection(write)
+
+    def dismiss_port_alert(self, alert_id: int) -> bool:
+        timestamp = now_iso()
+
+        def write(connection):
+            updated = connection.execute(
+                "UPDATE lb_port_alerts SET status = 'resolved', resolved_at = ? "
+                "WHERE id = ? AND status = 'active'",
+                (timestamp, int(alert_id)),
+            ).rowcount > 0
+            connection.commit()
+            return updated
+
+        return self._with_connection(write)
+
+    def list_port_alerts(self, *, status: str = "active", limit: int = 100) -> list[dict]:
+        bounded = min(max(int(limit), 1), 500)
+
+        def read(connection):
+            if status == "all":
+                rows = connection.execute(
+                    "SELECT * FROM lb_port_alerts ORDER BY (status = 'active') DESC, last_checked_at DESC, id DESC LIMIT ?",
+                    (bounded,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM lb_port_alerts WHERE status = ? ORDER BY last_checked_at DESC, id DESC LIMIT ?",
+                    (status, bounded),
+                ).fetchall()
+            return [self._alert_view(row) for row in rows]
 
         return self._with_connection(read)

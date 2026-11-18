@@ -52,6 +52,8 @@ async def lifespan(app: FastAPI):
         agent_client = AgentWsClient()
         agent_task = asyncio.create_task(agent_client.run_forever())
     if settings.is_console:
+        from .lb.port_health import set_hub_event_loop
+        set_hub_event_loop(asyncio.get_running_loop())
         from .geoip.service import GeoService
         app.state.geoip = GeoService(settings.database_path, settings.geoip_database_path,
                                      enabled=settings.geoip_enabled, token=settings.ipinfo_token)
@@ -67,6 +69,9 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if settings.is_console:
+            from .lb.port_health import set_hub_event_loop
+            set_hub_event_loop(None)
         if agent_client is not None:
             agent_client.stop()
         if agent_task is not None:
@@ -213,6 +218,14 @@ async def summary(
             continue
 
         store.update_node(node.id, status="online", last_seen_at=now_iso())
+        try:
+            from .lb.port_health import collect_and_sync_node_ports_async
+            from .lb.store import LbStore
+            await collect_and_sync_node_ports_async(
+                LbStore(settings.database_path), node.id, node.name, node.uuid, data,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         for key in totals:
             totals[key] += int(data.get(key, 0) or 0)
         for item in data.get("instances", []):

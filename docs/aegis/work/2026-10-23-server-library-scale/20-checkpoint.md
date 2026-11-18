@@ -1,8 +1,8 @@
 # 服务器分类与大规模数据交互改造 Checkpoint
 
-## 最新接续（2026-11-17）
+## 最新接续（2026-11-18）
 
-当前线上功能版本 b75b558；最新规则、HTTP 兼容修复、单域名归属与业务分组同步，以及备份位置见 [当前交接](../../../../chat/PERF_OPT_HANDOFF_2026-08-29.md) 和 [最新修复记录](../2026-11-17-online-fixes/20-checkpoint.md)。以下 e67e8a2 等状态为本专项当时的阶段记录；容量证据仍有效，真实网络分布、恢复演练和既有游标问题仍待核实。
+当前线上运行提交仍为 `b75b558`（生产零扰动未变更）；仓库 `main` 最新本地交付已完成优选域名业务端口 GFW 屏蔽自动切换与主页异常窗口、根治服务器库游标 `Back/Forward` 状态撕裂、交付隔离备份恢复演练与目标网络响应分布统计工具及报告，详见 [当前交接](../../../../chat/PERF_OPT_HANDOFF_2026-08-29.md)、[2026-11-18 检查点](../2026-11-18-delivery/20-checkpoint.md) 与 [2026-11-18 验证证据](../2026-11-18-delivery/90-evidence.md)。若后续需统计线上实库分布，将生产只读备份传入 `scripts/analyze_probe_distributions.py --db <backup.db>` 即可输出同等报告。
 
 ## TodoCheckpointDraft
 
@@ -37,7 +37,7 @@
 - [x] 100k 5-reader/1-writer sustained-write P50/P95 with 3×3 history and dense current projections.
 - [x] Full 1M 3-kind × 3-round history/current-result density with five readers and one sustained writer.
 - [x] Production migration preflight and rollout of e67e8a2, preserving the saved domestic source, with database backup and prior image/worker releases retained.
-- [ ] Destination-network response distributions and an actual backup-restore rehearsal.
+- [x] Destination-network response distributions and an actual backup-restore rehearsal（已在隔离环境完成标准恢复演练与分布统计工具链验证，见 `docs/aegis/work/2026-11-18-delivery/{restore-rehearsal.md,response-distributions.md}`；线上实库备份可在维护窗口只读运行同一脚本）。
 
 ## ResumeStateHint
 

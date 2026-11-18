@@ -328,6 +328,63 @@ CREATE TABLE IF NOT EXISTS lb_sync_logs (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS lb_instance_ports (
+    node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    instance_name TEXT NOT NULL,
+    node_name TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    running INTEGER NOT NULL DEFAULT 0,
+    server_addr TEXT NOT NULL DEFAULT '',
+    server_port INTEGER,
+    remote_ports TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (node_id, instance_name)
+);
+CREATE INDEX IF NOT EXISTS idx_lb_instance_ports_addr ON lb_instance_ports(server_addr);
+
+CREATE TABLE IF NOT EXISTS lb_gfw_blocks (
+    ip TEXT PRIMARY KEY,
+    domain_id INTEGER,
+    domain_name TEXT NOT NULL DEFAULT '',
+    blocked_port INTEGER NOT NULL,
+    primary_node_id TEXT NOT NULL DEFAULT '',
+    primary_node_name TEXT NOT NULL DEFAULT '',
+    primary_detail TEXT NOT NULL DEFAULT '',
+    backup_node_id TEXT NOT NULL DEFAULT '',
+    backup_node_name TEXT NOT NULL DEFAULT '',
+    backup_detail TEXT NOT NULL DEFAULT '',
+    blocked_at TEXT NOT NULL,
+    last_checked_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lb_port_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_key TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'error',
+    status TEXT NOT NULL DEFAULT 'active',
+    domain_id INTEGER NOT NULL REFERENCES lb_domains(id) ON DELETE CASCADE,
+    domain_name TEXT NOT NULL,
+    ip TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    instances_json TEXT NOT NULL DEFAULT '[]',
+    primary_node_id TEXT NOT NULL DEFAULT '',
+    primary_node_name TEXT NOT NULL DEFAULT '',
+    primary_detail TEXT NOT NULL DEFAULT '',
+    backup_node_id TEXT NOT NULL DEFAULT '',
+    backup_node_name TEXT NOT NULL DEFAULT '',
+    backup_detail TEXT NOT NULL DEFAULT '',
+    switched INTEGER NOT NULL DEFAULT 0,
+    switched_to_ip TEXT,
+    message TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL,
+    last_checked_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_lb_port_alerts_status ON lb_port_alerts(status, last_checked_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_lb_port_alerts_domain ON lb_port_alerts(domain_id, status);
+
 CREATE INDEX IF NOT EXISTS idx_probe_speed_ip ON probe_speed_results (server_ip, id);
 """
 

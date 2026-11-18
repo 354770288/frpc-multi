@@ -1,0 +1,93 @@
+{
+  "analyzedAt": "2026-11-17T16:04:11.082693+00:00",
+  "datasetKind": "synthetic_rehearsal",
+  "databasePath": "/var/folders/wd/55r5yc_95t3d9dvzrm1px9y40000gn/T/frpc-dist-selftest-8j0bwyud/synthetic.db",
+  "assetCount": 100,
+  "discovery": {
+    "latencyMs": {
+      "count": 200,
+      "min": 18.0,
+      "p10": 24.9,
+      "p25": 34.75,
+      "p50": 154.5,
+      "p75": 184.25,
+      "p90": 310.1,
+      "p95": 320.05,
+      "p99": 328.01,
+      "max": 330.0,
+      "mean": 140.6
+    },
+    "buckets": {
+      "<50ms": 80,
+      "50-150ms": 15,
+      "150-300ms": 74,
+      ">=300ms": 31
+    }
+  },
+  "route": {
+    "total": 100,
+    "okCount": 90,
+    "cn2Count": 25,
+    "hopCount": {
+      "count": 90,
+      "min": 8.0,
+      "p10": 8.0,
+      "p25": 9.25,
+      "p50": 11.0,
+      "p75": 13.0,
+      "p90": 15.0,
+      "p95": 15.0,
+      "p99": 15.0,
+      "max": 15.0,
+      "mean": 11.46
+    }
+  },
+  "connectivity": {
+    "total": 100,
+    "frpsReachableCount": 85,
+    "tunnelEstablishedCount": 70,
+    "firewallOpenCount": 55,
+    "fullPassCount": 55,
+    "failureReasons": {
+      "timeout": 15,
+      "auth_or_tunnel_rejected": 15,
+      "connection_refused": 15
+    }
+  },
+  "speed": {
+    "total": 55,
+    "downloadMbps": {
+      "count": 55,
+      "min": 28.2,
+      "p10": 45.48,
+      "p25": 71.4,
+      "p50": 114.6,
+      "p75": 157.8,
+      "p90": 183.72,
+      "p95": 192.36,
+      "p99": 199.27,
+      "max": 201.0,
+      "mean": 114.6
+    },
+    "uploadMbps": {
+      "count": 50,
+      "min": 13.8,
+      "p10": 22.62,
+      "p25": 35.85,
+      "p50": 57.9,
+      "p75": 79.95,
+      "p90": 93.18,
+      "p95": 97.59,
+      "p99": 101.12,
+      "max": 102.0,
+      "mean": 57.9
+    }
+  },
+  "execution": {
+    "resultsByNode": {
+      "primary-cn": 245,
+      "standby-hk": 10
+    },
+    "taskFailoverTransfers": 0
+  }
+}

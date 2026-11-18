@@ -16,6 +16,7 @@ export type InstanceSummary = {
   proxyCount: number;
   proxyTypes: Record<string, number>;
   remotePorts: number[];
+  tcpRemotePorts?: number[];
 };
 
 export type InstanceDetail = Instance & {
@@ -78,6 +79,8 @@ export type SummaryResponse = {
   running: number;
   stopped: number;
   error: number;
+  nodeCount?: number;
+  onlineCount?: number;
   dockerAvailable: boolean;
   dockerError: string;
   instances: (Instance & {
@@ -583,6 +586,90 @@ export type LbHealthDomain = {
 export type LbHealth = {
   states: LbHealthState[];
   domains: LbHealthDomain[];
+  gfwBlockedIps?: string[];
+};
+
+export type LbInstancePortRef = {
+  nodeId: number;
+  nodeName: string;
+  instanceName: string;
+  displayName: string;
+};
+
+export type LbBusinessPortSpec = {
+  port: number;
+  instances: LbInstancePortRef[];
+};
+
+export type LbPortAlert = {
+  id: number;
+  alertKey: string;
+  kind: 'port_unreachable' | 'gfw_blocked';
+  severity: 'error' | 'warning';
+  status: 'active' | 'resolved';
+  domainId: number;
+  domainName: string;
+  ip: string;
+  port: number;
+  instances: LbInstancePortRef[];
+  primaryNodeId: string;
+  primaryNodeName: string;
+  primaryDetail: string;
+  backupNodeId: string;
+  backupNodeName: string;
+  backupDetail: string;
+  switched: boolean;
+  switchedToIp: string | null;
+  message: string;
+  firstSeenAt: string;
+  lastCheckedAt: string;
+  resolvedAt: string | null;
+};
+
+export type LbGfwBlock = {
+  ip: string;
+  domainId: number | null;
+  domainName: string;
+  blockedPort: number;
+  primaryNodeId: string;
+  primaryNodeName: string;
+  primaryDetail: string;
+  backupNodeId: string;
+  backupNodeName: string;
+  backupDetail: string;
+  blockedAt: string;
+  lastCheckedAt: string;
+};
+
+export type LbDomainPortStatus = {
+  domainId: number;
+  name: string;
+  enabled: boolean;
+  currentIp: string | null;
+  businessPorts: LbBusinessPortSpec[];
+  lastCheck?: {
+    status: string;
+    checkedPorts: number;
+    checkedAt: string;
+    reason?: string;
+    switched?: boolean;
+    switchedToIp?: string | null;
+  } | null;
+};
+
+export type LbPortHealthResponse = {
+  alerts: LbPortAlert[];
+  gfwBlocks: LbGfwBlock[];
+  domains: LbDomainPortStatus[];
+};
+
+export type LbPortHealthCheckResult = {
+  checkedAt: string;
+  checkedDomains: Record<string, unknown>[];
+  switchedCount: number;
+  policySkipReason: string | null;
+  alerts: LbPortAlert[];
+  gfwBlocks: LbGfwBlock[];
 };
 
 export type LbSyncResult = {

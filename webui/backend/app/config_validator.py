@@ -26,6 +26,7 @@ def validate_config_text(config_text: str) -> ValidationResult:
         "proxyCount": 0,
         "proxyTypes": {},
         "remotePorts": [],
+        "tcpRemotePorts": [],
     }
 
     try:
@@ -61,18 +62,22 @@ def validate_config_text(config_text: str) -> ValidationResult:
 
     proxy_types = Counter()
     remote_ports: list[int] = []
+    tcp_remote_ports: list[int] = []
     for proxy in proxies:
         if not isinstance(proxy, dict):
             errors.append("proxy 配置项必须是对象")
             continue
         proxy_type = proxy.get("type")
+        normalized_type = str(proxy_type).strip().lower() if proxy_type else "tcp"
         if proxy_type:
             proxy_types[str(proxy_type)] += 1
         if proxy.get("type") == "tcp" and proxy.get("remotePort") is None:
             warnings.append(f"TCP 代理 {proxy.get('name', '<未命名>')} 未配置 remotePort")
         remote_port = proxy.get("remotePort")
-        if isinstance(remote_port, int):
+        if not isinstance(remote_port, bool) and isinstance(remote_port, int):
             remote_ports.append(remote_port)
+            if normalized_type == "tcp" and 1 <= remote_port <= 65535 and remote_port not in tcp_remote_ports:
+                tcp_remote_ports.append(remote_port)
 
     duplicate_ports = [str(port) for port, count in Counter(remote_ports).items() if count > 1]
     if duplicate_ports:
@@ -87,6 +92,7 @@ def validate_config_text(config_text: str) -> ValidationResult:
             "proxyCount": len(proxies),
             "proxyTypes": dict(proxy_types),
             "remotePorts": remote_ports,
+            "tcpRemotePorts": tcp_remote_ports,
         }
     )
     return ValidationResult(not errors, errors, warnings, summary)

@@ -1,6 +1,7 @@
 import tempfile
 import time
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +20,15 @@ class ProbeBulkTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    @contextmanager
+    def _conn(self):
+        c = self.bulk._db()
+        try:
+            with c:
+                yield c
+        finally:
+            c.close()
+
     def add(self, ip, group="", labels=()):
         return self.assets.create_server(ip=ip, labels=list(labels), server_group=group).id
 
@@ -29,12 +39,12 @@ class ProbeBulkTests(unittest.TestCase):
         self.add("192.0.2.2", "edge")
         job = self.bulk.submit_job("alice", selection["selectionId"], "delete", {}, "once")
         self.assertEqual(job["total"], 1)
-        with self.bulk._db() as c:
+        with self._conn() as c:
             items_ready = c.execute("SELECT items_ready FROM probe_server_bulk_jobs WHERE id=?", (job["jobId"],)).fetchone()[0]
         self.assertEqual(items_ready, 0)
         with self.assertRaises(KeyError): self.bulk.get_selection("bob", selection["selectionId"])
         with self.assertRaises(KeyError): self.bulk.get_job("bob", job["jobId"])
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("UPDATE probe_server_selections SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?",
                       (selection["selectionId"],))
         self.assertEqual(self.bulk.get_selection("alice", selection["selectionId"])["state"], "expired")
@@ -49,14 +59,14 @@ class ProbeBulkTests(unittest.TestCase):
         self.assertEqual(selection["state"], "queued")
         # A dead process leaves a durable queued build. Expiring its lease allows
         # a newly started worker to claim and complete it.
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("UPDATE probe_server_bulk_lease SET owner='dead-process',lease_until=0 WHERE id=1")
         self.assertTrue(self.bulk.run_once("replacement"))
         ready = self.bulk.get_selection("alice", selection["selectionId"])
         expected = self.assets.count_servers(ServerPageQuery(q="192.0.2.", group="edge"))
         self.assertEqual(ready["state"], "ready")
         self.assertEqual(ready["count"], expected)
-        with self.bulk._db() as c:
+        with self._conn() as c:
             lease = c.execute("SELECT owner,lease_until FROM probe_server_bulk_lease WHERE id=1").fetchone()
         self.assertEqual(lease["owner"], "")
         self.assertEqual(lease["lease_until"], 0)
@@ -125,7 +135,7 @@ class ProbeBulkTests(unittest.TestCase):
         self.assertEqual(len(max_group.encode("utf-8")), 512)
         job = self.bulk.create_import("alice", "192.0.2.1\n", max_group, "group-at-limit")
         self.assertTrue(self.bulk.run_once("group-worker"))
-        with self.bulk._db() as c:
+        with self._conn() as c:
             stored_job = c.execute("SELECT default_group FROM probe_server_import_jobs WHERE id=?", (job["jobId"],)).fetchone()
             staged_group = c.execute("SELECT group_name FROM probe_server_import_items WHERE job_id=?", (job["jobId"],)).fetchone()
         self.assertEqual(stored_job[0], max_group)
@@ -157,7 +167,7 @@ class ProbeBulkTests(unittest.TestCase):
         retry = self.bulk.retry_import_failures("alice", job["jobId"], "retry-mixed-errors")
         again = self.bulk.retry_import_failures("alice", job["jobId"], "retry-mixed-errors")
         self.assertEqual(retry["jobId"], again["jobId"])
-        with self.bulk._db() as c:
+        with self._conn() as c:
             rows = [dict(row) for row in c.execute("SELECT ordinal,ip,retryable FROM probe_server_import_items WHERE job_id=? ORDER BY ordinal",
                                                    (retry["jobId"],))]
         self.assertEqual(rows, [{"ordinal": 2, "ip": "192.0.2.44", "retryable": 1}])
@@ -173,7 +183,7 @@ class ProbeBulkTests(unittest.TestCase):
         self.assertEqual(claimed[0:2], ("import", job["jobId"]))
         self.bulk._stage_import(job["jobId"], "dead-import-worker", claimed[2])
         self.assertFalse(self.bulk.run_once("concurrent-import-worker"))
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("UPDATE probe_server_bulk_lease SET lease_until=0 WHERE id=1")
         while self.bulk.get_import("alice", job["jobId"])["state"] in {"queued", "running"}:
             self.assertTrue(self.bulk.run_once("replacement-import-worker"))
@@ -194,7 +204,7 @@ class ProbeBulkTests(unittest.TestCase):
         self.assertEqual((result["state"], result["total"], result["inserted"], result["failed"]),
                          ("done", 100_000, 100_000, 0))
         self.assertGreater(runs, 300)
-        with self.bulk._db() as c:
+        with self._conn() as c:
             staged_groups = c.execute("SELECT COUNT(*) FROM probe_server_import_items WHERE job_id=? AND group_name!=''",
                                        (job["jobId"],)).fetchone()[0]
         self.assertEqual(staged_groups, 0)
@@ -211,7 +221,7 @@ class ProbeBulkTests(unittest.TestCase):
         while self.bulk.get_selection("alice", selection["selectionId"])["state"] in {"queued", "building"}:
             self.assertTrue(self.bulk.run_once("label-worker"))
         ready = self.bulk.get_selection("alice", selection["selectionId"])
-        with self.bulk._db() as c:
+        with self._conn() as c:
             members = [row[0] for row in c.execute(
                 "SELECT server_id FROM probe_server_selection_members WHERE selection_id=? ORDER BY server_id",
                 (selection["selectionId"],))]
@@ -228,7 +238,7 @@ class ProbeBulkTests(unittest.TestCase):
             self.assertTrue(self.bulk.run_once("snapshot-worker"))
         ready = self.bulk.get_selection("alice", selection["selectionId"])
         self.assertEqual(ready["state"], "ready")
-        with self.bulk._db() as c:
+        with self._conn() as c:
             members = [r[0] for r in c.execute("SELECT server_id FROM probe_server_selection_members WHERE selection_id=?",
                                                 (selection["selectionId"],))]
         self.assertEqual(members, [first])
@@ -243,7 +253,7 @@ class ProbeBulkTests(unittest.TestCase):
 
     def test_bulk_job_sparse_materialization_does_not_finish_before_later_ranges(self):
         selection = self.bulk.create_selection("alice", ids=[])
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("UPDATE probe_server_selections SET max_server_id=20000,count=1 WHERE id=?",
                       (selection["selectionId"],))
             c.execute("INSERT INTO probe_server_selection_members(selection_id,server_id,ip) VALUES(?,15000,'fixture')",
@@ -266,7 +276,7 @@ class ProbeBulkTests(unittest.TestCase):
         self.assertTrue(self.bulk.run_once("worker"))
         self.assertTrue(self.bulk.run_once("worker"))
         self.assertFalse(self.bulk.run_once("worker"))
-        with self.bulk._db() as c:
+        with self._conn() as c:
             lease = c.execute("SELECT owner,lease_until FROM probe_server_bulk_lease WHERE id=1").fetchone()
         self.assertEqual((lease["owner"], lease["lease_until"]), ("", 0))
         self.assertEqual(self.bulk.get_job("alice", first["jobId"])["state"], "done")
@@ -275,12 +285,12 @@ class ProbeBulkTests(unittest.TestCase):
         server_id = self.add("203.0.113.9")
         selection = self.bulk.create_selection("alice", ids=[server_id])
         job = self.bulk.submit_job("alice", selection["selectionId"], "delete", {}, "worker-test")
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("UPDATE probe_server_bulk_lease SET owner='worker-one',lease_until=? WHERE id=1",
                       (time.time() + 60,))
         self.assertFalse(self.bulk.run_once("worker-two"))
         self.assertEqual(self.bulk.get_job("alice", job["jobId"])["state"], "queued")
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("UPDATE probe_server_bulk_lease SET lease_until=0 WHERE id=1")
         # The asset disappeared after the snapshot. Replaying delete is still a
         # successful idempotent operation, and the expired worker lease recovers.
@@ -297,7 +307,7 @@ class ProbeBulkTests(unittest.TestCase):
         self.assertTrue(self.bulk.run_once("worker"))
         self.assertEqual(self.bulk.get_job("alice", job["jobId"])["state"], "done")
         self.assertEqual(self.assets.delete_servers_batch([server_id]), 0)
-        with self.bulk._db() as c:
+        with self._conn() as c:
             relations = c.execute("SELECT COUNT(*) FROM probe_server_tags WHERE server_id=?", (server_id,)).fetchone()[0]
         self.assertEqual(relations, 0)
 
@@ -317,13 +327,13 @@ class ProbeBulkTests(unittest.TestCase):
         job = self.bulk.submit_job("alice", selection["selectionId"], "delete", {}, "stale-worker")
         claimed = self.bulk._claim("old-worker")
         self.assertEqual(claimed[1], job["jobId"])
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("UPDATE probe_server_bulk_lease SET owner='new-worker',token='new-token',lease_until=? WHERE id=1",
                       (time.time() + 60,))
         with self.assertRaises(LeaseLostError):
             self.bulk._process_job(job["jobId"], "old-worker", claimed[2])
         self.assertEqual(self.assets.get_server(server_id).id, server_id)
-        with self.bulk._db() as c:
+        with self._conn() as c:
             materialized = c.execute("SELECT items_ready FROM probe_server_bulk_jobs WHERE id=?", (job["jobId"],)).fetchone()[0]
             items = c.execute("SELECT COUNT(*) FROM probe_server_bulk_items WHERE job_id=?", (job["jobId"],)).fetchone()[0]
         self.assertEqual((materialized, items), (0, 0))
@@ -332,24 +342,24 @@ class ProbeBulkTests(unittest.TestCase):
         server_id = self.add("203.0.113.13")
         selection = self.bulk.create_selection("alice", ids=[server_id])
         job = self.bulk.submit_job("alice", selection["selectionId"], "delete", {}, "retention-job")
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("UPDATE probe_server_selections SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?",
                       (selection["selectionId"],))
         self.bulk.cleanup_once()
-        with self.bulk._db() as c:
+        with self._conn() as c:
             active_selection = c.execute("SELECT 1 FROM probe_server_selections WHERE id=?",
                                          (selection["selectionId"],)).fetchone()
             membership = c.execute("SELECT 1 FROM probe_server_selection_members WHERE selection_id=?",
                                   (selection["selectionId"],)).fetchone()
         self.assertIsNotNone(active_selection)
         self.assertIsNotNone(membership)
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("UPDATE probe_server_bulk_jobs SET state='failed',updated_at='2000-01-01T00:00:00+00:00' WHERE id=?",
                       (job["jobId"],))
             c.execute("INSERT INTO probe_server_bulk_items(job_id,ordinal,server_id,ip,state) VALUES(?,?,?,?,'failed')",
                       (job["jobId"], server_id, server_id, "203.0.113.13"))
         self.bulk.cleanup_once()
-        with self.bulk._db() as c:
+        with self._conn() as c:
             self.assertIsNone(c.execute("SELECT 1 FROM probe_server_bulk_jobs WHERE id=?", (job["jobId"],)).fetchone())
             self.assertIsNone(c.execute("SELECT 1 FROM probe_server_selections WHERE id=?", (selection["selectionId"],)).fetchone())
 
@@ -361,7 +371,7 @@ class ProbeBulkTests(unittest.TestCase):
             self.bulk.submit_job("alice", selection["selectionId"], "delete", {}, "retry-running", retry_of=source["jobId"])
         # Inject one durable item failure to exercise retry pagination without
         # depending on an infrastructure error from a SQLite fixture.
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("INSERT INTO probe_server_bulk_items(job_id,ordinal,server_id,ip) "
                       "SELECT ?,row_number() OVER (ORDER BY server_id),server_id,ip "
                       "FROM probe_server_selection_members WHERE selection_id=?",
@@ -373,22 +383,22 @@ class ProbeBulkTests(unittest.TestCase):
             c.execute("UPDATE probe_server_bulk_jobs SET state='partial' WHERE id=?", (source["jobId"],))
         page = self.bulk.failures("alice", source["jobId"], limit=1)
         self.assertEqual(len(page["items"]), 1)
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("UPDATE probe_server_selections SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?",
                       (selection["selectionId"],))
         self.bulk.cleanup_once()
-        with self.bulk._db() as c:
+        with self._conn() as c:
             self.assertIsNone(c.execute("SELECT 1 FROM probe_server_selections WHERE id=?",
                                         (selection["selectionId"],)).fetchone())
         retry = self.bulk.submit_job("alice", selection["selectionId"], "update", {"group": "ignored"},
                                      "retry-key", retry_of=source["jobId"])
         self.assertEqual(retry["operation"], "delete")
         self.assertEqual(retry["total"], 1)
-        with self.bulk._db() as c:
+        with self._conn() as c:
             before_worker = c.execute("SELECT COUNT(*) FROM probe_server_bulk_items WHERE job_id=?", (retry["jobId"],)).fetchone()[0]
         self.assertEqual(before_worker, 0)
         self.assertTrue(self.bulk.run_once("retry-worker"))
-        with self.bulk._db() as c:
+        with self._conn() as c:
             copied = c.execute("SELECT COUNT(*) FROM probe_server_bulk_items WHERE job_id=?", (retry["jobId"],)).fetchone()[0]
             payload = c.execute("SELECT payload FROM probe_server_bulk_jobs WHERE id=?", (retry["jobId"],)).fetchone()[0]
         self.assertEqual(copied, 1)
@@ -404,7 +414,7 @@ class ProbeBulkTests(unittest.TestCase):
         ids = [self.add(f"198.51.100.{n}") for n in (21, 22)]
         selection = self.bulk.create_selection("alice", ids=ids)
         source = self.bulk.submit_job("alice", selection["selectionId"], "delete", {}, "retained-source")
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("INSERT INTO probe_server_bulk_items(job_id,ordinal,server_id,ip,state,error) "
                       "SELECT ?,server_id,server_id,ip,CASE WHEN server_id=? THEN 'failed' ELSE 'done' END,'fixture' "
                       "FROM probe_server_selection_members WHERE selection_id=?",
@@ -414,14 +424,14 @@ class ProbeBulkTests(unittest.TestCase):
         retry = self.bulk.submit_job("alice", selection["selectionId"], "delete", {}, "active-retry",
                                      retry_of=source["jobId"])
         self.bulk.cleanup_once()
-        with self.bulk._db() as c:
+        with self._conn() as c:
             source_row = c.execute("SELECT 1 FROM probe_server_bulk_jobs WHERE id=?", (source["jobId"],)).fetchone()
             failed_source = c.execute("SELECT COUNT(*) FROM probe_server_bulk_items WHERE job_id=? AND state='failed'",
                                       (source["jobId"],)).fetchone()[0]
         self.assertIsNotNone(source_row)
         self.assertEqual(failed_source, 1)
         self.assertTrue(self.bulk.run_once("retry-worker"))
-        with self.bulk._db() as c:
+        with self._conn() as c:
             retry_items = [dict(row) for row in c.execute("SELECT server_id,state FROM probe_server_bulk_items WHERE job_id=?",
                                                            (retry["jobId"],))]
         self.assertEqual(retry_items, [{"server_id": ids[1], "state": "done"}])
@@ -432,26 +442,26 @@ class ProbeBulkTests(unittest.TestCase):
         with patch.object(ProbeStore, "import_servers_chunk", side_effect=RuntimeError("temporary insert error")):
             self.assertTrue(self.bulk.run_once("cleanup-import-worker"))
         old = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("UPDATE probe_server_import_jobs SET updated_at=? WHERE id=?", (old, source["jobId"]))
         retry = self.bulk.retry_import_failures("alice", source["jobId"], "cleanup-import-retry")
 
         self.bulk.cleanup_once()
-        with self.bulk._db() as c:
+        with self._conn() as c:
             self.assertIsNotNone(c.execute("SELECT 1 FROM probe_server_import_jobs WHERE id=?", (source["jobId"],)).fetchone())
             self.assertEqual(c.execute("SELECT COUNT(*) FROM probe_server_import_items WHERE job_id=?", (source["jobId"],)).fetchone()[0], 1)
             self.assertIsNotNone(c.execute("SELECT 1 FROM probe_server_import_jobs WHERE id=?", (retry["jobId"],)).fetchone())
 
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("UPDATE probe_server_import_jobs SET state='done',updated_at=? WHERE id=?", (old, retry["jobId"]))
         self.bulk.cleanup_once()
-        with self.bulk._db() as c:
+        with self._conn() as c:
             for job_id in (source["jobId"], retry["jobId"]):
                 self.assertIsNone(c.execute("SELECT 1 FROM probe_server_import_jobs WHERE id=?", (job_id,)).fetchone())
                 self.assertEqual(c.execute("SELECT COUNT(*) FROM probe_server_import_items WHERE job_id=?", (job_id,)).fetchone()[0], 0)
 
     def test_100k_selection_uses_sql_materialization(self):
-        with self.bulk._db() as c:
+        with self._conn() as c:
             c.execute("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<100000) "
                       "INSERT INTO probe_servers(ip,ip_sort,label,server_group,created_at) "
                       "SELECT 'asset-'||x,NULL,'','edge','2026-10-23' FROM seq")
@@ -460,18 +470,18 @@ class ProbeBulkTests(unittest.TestCase):
             self.assertTrue(self.bulk.run_once("worker"))
         result = self.bulk.get_selection("alice", selection["selectionId"])
         self.assertEqual(result["count"], 100_000)
-        with self.bulk._db() as c:
+        with self._conn() as c:
             count = c.execute("SELECT COUNT(*) FROM probe_server_selection_members WHERE selection_id=?",
                               (selection["selectionId"],)).fetchone()[0]
         self.assertEqual(count, 100_000)
         job = self.bulk.submit_job("alice", selection["selectionId"], "delete", {}, "delete-100k")
-        with self.bulk._db() as c:
+        with self._conn() as c:
             state = c.execute("SELECT items_ready FROM probe_server_bulk_jobs WHERE id=?", (job["jobId"],)).fetchone()[0]
             prebuilt = c.execute("SELECT COUNT(*) FROM probe_server_bulk_items WHERE job_id=?", (job["jobId"],)).fetchone()[0]
         self.assertEqual((state, prebuilt), (0, 0))
         for _ in range(10):
             self.assertTrue(self.bulk.run_once("bulk-worker"))
-        with self.bulk._db() as c:
+        with self._conn() as c:
             materialized = c.execute("SELECT COUNT(*) FROM probe_server_bulk_items WHERE job_id=?", (job["jobId"],)).fetchone()[0]
         self.assertEqual(materialized, 100_000)
 

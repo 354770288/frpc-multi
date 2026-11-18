@@ -1,0 +1,68 @@
+name: CI 测试与构建验证
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-tests:
+    name: 后端单元测试与运维脚本自检
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装系统探测依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mtr-tiny
+
+      - name: 配置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+          cache-dependency-path: webui/backend/requirements.txt
+
+      - name: 安装后端依赖
+        run: python -m pip install -r webui/backend/requirements.txt
+
+      - name: 运行后端全量单元测试
+        working-directory: webui/backend
+        env:
+          PROJECT_DIR: /tmp/frpc-multi-ci
+          WEBUI_JWT_SECRET: ci-test-secret-key-for-unit-tests-32c
+        run: python -m unittest discover -s tests
+
+      - name: 运行备份恢复演练与分布统计脚本自检
+        run: |
+          python scripts/rehearse-restore.py --self-test
+          python scripts/analyze_probe_distributions.py --self-test
+
+  frontend-checks:
+    name: 前端类型检查、单测与生产构建
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: webui/frontend/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: webui/frontend
+        run: npm ci
+
+      - name: 运行 Vitest 单元测试
+        working-directory: webui/frontend
+        run: npm test
+
+      - name: 运行 TypeScript 编译与 Vite 生产构建
+        working-directory: webui/frontend
+        run: npm run build

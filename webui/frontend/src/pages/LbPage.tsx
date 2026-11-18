@@ -82,6 +82,7 @@ export function LbPage() {
   const [deleting, setDeleting] = useState<LbDomain | null>(null);
   const [managingCandidates, setManagingCandidates] = useState<LbDomain | null>(null);
   const [syncing, setSyncing] = useState<Record<number, boolean>>({});
+  const [checkingPorts, setCheckingPorts] = useState(false);
 
   const load = useCallback(async () => {
     const request = ++requestId.current;
@@ -125,6 +126,27 @@ export function LbPage() {
     }
   };
 
+  const checkPortsNow = async () => {
+    setCheckingPorts(true);
+    try {
+      const res = await lbApi.checkPortHealth();
+      if (res.policySkipReason) {
+        toast.warning(`业务端口检测跳过：${res.policySkipReason}`);
+      } else if (res.switchedCount > 0) {
+        toast.warning(`已完成业务端口检测：发现防火墙屏蔽并自动切换 ${res.switchedCount} 个域名`);
+      } else if (res.alerts.length > 0) {
+        toast.warning(`已完成业务端口检测：当前有 ${res.alerts.length} 条端口/屏蔽异常`);
+      } else {
+        toast.success('业务端口检测通过，所有已关联端口正常');
+      }
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '业务端口检测失败');
+    } finally {
+      setCheckingPorts(false);
+    }
+  };
+
   return (
     <div className="mx-auto flex max-w-[1600px] flex-col gap-5 px-4 py-6 sm:px-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -134,6 +156,7 @@ export function LbPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button asChild variant="outline" size="sm"><Link to="/lb/settings">域名设置</Link></Button>
+          <Button size="sm" variant="outline" onClick={() => void checkPortsNow()} disabled={checkingPorts}>{checkingPorts ? '检测端口中…' : '检测业务端口'}</Button>
           <Button size="sm" variant="outline" onClick={() => void load()} disabled={refreshing}><RefreshCw data-icon="inline-start" />{refreshing ? '刷新中…' : '刷新'}</Button>
           <Button size="sm" onClick={() => setEditing('new')} disabled={!tokenConfigured} title={tokenConfigured ? undefined : '请先配置 Cloudflare API Token'}><Plus data-icon="inline-start" />新增域名</Button>
         </div>
@@ -178,11 +201,11 @@ export function LbPage() {
                     <Td>
                       <div className="flex flex-col items-start gap-1.5">
                         <span className="font-mono text-[13px]">{domain.currentIp || '—'}</span>
-                        <div className="flex flex-wrap gap-1"><Badge tone={row.currentHealth === 'healthy' ? 'success' : row.currentHealth === 'unhealthy' ? 'danger' : 'muted'} dot>{CURRENT_HEALTH_LABELS[row.currentHealth]}</Badge>{row.pendingSwitch && <Badge tone="warning">建议切换</Badge>}</div>
+                        <div className="flex flex-wrap gap-1"><Badge tone={row.currentHealth === 'healthy' ? 'success' : row.currentHealth === 'unhealthy' ? 'danger' : 'muted'} dot>{row.currentGfwBlocked ? 'GFW 屏蔽' : CURRENT_HEALTH_LABELS[row.currentHealth]}</Badge>{row.pendingSwitch && <Badge tone="warning">建议切换</Badge>}</div>
                       </div>
                     </Td>
                     <Td>
-                      {domain.poolSize ? <div className="flex flex-col gap-1"><span className="text-sm tabular-nums">{row.healthyCount}<span className="text-muted-foreground"> / {domain.poolSize} 健康</span></span><span className="text-xs text-muted-foreground">{[row.unhealthyCount ? `${row.unhealthyCount} 检查失败` : '', row.unknownCount ? `${row.unknownCount} 待检查` : ''].filter(Boolean).join(' · ') || '候选均健康'}</span></div> : <Badge tone="warning">无候选</Badge>}
+                      {domain.poolSize ? <div className="flex flex-col gap-1"><span className="text-sm tabular-nums">{row.healthyCount}<span className="text-muted-foreground"> / {domain.poolSize} 健康</span></span><span className="text-xs text-muted-foreground">{[row.gfwBlockedCount ? `${row.gfwBlockedCount} 被屏蔽` : '', row.unhealthyCount - row.gfwBlockedCount > 0 ? `${row.unhealthyCount - row.gfwBlockedCount} 检查失败` : '', row.unknownCount ? `${row.unknownCount} 待检查` : ''].filter(Boolean).join(' · ') || '候选均健康'}</span></div> : <Badge tone="warning">无候选</Badge>}
                     </Td>
                     <Td>
                       <div className="flex flex-col items-start gap-1.5"><Badge tone={row.syncState === 'success' ? 'success' : row.syncState === 'failed' ? 'danger' : 'muted'}>{SYNC_LABELS[row.syncState]}</Badge>{domain.lastSyncAt && <span className="whitespace-nowrap text-xs text-muted-foreground">{formatLastSeen(domain.lastSyncAt)}</span>}</div>

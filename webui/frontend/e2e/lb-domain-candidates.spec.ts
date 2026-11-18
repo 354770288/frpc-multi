@@ -118,7 +118,7 @@ test('domains use explicit paged candidates and manual switches preserve failure
   await page.getByRole('button', { name: '服务器库上一页' }).click();
   await expect(page.getByRole('table').nth(1).getByRole('row').filter({ hasText: 'edge.example.com · 已加入' })).toBeVisible();
   await expect(page.getByRole('table').first().getByTitle(measuredAt)).toHaveCount(4);
-  await expect(page.getByText('192.0.2.101')).toBeVisible();
+  await expect(page.getByRole('table').first().getByText('192.0.2.101')).toBeVisible();
   await page.getByRole('button', { name: '移除 192.0.2.101' }).click();
   expect(removedIds).toEqual([101]);
   await expect(page.getByRole('table').first().getByText('192.0.2.101')).toHaveCount(0);

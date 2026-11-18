@@ -37,4 +37,13 @@ describe('domain list presentation and filters', () => {
     const empty = domainRows([{ ...base, poolSize: 0, currentIp: null }], health)[0];
     expect([empty.healthyCount, empty.unhealthyCount, empty.unknownCount]).toEqual([0, 0, 0]);
   });
+
+  it('treats GFW-blocked candidate IPs as unhealthy even when Console frps check is ok', () => {
+    const blockedHealth: LbHealth = { ...health, gfwBlockedIps: ['192.0.2.1'] };
+    const row = domainRows([base], blockedHealth)[0];
+    expect(row.currentGfwBlocked).toBe(true);
+    expect(row.currentHealth).toBe('unhealthy');
+    expect(row.gfwBlockedCount).toBe(1);
+    expect([row.healthyCount, row.unhealthyCount, row.unknownCount]).toEqual([0, 1, 1]);
+  });
 });

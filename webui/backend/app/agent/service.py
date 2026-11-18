@@ -432,14 +432,15 @@ class LocalAgentService:
         }
 
     def get_summary(self) -> dict[str, Any]:
-        instances = self.list_instances()
+        records = self.store.list_instances()
         status = self.docker.collect_status()
         containers = status.get("containers", {})
         running = 0
         stopped = 0
         error = 0
         enriched: list[dict[str, Any]] = []
-        for item in instances:
+        for record in records:
+            item = self._record_payload(record)
             stat = containers.get(item["name"], {})
             state = stat.get("state", "")
             if state == "running":
@@ -448,9 +449,14 @@ class LocalAgentService:
                 error += 1
             else:
                 stopped += 1
-            enriched.append({**item, "runtime": stat})
+            cfg_summary: dict[str, Any] | None = None
+            try:
+                cfg_summary = validate_config_text(record.config_path.read_text(encoding="utf-8")).summary
+            except OSError:
+                cfg_summary = None
+            enriched.append({**item, "runtime": stat, **({"summary": cfg_summary} if cfg_summary is not None else {})})
         return {
-            "total": len(instances),
+            "total": len(records),
             "running": running,
             "stopped": stopped,
             "error": error,

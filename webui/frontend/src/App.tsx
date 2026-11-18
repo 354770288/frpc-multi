@@ -9,7 +9,9 @@ const Overview=lazy(()=>import('./pages/Overview').then((module)=>({default:modu
 const Detail=lazy(()=>import('./pages/Detail').then((module)=>({default:module.Detail})));
 const CreateInstance=lazy(()=>import('./pages/CreateInstance').then((module)=>({default:module.CreateInstance})));
 const NodesPage=lazy(()=>import('./pages/NodesPage').then((module)=>({default:module.NodesPage})));
-const Probe=lazy(()=>import('./pages/Probe').then((module)=>({default:module.Probe})));
+const DiscoveryPage=lazy(()=>import('./pages/probe/DiscoveryPage').then((module)=>({default:module.DiscoveryPage})));
+const ServersPage=lazy(()=>import('./pages/probe/ServersPage').then((module)=>({default:module.ServersPage})));
+const TestsPage=lazy(()=>import('./pages/probe/TestsPage').then((module)=>({default:module.TestsPage})));
 const LbPage=lazy(()=>import('./pages/LbPage').then((module)=>({default:module.LbPage})));
 const LbSettingsPage=lazy(()=>import('./pages/LbPage').then((module)=>({default:module.LbSettingsPage})));
 const AuditLogsPage=lazy(()=>import('./pages/AuditLogsPage').then((module)=>({default:module.AuditLogsPage})));
@@ -90,11 +92,11 @@ function ConsoleRoutes() {
         <Route path="instances/new" element={<CreateInstance />} />
         <Route path="nodes" element={<NodesPage />} />
         <Route path="test-nodes" element={<TestNodesPage />} />
-        <Route path="discovery" element={<Probe section="discover" />} />
-        <Route path="servers" element={<Probe section="servers" />} />
+        <Route path="discovery" element={<DiscoveryPage />} />
+        <Route path="servers" element={<ServersPage />} />
         <Route path="tests/new" element={<TestCreatePage />} />
-        <Route path="tests" element={<Probe section="test" />} />
-        <Route path="tests/:jobId" element={<Probe section="test" />} />
+        <Route path="tests" element={<TestsPage />} />
+        <Route path="tests/:jobId" element={<TestsPage />} />
         <Route path="results" element={<ResultsPage />} />
         <Route path="probe" element={<LegacyProbeRedirect />} />
         <Route path="lb" element={<LbPage />} />

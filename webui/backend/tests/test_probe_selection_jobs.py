@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import sqlite3
@@ -27,6 +28,15 @@ class ProbeSelectionJobTests(unittest.TestCase):
         self.jobs.set_execution_policy(self.primary, [self.backup])
         self.assets = ProbeStore(self.path)
         self.bulk = ServerBulkStore(self.path)
+
+    @contextlib.contextmanager
+    def _bulk_conn(self):
+        conn = self.bulk._db()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -58,7 +68,7 @@ class ProbeSelectionJobTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.create_job(selection, owner="bob")
 
-        with self.bulk._db() as c:
+        with self._bulk_conn() as c:
             c.execute("UPDATE probe_server_selections SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?",
                       (selection["selectionId"],))
         with self.assertRaisesRegex(ValueError, "过期"):
@@ -87,14 +97,14 @@ class ProbeSelectionJobTests(unittest.TestCase):
             self.assertEqual(created["targetTotal"], 2)
             self.assertEqual(created["targetMaterialized"], 0)
             self.assertEqual(created["taskTotal"], 0)
-            with self.bulk._db() as c:
+            with self._bulk_conn() as c:
                 c.execute("UPDATE probe_server_selections SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?",
                           (selection["selectionId"],))
             self.jobs.set_execution_policy(self.backup, [])
             repeated = jobs_create(payload, user="alice")
             self.assertEqual(repeated["id"], created["id"])
             self.bulk.cleanup_once()
-            with self.bulk._db() as c:
+            with self._bulk_conn() as c:
                 self.assertIsNotNone(c.execute("SELECT 1 FROM probe_server_selections WHERE id=?",
                                                (selection["selectionId"],)).fetchone())
             conflict = payload.model_copy(update={"mode": "speed"})
@@ -222,11 +232,11 @@ class ProbeSelectionJobTests(unittest.TestCase):
         with self.jobs._db() as c:
             before = c.execute("SELECT cursor_server_id FROM probe_job_producers WHERE job_id=?", (job["id"],)).fetchone()[0]
         self.jobs.action(job["id"], "stop")
-        with self.bulk._db() as c:
+        with self._bulk_conn() as c:
             c.execute("UPDATE probe_server_selections SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?",
                       (selection["selectionId"],))
         self.bulk.cleanup_once()
-        with self.bulk._db() as c:
+        with self._bulk_conn() as c:
             self.assertIsNotNone(c.execute("SELECT 1 FROM probe_server_selections WHERE id=?",
                                            (selection["selectionId"],)).fetchone())
         self.jobs.action(job["id"], "retry")
@@ -320,7 +330,7 @@ class ProbeSelectionJobTests(unittest.TestCase):
 
     def test_100k_selection_generates_only_one_bounded_chunk(self):
         selection_id = "large-selection"
-        with self.bulk._db() as c:
+        with self._bulk_conn() as c:
             c.execute("INSERT INTO probe_server_selections(id,owner,state,filters,created_at,updated_at,expires_at,count,processed,max_server_id) "
                       "VALUES(?,'alice','ready','{}','2026-10-24','2026-10-24','2099-01-01',100000,100000,100000)",
                       (selection_id,))

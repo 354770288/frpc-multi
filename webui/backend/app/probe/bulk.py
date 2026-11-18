@@ -747,20 +747,16 @@ class ServerBulkStore:
                 raise
             except Exception as exc:
                 update.rollback()
-                failed = self._db()
-                try:
-                    self._assert_lease(failed, worker_id, token)
-                    failed.executemany("UPDATE probe_server_import_items SET state='failed',error=?,retryable=1 WHERE job_id=? AND ordinal=?",
-                                       [(str(exc)[:500], job_id, row["ordinal"]) for row in rows])
-                    totals = failed.execute("SELECT COUNT(*) total,SUM(state!='pending') processed,SUM(state='done') inserted,SUM(state='skipped') skipped,SUM(state='failed') failed,SUM(state='pending') pending FROM probe_server_import_items WHERE job_id=?",
-                                            (job_id,)).fetchone()
-                    state = "running" if totals["pending"] else ("partial" if totals["inserted"] or totals["skipped"] else "failed")
-                    failed.execute("UPDATE probe_server_import_jobs SET total=?,processed=?,inserted=?,skipped=?,failed=?,state=?,updated_at=? WHERE id=?",
-                                   (totals["total"], totals["processed"] or 0, totals["inserted"] or 0,
-                                    totals["skipped"] or 0, totals["failed"] or 0, state, now_iso(), job_id))
-                    failed.commit()
-                finally:
-                    failed.close()
+                self._assert_lease(update, worker_id, token)
+                update.executemany("UPDATE probe_server_import_items SET state='failed',error=?,retryable=1 WHERE job_id=? AND ordinal=?",
+                                   [(str(exc)[:500], job_id, row["ordinal"]) for row in rows])
+                totals = update.execute("SELECT COUNT(*) total,SUM(state!='pending') processed,SUM(state='done') inserted,SUM(state='skipped') skipped,SUM(state='failed') failed,SUM(state='pending') pending FROM probe_server_import_items WHERE job_id=?",
+                                        (job_id,)).fetchone()
+                state = "running" if totals["pending"] else ("partial" if totals["inserted"] or totals["skipped"] else "failed")
+                update.execute("UPDATE probe_server_import_jobs SET total=?,processed=?,inserted=?,skipped=?,failed=?,state=?,updated_at=? WHERE id=?",
+                               (totals["total"], totals["processed"] or 0, totals["inserted"] or 0,
+                                totals["skipped"] or 0, totals["failed"] or 0, state, now_iso(), job_id))
+                update.commit()
             finally:
                 update.close()
             return

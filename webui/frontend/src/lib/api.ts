@@ -18,6 +18,8 @@ import type {
   LbDomainServerPage,
   LbDnsRecord,
   LbHealth,
+  LbPortHealthCheckResult,
+  LbPortHealthResponse,
   LbSyncLog,
   LbSyncResult,
   Node,
@@ -454,5 +456,16 @@ export const lbApi = {
   syncDomain: (id: number) => api<LbSyncResult>(`/api/lb/domains/${id}/sync`, { method: 'POST' }),
   domainRecords: (id: number) => api<LbDnsRecord[]>(`/api/lb/domains/${id}/records`),
   domainLogs: (id: number, limit = 50) => api<LbSyncLog[]>(`/api/lb/domains/${id}/logs?limit=${limit}`),
-  health: () => api<LbHealth>('/api/lb/health')
+  health: () => api<LbHealth>('/api/lb/health'),
+  portHealth: (status: 'active' | 'resolved' | 'all' = 'active') =>
+    api<LbPortHealthResponse>(`/api/lb/port-health?status=${encodeURIComponent(status)}`),
+  checkPortHealth: (domainId?: number) =>
+    api<LbPortHealthCheckResult>('/api/lb/port-health/check', {
+      method: 'POST',
+      body: JSON.stringify(domainId != null ? { domainId } : {}),
+    }),
+  unblockGfwIp: (ip: string) =>
+    api<{ ok: boolean; removed: boolean }>(`/api/lb/gfw-blocks/${encodeURIComponent(ip)}`, { method: 'DELETE' }),
+  dismissPortAlert: (alertId: number) =>
+    api<{ ok: boolean; dismissed: boolean }>(`/api/lb/port-alerts/${alertId}/dismiss`, { method: 'POST' }),
 };

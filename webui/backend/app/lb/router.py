@@ -81,6 +81,7 @@ def pool_health_view():
 
     store = lb_store()
     probe = probe_store()
+    blocked_ips = sorted(store.gfw_blocked_ips())
     states = {item["ip"]: item for item in pool_health.snapshot()}
     domains = []
     for domain in store.list_domains():
@@ -98,7 +99,97 @@ def pool_health_view():
             "selection": selection,
             "poolIps": pool,
         })
-    return {"states": list(states.values()), "domains": domains}
+    return {"states": list(states.values()), "domains": domains, "gfwBlockedIps": blocked_ips}
+
+
+class PortHealthCheckRequest(BaseModel):
+    domainId: int | None = None
+
+
+@router.get("/port-health")
+def get_port_health(status: str = Query(default="active")):
+    """业务端口健康、GFW 屏蔽状态与活跃异常列表（供主页异常窗口与域名选优页使用）。"""
+    from .port_health import domain_port_checker
+
+    if status not in {"active", "resolved", "all"}:
+        raise HTTPException(status_code=400, detail="status 必须是 active、resolved 或 all")
+    store = lb_store()
+    summaries = domain_port_checker.domain_summaries()
+    domain_items = []
+    for domain in store.list_domains():
+        domain_items.append({
+            "domainId": domain.id,
+            "name": domain.name,
+            "enabled": domain.enabled,
+            "currentIp": domain.current_ip,
+            "businessPorts": store.domain_business_ports(domain.name),
+            "lastCheck": summaries.get(domain.id),
+        })
+    return {
+        "alerts": store.list_port_alerts(status=status),
+        "gfwBlocks": store.list_gfw_blocks(),
+        "domains": domain_items,
+    }
+
+
+@router.post("/port-health/check")
+async def trigger_port_health_check(
+    user: Annotated[str, Depends(require_auth)],
+    payload: PortHealthCheckRequest | None = None,
+):
+    """立即执行一次优选域名业务端口主备 tcping 检测与 GFW 屏蔽切换。"""
+    import asyncio
+    from .port_health import domain_port_checker, refresh_all_online_node_ports_async
+
+    store = lb_store()
+    target_domain_id = payload.domainId if payload else None
+    if target_domain_id is not None:
+        _get_domain_or_404(target_domain_id, store)
+    await refresh_all_online_node_ports_async(settings.database_path)
+    outcome = await asyncio.to_thread(
+        lambda: domain_port_checker.run_checks(
+            store,
+            probe_store(),
+            settings,
+            force=True,
+            domain_id=target_domain_id,
+            cf_factory=_cf_client,
+            refresh_agents=False,
+        )
+    )
+    audit(
+        user,
+        "lb_port_health_check",
+        message=(
+            f"手动检测业务端口（域名 {target_domain_id or '全部'}），"
+            f"检查 {len(outcome.get('checkedDomains') or [])} 个，切换 {outcome.get('switchedCount', 0)} 个"
+        ),
+    )
+    return {
+        **outcome,
+        "alerts": store.list_port_alerts(status="active"),
+        "gfwBlocks": store.list_gfw_blocks(),
+    }
+
+
+@router.delete("/gfw-blocks/{ip}")
+def unblock_gfw_ip(ip: str, user: Annotated[str, Depends(require_auth)]):
+    """手动解除某候选 IP 的 GFW 屏蔽隔离状态。"""
+    store = lb_store()
+    removed = store.clear_gfw_block(ip)
+    audit(user, "lb_clear_gfw_block", message=f"解除 IP 屏蔽: {ip}")
+    return {"ok": True, "removed": removed}
+
+
+@router.post("/port-alerts/{alert_id}/dismiss")
+def dismiss_port_alert(alert_id: int, user: Annotated[str, Depends(require_auth)]):
+    """手动确认关闭一条活跃业务端口/屏蔽告警。"""
+    store = lb_store()
+    dismissed = store.dismiss_port_alert(alert_id)
+    if not dismissed:
+        raise HTTPException(status_code=404, detail="未找到可关闭的活跃告警")
+    audit(user, "lb_dismiss_port_alert", message=f"关闭告警 #{alert_id}")
+    return {"ok": True, "dismissed": True}
 
 
 class SelectionConfigUpdate(BaseModel):

@@ -12,9 +12,11 @@ export type DomainRow = {
   domain: LbDomain;
   health: LbHealthDomain | null;
   currentHealth: CurrentHealth;
+  currentGfwBlocked: boolean;
   syncState: SyncState;
   healthyCount: number;
   unhealthyCount: number;
+  gfwBlockedCount: number;
   unknownCount: number;
   pendingSwitch: boolean;
 };
@@ -38,17 +40,21 @@ export function readDomainFilters(params: URLSearchParams): DomainFilters {
 
 export function domainRows(domains: LbDomain[], health: LbHealth | null): DomainRow[] {
   const states = new Map(health?.states.map((item) => [item.ip, item]));
+  const blocked = new Set(health?.gfwBlockedIps ?? []);
   const snapshots = new Map(health?.domains.map((item) => [item.domainId, item]));
   return domains.map((domain) => {
     const snapshot = domain.enabled ? snapshots.get(domain.id) ?? null : null;
     const pool = domain.poolSize ? [...new Set(snapshot?.poolIps ?? [])] : [];
-    const healthyCount = Math.min(domain.poolSize, pool.filter((ip) => states.get(ip)?.ok === true).length);
-    const unhealthyCount = Math.min(domain.poolSize - healthyCount, pool.filter((ip) => states.get(ip)?.ok === false).length);
+    const gfwBlockedCount = Math.min(domain.poolSize, pool.filter((ip) => blocked.has(ip)).length);
+    const healthyCount = Math.min(domain.poolSize, pool.filter((ip) => !blocked.has(ip) && states.get(ip)?.ok === true).length);
+    const unhealthyCount = Math.min(domain.poolSize - healthyCount, pool.filter((ip) => blocked.has(ip) || states.get(ip)?.ok === false).length);
+    const currentBlocked = !!(domain.currentIp && blocked.has(domain.currentIp));
     const current = domain.currentIp && pool.includes(domain.currentIp) ? states.get(domain.currentIp) : undefined;
-    const currentHealth = !domain.currentIp ? 'unassigned' : current?.ok === true ? 'healthy' : current?.ok === false ? 'unhealthy' : 'unknown';
+    const currentHealth = !domain.currentIp ? 'unassigned' : currentBlocked || current?.ok === false ? 'unhealthy' : current?.ok === true ? 'healthy' : 'unknown';
     const syncState = !domain.lastSyncAt ? 'never' : domain.lastSyncOk === true ? 'success' : domain.lastSyncOk === false ? 'failed' : 'unknown';
     return {
-      domain, health: snapshot, currentHealth, syncState, healthyCount, unhealthyCount,
+      domain, health: snapshot, currentHealth, currentGfwBlocked: currentBlocked, syncState,
+      healthyCount, unhealthyCount, gfwBlockedCount,
       unknownCount: domain.poolSize - healthyCount - unhealthyCount,
       pendingSwitch: !!(snapshot?.bestIp && domain.currentIp && snapshot.bestIp !== domain.currentIp),
     };

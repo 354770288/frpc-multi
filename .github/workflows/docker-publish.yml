@@ -15,7 +15,49 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  verify:
+    name: 发布前自动化测试门禁
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装系统探测依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mtr-tiny
+
+      - name: 配置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+          cache-dependency-path: webui/backend/requirements.txt
+
+      - name: 运行后端单元测试
+        env:
+          PROJECT_DIR: /tmp/frpc-multi-ci
+          WEBUI_JWT_SECRET: ci-test-secret-key-for-unit-tests-32c
+        run: |
+          python -m pip install -r webui/backend/requirements.txt
+          cd webui/backend && python -m unittest discover -s tests
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: webui/frontend/package-lock.json
+
+      - name: 运行前端单测与构建校验
+        working-directory: webui/frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+
   build-and-push:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read

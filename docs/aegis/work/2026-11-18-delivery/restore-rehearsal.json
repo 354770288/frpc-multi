@@ -1,0 +1,71 @@
+{
+  "ok": true,
+  "rehearsedAt": "2026-11-17T16:01:09.673295+00:00",
+  "backupFileMode": "0o600",
+  "corruptedArchivedExists": true,
+  "baselineFacts": {
+    "integrityCheck": "ok",
+    "foreignKeyViolations": 0,
+    "counts": {
+      "nodes": 1,
+      "probe_servers": 3,
+      "probe_results": 1,
+      "probe_current_results": 1,
+      "probe_discover_results": 2,
+      "lb_domains": 1,
+      "lb_domain_servers": 2,
+      "probe_server_views": 1
+    },
+    "domains": [
+      {
+        "id": 1,
+        "name": "hk1.zmfrp.eu.org",
+        "currentIp": "198.51.100.11",
+        "preferredServerId": 1
+      }
+    ],
+    "domainCandidateOverlaps": 0,
+    "hasUniqueDomainServerIndex": true
+  },
+  "mutatedFacts": {
+    "serverCount": 2,
+    "domains": [
+      {
+        "id": 1,
+        "name": "hk1.zmfrp.eu.org",
+        "currentIp": "198.51.100.12",
+        "preferredServerId": null
+      }
+    ]
+  },
+  "restoredFacts": {
+    "integrityCheck": "ok",
+    "foreignKeyViolations": 0,
+    "counts": {
+      "nodes": 1,
+      "probe_servers": 3,
+      "probe_results": 1,
+      "probe_current_results": 1,
+      "probe_discover_results": 2,
+      "lb_domains": 1,
+      "lb_domain_servers": 2,
+      "probe_server_views": 1
+    },
+    "domains": [
+      {
+        "id": 1,
+        "name": "hk1.zmfrp.eu.org",
+        "currentIp": "198.51.100.11",
+        "preferredServerId": 1
+      }
+    ],
+    "domainCandidateOverlaps": 0,
+    "hasUniqueDomainServerIndex": true
+  },
+  "isolatedVerificationReadProbes": {
+    "cursorPageItems": 3,
+    "exactServerCount": 3,
+    "domainCount": 1,
+    "policyConfigured": true
+  }
+}

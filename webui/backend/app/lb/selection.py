@@ -65,8 +65,13 @@ def selection_for_domain(domain: LbDomain, probe: ProbeStore, monitor, *,
     lb_store = lb_store or LbStore(probe.database_path)
     config = selection_config(lb_store)
     legacy_source = config["nodeId"]
+    blocked_ips = lb_store.gfw_blocked_ips()
     rows = list(lb_store.iter_domain_candidate_rows(domain.id))
-    healthy = [r for r in rows if monitor.is_healthy(_endpoint(r["ip"], 7000)[0])]
+    healthy = [
+        r for r in rows
+        if monitor.is_healthy(_endpoint(r["ip"], 7000)[0])
+        and _endpoint(r["ip"], 7000)[0] not in blocked_ips
+    ]
     view = {"nodeId": legacy_source, "healthSource": "console", "maxAgeHours": config["maxAgeHours"],
             "observedAt": None, "validCandidates": 0, "bestIp": None, "bestServerId": None,
             "reason": "no_healthy_candidates"}
