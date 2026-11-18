@@ -91,15 +91,13 @@ test('new test requires an explicit target and review before submitting', async 
   page.on('request',(request)=>{if(request.url().endsWith('/api/probe/jobs') && request.method()==='POST'){submissions++;submitted=request.postDataJSON();}});
   await page.goto('/tests/new');
   await expect(page.getByRole('heading',{name:'新建测试',level:2})).toBeVisible();
-  await expect(page.getByRole('button',{name:'下一步'})).toBeDisabled();
+  await expect(page.getByRole('button',{name:'提交测试'})).toBeDisabled();
   expect(submissions).toBe(0);
   await page.getByLabel('目标范围').selectOption('group');
   await page.getByLabel('分组').selectOption('QA');
   await expect(page.getByText(/冻结快照目标：1 台/)).toBeVisible();
-  await page.getByRole('button',{name:'下一步'}).click();
   await expect(page.getByText(/主节点：国内测试节点/)).toBeVisible();
   await expect(page.getByText(/备用节点顺序：备用测试节点/)).toBeVisible();
-  await page.getByRole('button',{name:'下一步'}).click();
   await expect(page.getByText('目标：1 台冻结快照 · 分组 QA')).toBeVisible();
   expect(submissions).toBe(0);
   await page.getByRole('button',{name:'提交测试'}).click();
@@ -125,8 +123,6 @@ test('frozen server snapshot deep link shows count and submits by selection ID o
   await page.getByRole('button',{name:'创建测试任务'}).click();
   await expect(page).toHaveURL(/\/tests\/new\?selectionId=all-selection/);
   await expect(page.getByText(/冻结快照目标：120 台/)).toBeVisible();
-  await page.getByRole('button',{name:'下一步'}).click();
-  await page.getByRole('button',{name:'下一步'}).click();
   await page.getByRole('button',{name:'提交测试'}).click();
   await expect(page).toHaveURL(/\/tests\/created-qa-job/);
   expect(submitted).toMatchObject({mode:'full',targetScope:'selection',selectionId:'all-selection',idempotencyKey:expect.any(String)});
@@ -147,17 +143,13 @@ test('selection submission keeps its idempotency key after an uncertain response
   });
   await page.goto('/tests/new?selectionId=retry-selection');
   await expect(page.getByText(/冻结快照目标：2 台/)).toBeVisible();
-  await page.getByRole('button',{name:'下一步'}).click();
   await page.getByLabel('测试方式').selectOption('speed');
-  await page.getByRole('button',{name:'下一步'}).click();
   await page.getByRole('button',{name:'提交测试'}).click();
   await expect(page.getByText('temporary submit failure')).toBeVisible();
   expect(submissions).toHaveLength(1);
   await page.reload();
   await expect(page.getByText(/冻结快照目标：2 台/)).toBeVisible();
-  await page.getByRole('button',{name:'下一步'}).click();
   await expect(page.getByLabel('测试方式')).toHaveValue('speed');
-  await page.getByRole('button',{name:'下一步'}).click();
   await page.getByRole('button',{name:'提交测试'}).click();
   await expect(page).toHaveURL(/\/tests\/created-qa-job/);
   expect(submissions).toHaveLength(2);
@@ -392,7 +384,6 @@ test('Back and Forward restore snapshot scope and mode without creating another 
   await page.getByLabel('目标范围').selectOption('all');
   await expect(page.getByText(/冻结快照目标：120 台/)).toBeVisible();
   expect(selectionCreates).toHaveLength(1);
-  await page.getByRole('button',{name:'下一步'}).click();
   await page.getByLabel('测试方式').selectOption('speed');
   await expect(page).toHaveURL(/mode=speed/);
 
@@ -403,13 +394,11 @@ test('Back and Forward restore snapshot scope and mode without creating another 
   await expect(page.getByLabel('测试方式')).toHaveValue('speed');
   await page.goBack();
   await expect(page.getByLabel('测试方式')).toHaveValue('full');
-  await page.getByRole('button',{name:'上一步'}).click();
   await page.goBack();
   await expect(page.getByLabel('目标范围')).toHaveValue('');
   await page.goForward();
   await expect(page.getByLabel('目标范围')).toHaveValue('all');
   await expect(page.getByText(/冻结快照目标：120 台/)).toBeVisible();
-  await page.getByRole('button',{name:'下一步'}).click();
   await page.goForward();
   await expect(page.getByLabel('测试方式')).toHaveValue('speed');
   expect(selectionCreates).toHaveLength(1);
@@ -654,7 +643,7 @@ test('manual targets reject explicit ports other than 7000', async ({page})=>{
   await page.getByLabel('目标范围').selectOption('manual');
   await page.locator('textarea').fill('192.0.2.8:7001');
   await expect(page.getByRole('alert').filter({hasText:'端口固定为 7000'})).toBeVisible();
-  await expect(page.getByRole('button',{name:'下一步'})).toBeDisabled();
+  await expect(page.getByRole('button',{name:'提交测试'})).toBeDisabled();
   expect(submissions).toBe(0);
 });
 
@@ -672,8 +661,7 @@ test('manual target lists above 5000 are blocked and point to frozen server snap
   }, targets);
   await expect(page.getByRole('alert').filter({hasText:'手动目标共 5001 个，超过 5000 个上限'})).toBeVisible();
   await expect(page.getByRole('link',{name:'前往服务器库冻结匹配结果'})).toHaveAttribute('href','/servers');
-  await expect(page.getByRole('button',{name:'下一步'})).toBeDisabled();
-  await expect(page.getByRole('button',{name:'提交测试'})).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'提交测试'})).toBeDisabled();
   expect(submissions).toBe(0);
 });
 
@@ -684,10 +672,9 @@ test('invalid saved policy links to node settings and blocks job submission', as
   await page.goto('/tests/new');
   await page.getByLabel('目标范围').selectOption('manual');
   await page.locator('textarea').fill('192.0.2.8');
-  await page.getByRole('button',{name:'下一步'}).click();
   await expect(page.getByRole('alert').filter({hasText:'执行节点策略加载失败'})).toBeVisible();
   await expect(page.getByRole('link',{name:'打开测试节点设置修复'})).toHaveAttribute('href','/test-nodes');
-  await expect(page.getByRole('button',{name:'下一步'})).toBeDisabled();
+  await expect(page.getByRole('button',{name:'提交测试'})).toBeDisabled();
   expect(submissions).toBe(0);
 });
 
@@ -703,13 +690,11 @@ test('node list failure is distinct, retryable, and blocks submission until reso
   await page.goto('/tests/new');
   await page.getByLabel('目标范围').selectOption('manual');
   await page.locator('textarea').fill('192.0.2.8');
-  await page.getByRole('button',{name:'下一步'}).click();
   await expect(page.getByRole('alert').filter({hasText:'节点列表加载失败'})).toBeVisible();
-  await expect(page.getByRole('button',{name:'下一步'})).toBeDisabled();
+  await expect(page.getByRole('button',{name:'提交测试'})).toBeDisabled();
   expect(submissions).toBe(0);
   await page.getByRole('button',{name:'重试加载'}).click();
   await expect(page.getByText(/主节点：国内测试节点/)).toBeVisible();
-  await page.getByRole('button',{name:'下一步'}).click();
   await page.getByRole('button',{name:'提交测试'}).click();
   await expect(page).toHaveURL(/\/tests\/created-qa-job/);
   expect(submissions).toBe(1);
@@ -1032,7 +1017,7 @@ test('asset handoff keeps the custom port in instance creation',async ({page})=>
   await expect(page).toHaveURL(/\/instances\/new\?server=192.0.2.1&port=7001/);
   await expect(page.getByRole('textbox',{name:'服务器地址'})).toHaveValue('192.0.2.1');
   await expect(page.getByRole('textbox',{name:'端口'})).toHaveValue('7001');
-  await expect(page.getByText('第 1 步 / 3 步')).toBeVisible();
+  await expect(page.getByRole('button',{name:'创建并启动'})).toBeVisible();
 });
 
 test('dialog focus and Escape use the shared overlay behavior',async ({page})=>{

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { ArrowRight, FileCode2, MoreHorizontal, Trash2 } from 'lucide-react';
+import { ArrowRight, Copy, FileCode2, MoreHorizontal, Trash2 } from 'lucide-react';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { Card, CardAction, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
@@ -282,11 +282,13 @@ export function Switch({
 export function RowMenu({
   onOpen,
   onConfig,
+  onClone,
   onDelete,
   deleting
 }: {
   onOpen: () => void;
   onConfig: () => void;
+  onClone?: () => void;
   onDelete: () => void;
   deleting: boolean;
 }) {
@@ -307,6 +309,12 @@ export function RowMenu({
             <FileCode2 />
             编辑配置
           </DropdownMenuItem>
+          {onClone && (
+            <DropdownMenuItem onSelect={onClone}>
+              <Copy />
+              克隆实例
+            </DropdownMenuItem>
+          )}
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>

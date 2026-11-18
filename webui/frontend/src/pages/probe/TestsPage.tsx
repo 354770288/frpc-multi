@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { FlaskConical, SlidersHorizontal } from 'lucide-react';
 import { probeApi } from '../../lib/api';
-import { Badge } from '../../components/ui/badge';
+import { PageHeader, PageShell } from '../../components/PageHeader';
 import { Button } from '../../components/ui/button';
 import type { ProbeTestConfig, TestNode } from '../../lib/types';
 import { ConfigDialog } from './ProbeDialogs';
@@ -52,24 +53,29 @@ export function TestsPage() {
   }, [loadConfig, loadNodes]);
 
   return (
-    <div className="mx-auto max-w-[1600px] px-6 py-6">
-      <div className="mb-5 flex flex-wrap items-center gap-3">
-        <h2 className="text-lg font-semibold">测试任务</h2>
-        <Badge tone="muted">frps 验收</Badge>
-        <div className="ml-auto flex items-center gap-3">
-          <Button size="sm" variant="outline" onClick={() => navigate('/test-nodes')}>测试节点</Button>
-        </div>
-      </div>
+    <PageShell maxWidth="full" className="max-w-[1600px]">
+      <PageHeader
+        title="测试任务"
+        description="持久化追踪所有探测批次与主备故障接管进度，支持单任务跳过或失败重试"
+        actions={
+          <>
+            <Button size="sm" variant="outline" onClick={() => { void loadConfig(); setConfigOpen(true); }}>
+              <SlidersHorizontal className="size-3.5" data-icon="inline-start" />测试设置
+            </Button>
+            <Button size="sm" onClick={() => navigate('/tests/new')}>
+              <FlaskConical className="size-3.5" data-icon="inline-start" />新建测试
+            </Button>
+          </>
+        }
+      />
 
-      {nodeError && <p role="alert" className="mb-3 text-xs text-destructive">{nodeError}</p>}
+      {nodeError && (
+        <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">
+          {nodeError}
+        </p>
+      )}
 
-      <div className="mt-4 space-y-4">
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={() => { void loadConfig(); setConfigOpen(true); }}>测试设置</Button>
-          <Button onClick={() => navigate('/tests/new')}>新建测试</Button>
-        </div>
-        <ProbeJobsPanel nodes={nodes} focusJobId={routeJobId || ''} revision={0} onChanged={() => {}} />
-      </div>
+      <ProbeJobsPanel nodes={nodes} focusJobId={routeJobId || ''} revision={0} onChanged={() => {}} />
 
       {configOpen && (
         <ConfigDialog
@@ -78,6 +84,6 @@ export function TestsPage() {
           onSaved={(next) => { setConfig(next); setConfigOpen(false); }}
         />
       )}
-    </div>
+    </PageShell>
   );
 }

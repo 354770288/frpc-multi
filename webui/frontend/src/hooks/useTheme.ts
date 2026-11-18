@@ -1,13 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 export type Theme = 'light' | 'dark' | 'system';
 
 const STORAGE_KEY = 'theme';
+const THEME_EVENT = 'frpc-theme-change';
+
+function resolveIsDark(theme: Theme): boolean {
+  if (theme === 'dark') return true;
+  if (theme === 'light') return false;
+  return typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+}
 
 function applyTheme(theme: Theme) {
-  const dark =
-    theme === 'dark' ||
-    (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const dark = resolveIsDark(theme);
   const root = document.documentElement;
   root.classList.add('theme-transition-off');
   root.classList.toggle('dark', dark);
@@ -16,19 +21,46 @@ function applyTheme(theme: Theme) {
 }
 
 export function useTheme() {
-  const [theme, setTheme] = useState<Theme>(
-    () => (localStorage.getItem(STORAGE_KEY) as Theme) || 'system'
+  const [theme, setThemeState] = useState<Theme>(
+    () => (localStorage.getItem(STORAGE_KEY) as Theme) || 'system',
   );
+  const [resolved, setResolved] = useState<'light' | 'dark'>(() =>
+    resolveIsDark((localStorage.getItem(STORAGE_KEY) as Theme) || 'system') ? 'dark' : 'light',
+  );
+
+  const setTheme = useCallback((next: Theme) => {
+    localStorage.setItem(STORAGE_KEY, next);
+    applyTheme(next);
+    setThemeState(next);
+    setResolved(resolveIsDark(next) ? 'dark' : 'light');
+    window.dispatchEvent(new CustomEvent<Theme>(THEME_EVENT, { detail: next }));
+  }, []);
 
   useEffect(() => {
     applyTheme(theme);
-    localStorage.setItem(STORAGE_KEY, theme);
-    if (theme !== 'system') return;
+    setResolved(resolveIsDark(theme) ? 'dark' : 'light');
+    const onSync = (event: Event) => {
+      const next = (event as CustomEvent<Theme>).detail;
+      if (next) {
+        setThemeState(next);
+        setResolved(resolveIsDark(next) ? 'dark' : 'light');
+      }
+    };
+    window.addEventListener(THEME_EVENT, onSync);
+    if (theme !== 'system') {
+      return () => window.removeEventListener(THEME_EVENT, onSync);
+    }
     const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const onChange = () => applyTheme('system');
+    const onChange = () => {
+      applyTheme('system');
+      setResolved(media.matches ? 'dark' : 'light');
+    };
     media.addEventListener('change', onChange);
-    return () => media.removeEventListener('change', onChange);
+    return () => {
+      window.removeEventListener(THEME_EVENT, onSync);
+      media.removeEventListener('change', onChange);
+    };
   }, [theme]);
 
-  return { theme, setTheme };
+  return { theme, resolved, setTheme };
 }

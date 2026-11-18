@@ -172,6 +172,15 @@ async def trigger_port_health_check(
     }
 
 
+@router.post("/domains/{domain_id}/check-ports")
+async def trigger_single_domain_port_check(
+    domain_id: int,
+    user: Annotated[str, Depends(require_auth)],
+):
+    """立即对指定优选域名执行一次业务端口主备 tcping 检测与 GFW 屏蔽切换。"""
+    return await trigger_port_health_check(user=user, payload=PortHealthCheckRequest(domainId=domain_id))
+
+
 @router.delete("/gfw-blocks/{ip}")
 def unblock_gfw_ip(ip: str, user: Annotated[str, Depends(require_auth)]):
     """手动解除某候选 IP 的 GFW 屏蔽隔离状态。"""
@@ -374,6 +383,7 @@ def domain_servers(domain_id: int, page: int = Query(default=1, ge=1),
 
     store = lb_store()
     domain = _get_domain_or_404(domain_id, store)
+    blocks_by_ip = {item['ip']: item for item in store.list_gfw_blocks()}
     result = store.domain_candidate_page(domain_id, page=page, page_size=pageSize, q=q)
     rows = result['items']
     hosts = list(dict.fromkeys(split_addr(row['ip'], 7000)[0] for row in rows))
@@ -386,10 +396,13 @@ def domain_servers(domain_id: int, page: int = Query(default=1, ge=1),
         endpoint = split_addr(row['ip'], 7000)
         conn = latest['connectivity'].get(endpoint)
         speed = latest['speed'].get(endpoint)
+        block = blocks_by_ip.get(endpoint[0])
         items.append({
             'id': row['id'], 'ip': row['ip'], 'group': row['server_group'],
             'preferred': row['id'] == domain.preferred_server_id,
             'current': endpoint[0] == domain.current_ip,
+            'gfwBlocked': block is not None,
+            'gfwBlockedPort': block['blockedPort'] if block else None,
             'latestConnectivity': ({'frpsReachable': bool(conn['frps_reachable']),
                                     'tunnelEstablished': bool(conn['tunnel_established']),
                                     'firewallOpen': bool(conn['firewall_open']),

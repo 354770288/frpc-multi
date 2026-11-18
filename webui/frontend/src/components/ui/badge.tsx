@@ -36,10 +36,13 @@ const badgeVariants = cva(
   }
 )
 
-const TONE_VARIANT: Record<InstanceTone, VariantProps<typeof badgeVariants>["variant"]> = {
+type BadgeTone = InstanceTone | "info"
+
+const TONE_VARIANT: Record<BadgeTone, VariantProps<typeof badgeVariants>["variant"]> = {
   success: "success",
   warning: "warning",
   danger: "destructive",
+  info: "info",
   muted: "muted",
 }
 
@@ -54,7 +57,7 @@ function Badge({
 }: React.ComponentProps<"span"> &
   VariantProps<typeof badgeVariants> & {
     asChild?: boolean
-    tone?: InstanceTone
+    tone?: BadgeTone
     dot?: boolean
   }) {
   const Comp = asChild ? Slot.Root : "span"

@@ -189,6 +189,7 @@ def _filters_query(filters):
         include_tag_ids=tuple(filters.get("includeTagIds", ())),
         exclude_tag_ids=tuple(filters.get("excludeTagIds", ())),
         tag_mode=filters.get("tagMode", "any"), conn=filters.get("conn", "all"),
+        domain_status=filters.get("domainStatus", "all"),
     )
 
 

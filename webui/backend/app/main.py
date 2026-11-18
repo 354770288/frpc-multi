@@ -157,8 +157,11 @@ def console_info(user: Annotated[str, Depends(require_auth)]):
 
     系统页的 Docker 版本、frpc 镜像、磁盘等改由各节点的 /api/nodes/{id}/system 提供。
     """
+    import os
+
     return {
         "version": app.version,
+        "buildVersion": os.environ.get("AGENT_VERSION", "dev"),
         "webuiHost": settings.webui_host,
         "webuiPort": settings.webui_port,
         "projectDir": str(settings.project_dir),
@@ -218,17 +221,18 @@ async def summary(
             continue
 
         store.update_node(node.id, status="online", last_seen_at=now_iso())
+        raw_node_instances = data.get("instances", [])
         try:
             from .lb.port_health import collect_and_sync_node_ports_async
             from .lb.store import LbStore
-            await collect_and_sync_node_ports_async(
+            raw_node_instances = await collect_and_sync_node_ports_async(
                 LbStore(settings.database_path), node.id, node.name, node.uuid, data,
             )
         except Exception:  # noqa: BLE001
             pass
         for key in totals:
             totals[key] += int(data.get(key, 0) or 0)
-        for item in data.get("instances", []):
+        for item in raw_node_instances:
             instances.append({**item, "nodeId": node.id, "nodeName": node.name})
         node_summaries.append(
             {
@@ -253,6 +257,70 @@ async def summary(
         "dockerError": "" if len(online_nodes) == len(nodes) else "部分节点离线",
         "instances": instances,
         "nodes": node_summaries,
+    }
+
+
+@console_router.get("/api/workspace/overview")
+async def workspace_overview(user: Annotated[str, Depends(require_auth)]):
+    """全域工作台单请求聚合概览（同时驱动顶栏/侧边栏实时状态徽标）。"""
+    from .lb.port_health import domain_port_checker
+    from .lb.router import _public_domain
+    from .lb.store import LbStore
+    from .probe.jobs import ProbeJobStore
+    from .probe.store import ProbeStore
+
+    deploy_summary = await summary(user)
+    pstore = ProbeStore(settings.database_path)
+    jstore = ProbeJobStore(settings.database_path)
+    lstore = LbStore(settings.database_path)
+
+    probe_dashboard = pstore.dashboard()
+    active_jobs = jstore.query_jobs(page=1, page_size=5, state="running")
+    failed_jobs = jstore.query_jobs(page=1, page_size=5, state="failed")
+    test_nodes = jstore.list_nodes()
+    domains = [_public_domain(d, pstore) for d in lstore.list_domains()]
+
+    alerts = lstore.list_port_alerts(status="active")
+    gfw_blocks = lstore.list_gfw_blocks()
+    port_summaries = domain_port_checker.domain_summaries()
+    port_domains = [
+        {
+            "domainId": d["id"],
+            "name": d["name"],
+            "enabled": d["enabled"],
+            "currentIp": d["currentIp"],
+            "businessPorts": lstore.domain_business_ports(d["name"]),
+            "lastCheck": port_summaries.get(d["id"]),
+        }
+        for d in domains
+    ]
+
+    alerted_ips = {a["ip"] for a in alerts if a.get("kind") == "gfw_blocked"}
+    standalone_blocks = [b for b in gfw_blocks if b["ip"] not in alerted_ips]
+    sync_failed = sum(1 for d in domains if d["enabled"] and d["lastSyncOk"] is False)
+    offline_deploy = max(0, int(deploy_summary["nodeCount"]) - int(deploy_summary["onlineCount"]))
+    error_instances = 1 if int(deploy_summary["error"]) > 0 else 0
+    offline_workers = sum(1 for n in test_nodes if n.get("kind") == "worker" and not n.get("online"))
+    anomaly_count = len(alerts) + len(standalone_blocks) + sync_failed + offline_deploy + error_instances + offline_workers
+
+    return {
+        "dashboard": probe_dashboard,
+        "activeJobs": active_jobs,
+        "failedJobs": failed_jobs,
+        "testNodes": test_nodes,
+        "domains": domains,
+        "portHealth": {
+            "alerts": alerts,
+            "gfwBlocks": gfw_blocks,
+            "domains": port_domains,
+        },
+        "summary": deploy_summary,
+        "badges": {
+            "anomalies": anomaly_count,
+            "activeJobs": int(active_jobs.get("total", 0)),
+            "offlineNodes": offline_deploy,
+            "errorInstances": int(deploy_summary["error"]),
+        },
     }
 
 

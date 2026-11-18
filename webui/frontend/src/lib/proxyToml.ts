@@ -165,6 +165,72 @@ export function rewriteProxies(text: string, drafts: ProxyDraft[]): string {
   return `${trimmed}\n\n${proxiesText}\n`;
 }
 
+/**
+ * Update top-level `serverAddr`, `serverPort`, or `[auth].token` in the preface
+ * while preserving `[log]` and any other preface sections, plus the `[[proxies]]` body.
+ */
+export function rewritePrefaceConnection(
+  text: string,
+  patch: { serverAddr?: string; serverPort?: string; authToken?: string },
+): string {
+  const current = parseFrpcConfig(text);
+  const nextAddr = patch.serverAddr !== undefined ? patch.serverAddr.trim() : current.serverAddr.trim();
+  const nextPortRaw = patch.serverPort !== undefined ? patch.serverPort.trim() : current.serverPort.trim();
+  const nextToken = patch.authToken !== undefined ? patch.authToken.trim() : current.authToken.trim();
+
+  const { preface, proxiesBody } = splitTomlAtProxies(text);
+  // Collect non-root, non-auth sections from preface (e.g. [log], [transport]) verbatim
+  const otherSections: string[] = [];
+  let activeSection: string | null = null;
+  let sectionLines: string[] = [];
+  const flushSection = () => {
+    if (activeSection && activeSection !== 'auth' && sectionLines.length) {
+      otherSections.push(sectionLines.join('\n').replace(/\s+$/u, ''));
+    }
+    sectionLines = [];
+  };
+
+  for (const raw of preface.split(/\r?\n/)) {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']') && !trimmed.startsWith('[[')) {
+      flushSection();
+      activeSection = trimmed.slice(1, -1).trim();
+      sectionLines = [raw];
+      continue;
+    }
+    if (activeSection) {
+      sectionLines.push(raw);
+    }
+  }
+  flushSection();
+
+  const headerLines: string[] = [];
+  headerLines.push(`serverAddr = ${tomlString(nextAddr)}`);
+  const parsedPort = nextPortRaw ? Number(nextPortRaw) : 7000;
+  const safePort = Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort < 65536 ? parsedPort : 7000;
+  headerLines.push(`serverPort = ${safePort}`);
+
+  if (nextToken) {
+    headerLines.push('');
+    headerLines.push('[auth]');
+    headerLines.push('method = "token"');
+    headerLines.push(`token = ${tomlString(nextToken)}`);
+  }
+
+  for (const block of otherSections) {
+    headerLines.push('');
+    headerLines.push(block);
+  }
+
+  const cleanProxies = proxiesBody.trim();
+  if (cleanProxies) {
+    headerLines.push('');
+    headerLines.push(cleanProxies);
+  }
+
+  return headerLines.join('\n') + '\n';
+}
+
 export function validateProxy(draft: ProxyDraft, others: ProxyDraft[]): string[] {
   const errors: string[] = [];
   const name = draft.name.trim();

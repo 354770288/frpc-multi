@@ -23,6 +23,7 @@ export function serverSelectionFilters(query: ServerQuery) {
     ...(query.excludeTagIds?.length ? { excludeTagIds: [...query.excludeTagIds] } : {}),
     ...(query.tagMode ? { tagMode: query.tagMode } : {}),
     conn: query.conn,
+    ...(query.domainStatus && query.domainStatus !== 'all' ? { domainStatus: query.domainStatus } : {}),
   };
 }
 

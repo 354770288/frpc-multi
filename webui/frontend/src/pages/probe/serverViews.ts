@@ -11,9 +11,20 @@ export const SERVER_VIEW_COLUMNS: { id: ServerViewColumn; label: string }[] = [
 ];
 
 export function savedViewPayload(query: ServerQuery, visibleColumns: ServerViewColumn[]) {
-  const { q = '', group, label, tagId, groupIds = [], includeTagIds = [], excludeTagIds = [], tagMode = 'any', conn } = query;
+  const {
+    q = '', group, label, tagId, groupIds = [], includeTagIds = [], excludeTagIds = [],
+    tagMode = 'any', conn, domainStatus,
+  } = query;
   return {
-    filters: { q, group, label, tagId, groupIds: [...groupIds], includeTagIds: [...includeTagIds], excludeTagIds: [...excludeTagIds], tagMode, conn },
+    filters: {
+      q, group, label, tagId,
+      groupIds: [...groupIds],
+      includeTagIds: [...includeTagIds],
+      excludeTagIds: [...excludeTagIds],
+      tagMode,
+      conn,
+      ...(domainStatus && domainStatus !== 'all' ? { domainStatus } : {}),
+    },
     sort: query.sort,
     order: query.order,
     visibleColumns: [...visibleColumns],
@@ -32,6 +43,9 @@ export function queryFromSavedView(view: ServerView): Partial<ServerQuery> {
     excludeTagIds: filters.excludeTagIds ?? [],
     tagMode: filters.tagMode ?? 'any',
     conn: filters.conn ?? 'all',
+    ...(filters.domainStatus && filters.domainStatus !== 'all'
+      ? { domainStatus: filters.domainStatus }
+      : {}),
     sort: view.sort,
     order: view.order,
   };
@@ -48,7 +62,9 @@ export function serverViewDraftSignature(query: ServerQuery, search: string, vis
     excludeTagIds: query.excludeTagIds ?? [],
     tagMode: query.tagMode ?? 'any',
     conn: query.conn,
+    ...(query.domainStatus && query.domainStatus !== 'all'
+      ? { domainStatus: query.domainStatus }
+      : {}),
   };
   return JSON.stringify({ filters, sort: query.sort, order: query.order, visibleColumns });
 }
-

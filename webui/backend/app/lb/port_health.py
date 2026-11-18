@@ -62,10 +62,10 @@ async def collect_and_sync_node_ports_async(
     node_name: str,
     node_uuid: str,
     summary_data: dict[str, Any] | None = None,
-) -> None:
-    """从单个在线部署节点同步实例业务端口映射到 lb_instance_ports（兼容新旧 Agent）。"""
+) -> list[dict[str, Any]]:
+    """从单个在线部署节点同步实例业务端口映射到 lb_instance_ports（兼容新旧 Agent），并返回内联了 summary 的实例列表。"""
     if not hub.is_online(node_uuid):
-        return
+        return (summary_data or {}).get("instances") or []
     connection = hub.get(node_uuid)
     if summary_data is None:
         summary_data = await connection.call(wsproto.M_SUMMARY, timeout=8.0)
@@ -107,6 +107,7 @@ async def collect_and_sync_node_ports_async(
             _legacy_summary_cache.pop(key, None)
 
     lb_store.replace_node_instance_ports(node_id, node_name, enriched)
+    return enriched
 
 
 async def refresh_all_online_node_ports_async(database_path: Path) -> None:

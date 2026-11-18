@@ -66,6 +66,7 @@ export type SystemInfo = {
 // Docker 版本、磁盘等改由各节点的 SystemInfo（/api/nodes/{id}/system）提供。
 export type ConsoleInfo = {
   version: string;
+  buildVersion?: string;
   webuiHost: string;
   webuiPort: number;
   projectDir: string;
@@ -85,6 +86,7 @@ export type SummaryResponse = {
   dockerError: string;
   instances: (Instance & {
     runtime: InstanceStats | Record<string, never>;
+    summary?: InstanceSummary | null;
     nodeId?: number;
     nodeName?: string;
   })[];
@@ -137,6 +139,7 @@ export type NodeWithInstall = Node & { install: NodeInstall };
 export type InstanceRef = Instance & {
   nodeId: number;
   nodeName: string;
+  summary?: InstanceSummary | null;
 };
 
 export type NodeSummary = {
@@ -230,6 +233,8 @@ export type ProbeServer = {
   ip: string;
   labels: string[];
   group: string;
+  domainId?: number | null;
+  domainName?: string | null;
   createdAt: string;
   latestConnectivity: ProbeConnectivitySummary | null;
   latestSpeed: ProbeSpeedSummary | null;
@@ -384,13 +389,14 @@ export type DiscoverFacets = {
 // ---- 服务器库（服务端分页，模式同网段发现） ----
 
 export type ServerConn = 'all' | 'pass' | 'partial' | 'fail' | 'untested';
+export type ServerDomainStatus = 'all' | 'assigned' | 'unassigned';
 export type ServerSort = 'ip' | 'group' | 'conn' | 'speed' | 'time';
 
 export type ServerViewColumn = 'ip' | 'group' | 'tags' | 'route' | 'connectivity' | 'speed' | 'lastTestTime';
 export type ServerView = {
   id: string;
   name: string;
-  filters: Pick<ServerQuery, 'q' | 'group' | 'label' | 'tagId' | 'groupIds' | 'includeTagIds' | 'excludeTagIds' | 'tagMode' | 'conn'>;
+  filters: Pick<ServerQuery, 'q' | 'group' | 'label' | 'tagId' | 'groupIds' | 'includeTagIds' | 'excludeTagIds' | 'tagMode' | 'conn' | 'domainStatus'>;
   sort: ServerSort;
   order: DiscoverOrder;
   visibleColumns: ServerViewColumn[];
@@ -411,6 +417,7 @@ export type ServerQuery = {
   tagMode?: 'any' | 'all';
   cursor?: string;
   conn: ServerConn;
+  domainStatus?: ServerDomainStatus;
   sort: ServerSort;
   order: DiscoverOrder;
 };
@@ -553,6 +560,8 @@ export type LbDomain = {
 export type LbDomainServer = Pick<ProbeServer, 'id' | 'ip' | 'group' | 'latestConnectivity' | 'latestSpeed'> & {
   preferred: boolean;
   current: boolean;
+  gfwBlocked?: boolean;
+  gfwBlockedPort?: number | null;
 };
 
 export type LbDomainServerPage = {
@@ -735,3 +744,28 @@ export type ProbeConnResult = ProbeResultBase & { frps_reachable: boolean; tunne
 export type ProbeSpeedResult = ProbeResultBase & { dl_ok: boolean; ul_ok: boolean; dl_speed_bps: number; ul_speed_bps: number; dl_speed_mbps: number; ul_speed_mbps: number };
 export type LbSelectionConfig = { nodeId: string; maxAgeHours: number; healthSource: 'console' };
 export type LbSelection = LbSelectionConfig & { observedAt: string | null; validCandidates: number; bestIp: string | null; reason: 'console_observation' | 'no_healthy_candidates' | 'keep_healthy_current' | 'node_observation' | 'healthy_ip_order' | 'preferred_server' | 'primary_observation' };
+
+export type WorkspaceBadges = {
+  anomalies: number;
+  activeJobs: number;
+  offlineNodes: number;
+  errorInstances: number;
+};
+
+export type WorkspaceOverviewResponse = {
+  dashboard: ProbeDashboard;
+  activeJobs: { items: ProbeJob[]; page: number; pageSize: number; total: number };
+  failedJobs: { items: ProbeJob[]; page: number; pageSize: number; total: number };
+  testNodes: TestNode[];
+  domains: LbDomain[];
+  portHealth: LbPortHealthResponse;
+  summary: SummaryResponse;
+  badges: WorkspaceBadges;
+};
+
+export type BatchUpgradeNodesResult = {
+  targetVersion: string;
+  upgraded: { id: number; name: string; image?: string }[];
+  skipped: { id: number; name: string; reason: string; agentVersion?: string }[];
+  failed: { id: number; name: string; error: string }[];
+};

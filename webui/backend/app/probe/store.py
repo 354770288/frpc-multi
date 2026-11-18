@@ -360,6 +360,7 @@ class ServerPageQuery:
     include_tag_ids: tuple[str, ...] = ()
     exclude_tag_ids: tuple[str, ...] = ()
     tag_mode: Literal["any", "all"] = "any"
+    domain_status: Literal["all", "assigned", "unassigned"] = "all"
 
     def __post_init__(self) -> None:
         if self.page < 1:
@@ -374,6 +375,8 @@ class ServerPageQuery:
             raise ValueError("order 必须是 asc/desc")
         if self.tag_mode not in {"any", "all"}:
             raise ValueError("tag_mode 必须是 any/all")
+        if self.domain_status not in {"all", "assigned", "unassigned"}:
+            raise ValueError("domain_status 必须是 all/assigned/unassigned")
         for name, values in (("group_ids", self.group_ids), ("include_tag_ids", self.include_tag_ids),
                              ("exclude_tag_ids", self.exclude_tag_ids)):
             normalized = {str(value).strip() for value in values if str(value).strip()}
@@ -1698,6 +1701,10 @@ class ProbeStore:
             score = "s.conn_score"
             where.append({"pass": f"{score} = 4", "partial": f"{score} IN (2, 3)",
                           "fail": f"{score} BETWEEN 1 AND 3", "untested": f"{score} = 0"}[query.conn])
+        if query.domain_status == "assigned":
+            where.append("EXISTS (SELECT 1 FROM lb_domain_servers ds WHERE ds.server_id = s.id)")
+        elif query.domain_status == "unassigned":
+            where.append("NOT EXISTS (SELECT 1 FROM lb_domain_servers ds WHERE ds.server_id = s.id)")
         return (" WHERE " + " AND ".join(where) if where else ""), params
 
     def _server_order_terms(self, query: ServerPageQuery) -> list[tuple[str, str]]:
@@ -1749,7 +1756,8 @@ class ProbeStore:
                       "tagId": query.tag_id.strip() if query.tag_id else query.tag_id,
                       "include": clean(query.include_tag_ids), "exclude": clean(query.exclude_tag_ids),
                       "tagMode": query.tag_mode, "conn": query.conn, "sort": query.sort, "order": query.order,
-                      "pageSize": query.page_size}
+                      "pageSize": query.page_size,
+                      **({"domainStatus": query.domain_status} if query.domain_status != "all" else {})}
         return hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     @staticmethod
@@ -1818,7 +1826,8 @@ class ProbeStore:
         if query.tag_id and query.tag_id.strip() and query.tag_id.strip() not in ids:
             ids.append(query.tag_id.strip())
         if (ids and not query.q.strip() and query.group is None and not query.group_ids
-                and query.label is None and query.conn == 'all' and not query.exclude_tag_ids):
+                and query.label is None and query.conn == 'all' and query.domain_status == 'all'
+                and not query.exclude_tag_ids):
             marks = ','.join('?' for _ in ids)
             if len(ids) == 1:
                 sql = 'SELECT COUNT(*) FROM probe_server_tags WHERE tag_id=?'

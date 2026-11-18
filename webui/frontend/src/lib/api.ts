@@ -1,6 +1,7 @@
 import { getAuthToken, notifyUnauthorized, AuthError } from './auth';
 import type {
   AuditLog,
+  BatchUpgradeNodesResult,
   GeoIpStatus,
   TestNode, TestNodeExecutionPolicy, ProbeFailover, ProbeJobInput, ProbeJob, ProbeJobDetail, LbSelectionConfig,
   CloudflareInfo,
@@ -35,6 +36,7 @@ import type {
   ProbeTestStatus,
   ServerFacets,
   ServerCursorPage,
+  ServerDomainStatus,
   ServerPage,
   ServerQuery,
   ServerView,
@@ -46,7 +48,8 @@ import type {
   ServerImportJob,
   ServerImportFailuresPage,
   SystemInfo,
-  ValidationData
+  ValidationData,
+  WorkspaceOverviewResponse,
 } from './types';
 
 export function extractMessage(text: string, fallback: string): string {
@@ -121,6 +124,11 @@ export const nodesApi = {
       helperContainer?: string;
       image?: string;
     }>(`/api/nodes/${id}/agent/upgrade`, { method: 'POST' }),
+  upgradeOutdated: (nodeIds?: number[]) =>
+    api<BatchUpgradeNodesResult>('/api/nodes/upgrade-outdated', {
+      method: 'POST',
+      body: JSON.stringify(nodeIds ? { nodeIds } : {}),
+    }),
   patch: (id: number, payload: NodePatchPayload) =>
     api<Node>(`/api/nodes/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   delete: (id: number) =>
@@ -185,6 +193,7 @@ function serverFilterParams(query: ServerQuery) {
   if (query.includeTagIds?.length) params.set('includeTagIds', query.includeTagIds.join(','));
   if (query.excludeTagIds?.length) params.set('excludeTagIds', query.excludeTagIds.join(','));
   if (query.tagMode) params.set('tagMode', query.tagMode);
+  if (query.domainStatus && query.domainStatus !== 'all') params.set('domainStatus', query.domainStatus);
   return params;
 }
 
@@ -229,6 +238,7 @@ export const probeApi = {
     if (query.includeTagIds?.length) params.set('includeTagIds', query.includeTagIds.join(','));
     if (query.excludeTagIds?.length) params.set('excludeTagIds', query.excludeTagIds.join(','));
     if (query.tagMode) params.set('tagMode', query.tagMode);
+    if (query.domainStatus && query.domainStatus !== 'all') params.set('domainStatus', query.domainStatus);
     return api<ServerPage>(`/api/probe/servers?${params.toString()}`, { signal });
   },
   serversCursor: (query: ServerQuery, signal?: AbortSignal) => {
@@ -251,7 +261,7 @@ export const probeApi = {
     const suffix = params.toString();
     return api<ServerFacets>(`/api/probe/servers/facets${suffix ? `?${suffix}` : ''}`, { signal });
   },
-  createServerSelection: (payload: { ids?: number[]; allMatching?: boolean; q?: string; group?: string; label?: string; groupIds?: string[]; tagId?: string; includeTagIds?: string[]; excludeTagIds?: string[]; tagMode?: 'any' | 'all'; conn?: ServerQuery['conn'] }) =>
+  createServerSelection: (payload: { ids?: number[]; allMatching?: boolean; q?: string; group?: string; label?: string; groupIds?: string[]; tagId?: string; includeTagIds?: string[]; excludeTagIds?: string[]; tagMode?: 'any' | 'all'; conn?: ServerQuery['conn']; domainStatus?: ServerDomainStatus }) =>
     api<ServerSelection>('/api/probe/server-selections', { method: 'POST', body: JSON.stringify(payload) }),
   serverSelection: (id: string) => api<ServerSelection>(`/api/probe/server-selections/${encodeURIComponent(id)}`),
   createServerBulkJob: (payload: { selectionId: string; operation: 'update' | 'delete'; payload?: Record<string, unknown>; idempotencyKey: string }) =>
@@ -464,8 +474,16 @@ export const lbApi = {
       method: 'POST',
       body: JSON.stringify(domainId != null ? { domainId } : {}),
     }),
+  checkDomainPorts: (domainId: number) =>
+    api<LbPortHealthCheckResult>(`/api/lb/domains/${domainId}/check-ports`, {
+      method: 'POST',
+    }),
   unblockGfwIp: (ip: string) =>
     api<{ ok: boolean; removed: boolean }>(`/api/lb/gfw-blocks/${encodeURIComponent(ip)}`, { method: 'DELETE' }),
   dismissPortAlert: (alertId: number) =>
     api<{ ok: boolean; dismissed: boolean }>(`/api/lb/port-alerts/${alertId}/dismiss`, { method: 'POST' }),
+};
+
+export const workspaceApi = {
+  overview: () => api<WorkspaceOverviewResponse>('/api/workspace/overview'),
 };

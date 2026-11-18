@@ -4,6 +4,7 @@ import { probeApi } from '../../lib/api';
 import type {
   DiscoverOrder,
   ServerConn,
+  ServerDomainStatus,
   ServerPage,
   ServerQuery,
   ServerSort,
@@ -16,7 +17,7 @@ const EMPTY_PAGE: ServerPage = {
 const EMPTY_FACETS: ServerFacets = { labels: [], tagItems: [], groups: [] };
 const TAG_CANDIDATE_PAGE_SIZE = 50;
 const MANAGED_URL_KEYS = [
-  'page', 'pageSize', 'conn', 'sort', 'order', 'q', 'group', 'label',
+  'page', 'pageSize', 'conn', 'domainStatus', 'sort', 'order', 'q', 'group', 'label',
   'tagId', 'cursor', 'groupIds', 'includeTagIds', 'excludeTagIds', 'tagMode',
 ] as const;
 
@@ -26,11 +27,13 @@ export function parseServerQuery(search: string): ServerQuery {
   const sort = params.get('sort');
   const order = params.get('order');
   const conn = params.get('conn');
+  const domainStatus = params.get('domainStatus');
   const list = (key: string) => (params.get(key) ?? '').split(',').map((value) => value.trim()).filter(Boolean);
   return {
     page: Math.max(1, Number(params.get('page')) || 1),
     pageSize: [25, 50, 100, 200].includes(pageSize) ? pageSize : 50,
     conn: conn === 'pass' || conn === 'partial' || conn === 'fail' || conn === 'untested' ? conn : 'all',
+    ...(domainStatus === 'assigned' || domainStatus === 'unassigned' ? { domainStatus } : {}),
     sort: sort === 'group' || sort === 'conn' || sort === 'speed' || sort === 'time' ? sort : 'ip',
     order: order === 'desc' ? 'desc' : 'asc',
     ...(params.has('q') ? { q: params.get('q') || '' } : {}),
@@ -51,6 +54,7 @@ export function writeServerQueryParams(current: URLSearchParams, query: ServerQu
   next.set('page', String(query.page));
   next.set('pageSize', String(query.pageSize));
   next.set('conn', query.conn);
+  if (query.domainStatus && query.domainStatus !== 'all') next.set('domainStatus', query.domainStatus);
   next.set('sort', query.sort);
   next.set('order', query.order);
   if (query.q !== undefined) next.set('q', query.q);
@@ -86,6 +90,7 @@ function cursorStorageKey(query: ServerQuery) {
     excludeTagIds: query.excludeTagIds,
     tagMode: query.tagMode ?? 'any',
     conn: query.conn,
+    domainStatus: query.domainStatus,
     sort: query.sort,
     order: query.order,
     pageSize: query.pageSize,
@@ -103,6 +108,7 @@ function countKeyFor(query: ServerQuery) {
     excludeTagIds: query.excludeTagIds,
     tagMode: query.tagMode,
     conn: query.conn,
+    domainStatus: query.domainStatus,
     sort: query.sort,
   });
 }
@@ -118,6 +124,7 @@ function facetKeyFor(query: ServerQuery) {
     excludeTagIds: query.excludeTagIds,
     tagMode: query.tagMode,
     conn: query.conn,
+    domainStatus: query.domainStatus,
   });
 }
 
@@ -166,7 +173,7 @@ export function useServers(active = true) {
   const facetFilterKey = facetKeyFor(query);
   const cursorKey = useMemo(() => cursorStorageKey(query), [
     query.q, query.group, query.groupIds, query.label, query.tagId,
-    query.includeTagIds, query.excludeTagIds, query.tagMode, query.conn,
+    query.includeTagIds, query.excludeTagIds, query.tagMode, query.conn, query.domainStatus,
     query.sort, query.order, query.pageSize,
   ]);
   const [cursorTrail, setCursorTrail] = useState<string[]>(() => loadCursorTrail(cursorStorageKey(query)));
@@ -461,10 +468,11 @@ export function useServers(active = true) {
     setTagPage(Math.max(1, Math.floor(value)));
   }, []);
   const setConn = useCallback((conn: ServerConn) => updateQuery({ conn }), [updateQuery]);
+  const setDomainStatus = useCallback((domainStatus: ServerDomainStatus) => updateQuery({ domainStatus: domainStatus === 'all' ? undefined : domainStatus }), [updateQuery]);
   const setSort = useCallback((sort: ServerSort, order: DiscoverOrder) => updateQuery({ sort, order }), [updateQuery]);
   const applySavedView = useCallback((changes: Partial<ServerQuery>) => {
     setTagPage(1);
-    commitQuery((current) => ({ ...current, ...changes, page: 1, cursor: undefined }), true);
+    commitQuery((current) => ({ ...current, domainStatus: undefined, ...changes, page: 1, cursor: undefined }), true);
   }, [commitQuery]);
   const setPageNumber = useCallback((nextPage: number) => updateQuery({ page: nextPage }, false), [updateQuery]);
   const setPageSize = useCallback((pageSize: number) => updateQuery({ pageSize }), [updateQuery]);
@@ -556,6 +564,7 @@ export function useServers(active = true) {
     setTagCandidateSearch,
     setTagCandidatePage,
     setConn,
+    setDomainStatus,
     setSort,
     applySavedView,
     setPageNumber,

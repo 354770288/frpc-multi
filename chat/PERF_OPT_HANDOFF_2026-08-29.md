@@ -178,3 +178,16 @@ ADD 标签的 LIKE 去重要带 ESCAPE；INSERT 路径要全部枚举（曾漏�
 - 本地仓库 main；测试 `cd webui/backend && .venv/bin/python -m unittest discover -s tests -q`（195）；前端 `npx tsc -b && npm run build`。
 - VPS 23.19.228.204（netcatty vault: Hostdzire-LAX）；面板凭据查 vault；真实路由节点 debian-work = 10.144.1.3（vault label「ubuntu-work」条目）。
 - VPS 发现表 1400+ 真实行；验证时不得污染生产数据。
+
+
+## 8. 2026-11-18 WebUI 全面易用性与视觉升级归档
+
+- **设计系统与全局壳层**：微调亮/暗双主题表面层级，全站图标库统一收敛至 `lucide-react`（移除 `@hugeicons/*` 冗余依赖）；新增 `PageHeader`、`CopyableText`、层级可点击面包屑、侧边栏实时徽标（异常数 / 活跃测试 / 离线节点 / 异常实例）及全局 `Cmd+K` / `Ctrl+K` 快捷跳转命令面板 `CommandPalette.tsx`。
+- **后端协同 API（B1–B6）**：`GET /api/summary` 内联实例配置摘要（消除实例列表前 25 条 N+1 轮询），`GET /api/console-info` 返回 `buildVersion`；新增 `GET /api/workspace/overview` 单请求全域聚合端点；服务器库接口与保存视图支持 `domainStatus=all|assigned|unassigned` 并内联 `domainId` / `domainName`；新增 `POST /api/lb/domains/{id}/check-ports` 单域名业务端口检测、候选池成员附带 `gfwBlocked` / `gfwBlockedPort`；新增 `POST /api/nodes/upgrade-outdated` 批量升级落后在线 Agent。
+- **核心页面重塑**：
+  - 工作台 `ResourceOverview.tsx` 升级为 6 维全域指标卡 + 进度条化任务卡 + 优选域名速览；
+  - 服务器库 `ServersPage.tsx` 紧凑化工具栏、新增域名归属筛选与徽章、单机快捷重测、批量加入域名池及右侧详情抽屉 `ServerDetailSheet.tsx`；
+  - 新建测试 `TestCreatePage.tsx` 与新建实例 `CreateInstance.tsx` 重构为一屏双栏卡片布局（实时预览 + 一键提交，支持实例克隆预填）；
+  - 候选池 `DomainCandidatesDialog.tsx` 支持分组/标签/未占用筛选、速率排序及候选 GFW 屏蔽一键解封；
+  - 配置编辑器 `ConfigEditor.tsx` 支持结构化改绑优选域名与修改前后 Diff 预览；`Detail.tsx` 支持日志语义着色、复制导出及单实例精确审计分页；`NodesPage.tsx` / `AuditLogsPage.tsx` 表格断点优化至 `lg:`；`TestNodesPage.tsx` 新增可视化主备执行链路拓扑条。
+- **质量门禁**：后端 `436` 项单测、前端 `39` 项 Vitest 单测、生产构建与 `61` 项 Playwright E2E 全部通过。

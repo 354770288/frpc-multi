@@ -25,7 +25,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           react: ['react', 'react-dom', 'react-router-dom'],
-          ui: ['radix-ui', 'lucide-react', '@hugeicons/react', '@hugeicons/core-free-icons', 'sonner']
+          ui: ['radix-ui', 'lucide-react', 'sonner']
         }
       }
     }

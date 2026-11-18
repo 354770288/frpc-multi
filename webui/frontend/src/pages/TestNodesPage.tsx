@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowRight, ShieldCheck } from 'lucide-react';
 import { probeApi } from '../lib/api';
 import type { ProbeFailover, TestNode, TestNodeExecutionPolicy } from '../lib/types';
 import { formatLastSeen } from '../lib/format';
+import { PageHeader, PageShell } from '../components/PageHeader';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -39,11 +41,18 @@ export function TestNodesPage() {
   const savingRef = useRef(false);
   const policyRequestRevision = useRef(0);
   const failoverRequestRevision = useRef(0);
-  const close = () => { setOpen(false); requestAnimationFrame(() => manageButton.current?.focus()); };
+  const close = () => {
+    setOpen(false);
+    requestAnimationFrame(() => manageButton.current?.focus());
+  };
 
   const load = useCallback(async () => {
-    try { setNodes((await probeApi.testNodes()).items); setError(''); }
-    catch (err) { setError(err instanceof Error ? err.message : '测试节点加载失败'); }
+    try {
+      setNodes((await probeApi.testNodes()).items);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '测试节点加载失败');
+    }
   }, []);
 
   const applyPolicy = useCallback((policy: TestNodeExecutionPolicy, preserveDraft = false) => {
@@ -101,7 +110,9 @@ export function TestNodesPage() {
 
   useEffect(() => {
     void loadFailovers();
-    return () => { failoverRequestRevision.current += 1; };
+    return () => {
+      failoverRequestRevision.current += 1;
+    };
   }, [loadFailovers]);
 
   const eligibleNodes = useMemo(() => nodes.filter(isEligibleRoleNode), [nodes]);
@@ -111,6 +122,7 @@ export function TestNodesPage() {
     const savedOrder = backupNodeIds.filter((id) => id !== primaryNodeId && eligibleIds.includes(id));
     return [...savedOrder, ...eligibleIds.filter((id) => !savedOrder.includes(id))];
   }, [eligibleNodes, primaryNodeId, backupNodeIds]);
+
   const markDirty = () => {
     dirty.current = true;
     setNotice('');
@@ -166,124 +178,235 @@ export function TestNodesPage() {
     pending_owner_offline: '主用节点离线时转移待处理任务',
   }[reason] ?? reason);
 
-  return <main className="mx-auto max-w-[1300px] px-4 py-6 sm:px-6">
-    <div className="mb-5 flex items-center gap-3">
-      <div><h2 className="text-lg font-semibold">测试节点</h2><p className="text-sm text-muted-foreground">执行网段发现、路由、穿透与速率测量</p></div>
-      <Button ref={manageButton} className="ml-auto" onClick={() => setOpen(true)}>接入或管理节点</Button>
-    </div>
-    {error && <p role="alert" className="mb-4 text-sm text-destructive">{error} <Button variant="link" onClick={load}>重试</Button></p>}
+  const primaryNode = primaryNodeId ? nodeById.get(primaryNodeId) : undefined;
+  const consoleNode = nodeById.get('console');
 
-    <Card className="mb-6">
-      <CardHeader>
-        <CardTitle>测试节点主备策略</CardTitle>
-        <p className="text-sm text-muted-foreground">选择一个主用测试节点。其他具备完整能力的外部节点自动加入备用顺序，可调整先后；主控作为最后备用。</p>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-5">
-        {policyError && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-          主备测试策略读取或保存失败：{policyError}。可选择有效测试节点并保存新的策略。
-        </p>}
-        {!policyLoaded && <p className="text-sm text-muted-foreground">正在读取主备测试策略…</p>}
-        {eligibleNodes.length === 0 ? <Empty className="border">
-          <EmptyHeader>
-            <EmptyTitle>暂无可选测试节点</EmptyTitle>
-            <EmptyDescription>需接入具备发现、路由、连通性和速率能力的外部 worker。</EmptyDescription>
-          </EmptyHeader>
-        </Empty> : <>
-          <FieldGroup className="gap-5">
-            <Field>
-              <FieldLabel htmlFor="primary-test-node">主用测试节点</FieldLabel>
-              <Select value={primaryNodeId} onValueChange={choosePrimary} disabled={saving}>
-                <SelectTrigger id="primary-test-node" aria-label="主用测试节点" className="w-full max-w-xl">
-                  <SelectValue placeholder="请选择主用测试节点" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    {eligibleNodes.map((node) => <SelectItem key={node.id} value={node.id}>
-                      {node.name}{node.online ? ' · 在线' : ' · 离线'}
-                    </SelectItem>)}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              {!primaryNodeId && !policyError && <FieldDescription>请选择一个主用测试节点后再保存。</FieldDescription>}
-              {suggestedPrimaryNodeId && nodeById.has(suggestedPrimaryNodeId) && <FieldDescription>建议主用：{nodeById.get(suggestedPrimaryNodeId)?.name}。这是未保存的建议，可自行调整后保存。</FieldDescription>}
-            </Field>
+  return (
+    <PageShell maxWidth="6xl">
+      <PageHeader
+        title="测试节点"
+        description="统一管理全局主用与有序备用探测节点集群，支撑网段发现、穿透测速与业务端口 GFW 巡检"
+        actions={<Button ref={manageButton} onClick={() => setOpen(true)}>接入或管理节点</Button>}
+      />
 
-            <FieldSet className="gap-2">
-              <FieldLegend>备用顺序</FieldLegend>
-              <FieldDescription>所有其他具备完整能力的外部节点都会加入备用顺序。</FieldDescription>
-              <ol className="flex flex-col gap-2">
-                {orderedBackupIds.map((nodeId, index) => {
-                  const node = nodeById.get(nodeId);
-                  return <li key={nodeId} className="flex items-center gap-3 rounded-md border p-3 text-sm">
-                    <span className="w-6 text-center font-semibold">{index + 1}</span>
-                    <span className="min-w-0 flex-1 truncate">{node?.name ?? nodeId}</span>
-                    <Badge tone={node?.online ? 'success' : 'muted'}>{node ? node.online ? '在线' : '离线' : '节点不可用'}</Badge>
-                    {node && !supportsTaskGeneration(node) && <Badge tone="warning">需升级 · 等待协议能力</Badge>}
-                    <Button variant="outline" size="sm" disabled={saving || index === 0} aria-label={`上移备用节点 ${node?.name ?? nodeId}`} onClick={() => moveBackup(index, -1)}>上移</Button>
-                    <Button variant="outline" size="sm" disabled={saving || index === orderedBackupIds.length - 1} aria-label={`下移备用节点 ${node?.name ?? nodeId}`} onClick={() => moveBackup(index, 1)}>下移</Button>
-                  </li>;
-                })}
-                <li className="flex items-center gap-3 rounded-md border border-dashed p-3 text-sm text-muted-foreground">
-                  <span className="w-6 text-center font-semibold">{orderedBackupIds.length + 1}</span>
-                  <span className="min-w-0 flex-1">主控 Console（最终备用）</span>
-                  <Badge tone="muted">固定</Badge>
-                </li>
-              </ol>
-            </FieldSet>
-          </FieldGroup>
+      {error && (
+        <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+          {error} <Button variant="link" onClick={() => void load()}>重试</Button>
+        </p>
+      )}
 
-          <Separator />
-          <div className="flex flex-wrap items-center gap-3">
-            <Button onClick={savePolicy} disabled={!primaryNodeId || saving}>{saving ? '保存中…' : '保存主备策略'}</Button>
-            {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
-            {!policyError && !notice && policyLoaded && policyConfigured && !dirty.current && primaryNodeId && <p className="text-sm text-muted-foreground">当前主用与备用测试节点已保存。</p>}
-            {!policyError && !notice && policyLoaded && !policyConfigured && primaryNodeId && <p role="status" className="text-sm text-muted-foreground">当前选择尚未保存，请点击“保存主备策略”。</p>}
+      {/* 可视化主备执行链路拓扑条 */}
+      {primaryNode && (
+        <div
+          aria-label="主备执行链路拓扑"
+          className="flex flex-wrap items-center gap-2 rounded-xl border bg-card px-4 py-3 text-xs shadow-2xs"
+        >
+          <span className="inline-flex items-center gap-1.5 font-medium text-muted-foreground">
+            <ShieldCheck className="size-4 text-primary" />
+            当前探测与故障切换链路：
+          </span>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 font-medium text-foreground">
+            <span className={`size-2 rounded-full ${primaryNode.online ? 'bg-emerald-500' : 'bg-destructive'}`} />
+            主用 · {primaryNode.name}
+          </span>
+          {orderedBackupIds.map((id, idx) => {
+            const bNode = nodeById.get(id);
+            return (
+              <Fragment key={id}>
+                <ArrowRight className="size-3.5 text-muted-foreground/70" />
+                <span className="inline-flex items-center gap-1.5 rounded-full border bg-muted/40 px-2.5 py-1 text-foreground">
+                  <span className={`size-2 rounded-full ${bNode?.online ? 'bg-emerald-500' : 'bg-muted-foreground/50'}`} />
+                  备 {idx + 1} · {bNode?.name ?? id}
+                </span>
+              </Fragment>
+            );
+          })}
+          <ArrowRight className="size-3.5 text-muted-foreground/70" />
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-dashed bg-muted/20 px-2.5 py-1 text-muted-foreground">
+            <span className={`size-2 rounded-full ${consoleNode?.online !== false ? 'bg-emerald-500' : 'bg-muted-foreground/50'}`} />
+            兜底 · Console
+          </span>
+        </div>
+      )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>测试节点主备策略</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            选择一个主用测试节点。其他具备完整能力的外部节点自动加入备用顺序，可调整先后；主控作为最后备用。
+          </p>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-5">
+          {policyError && (
+            <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+              主备测试策略读取或保存失败：{policyError}。可选择有效测试节点并保存新的策略。
+            </p>
+          )}
+          {!policyLoaded && <p className="text-sm text-muted-foreground">正在读取主备测试策略…</p>}
+          {eligibleNodes.length === 0 ? (
+            <Empty className="border">
+              <EmptyHeader>
+                <EmptyTitle>暂无可选测试节点</EmptyTitle>
+                <EmptyDescription>需接入具备发现、路由、连通性和速率能力的外部 worker。</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          ) : (
+            <>
+              <FieldGroup className="gap-5">
+                <Field>
+                  <FieldLabel htmlFor="primary-test-node">主用测试节点</FieldLabel>
+                  <Select value={primaryNodeId} onValueChange={choosePrimary} disabled={saving}>
+                    <SelectTrigger id="primary-test-node" aria-label="主用测试节点" className="w-full max-w-xl">
+                      <SelectValue placeholder="请选择主用测试节点" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {eligibleNodes.map((node) => (
+                          <SelectItem key={node.id} value={node.id}>
+                            {node.name}{node.online ? ' · 在线' : ' · 离线'}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  {!primaryNodeId && !policyError && <FieldDescription>请选择一个主用测试节点后再保存。</FieldDescription>}
+                  {suggestedPrimaryNodeId && nodeById.has(suggestedPrimaryNodeId) && (
+                    <FieldDescription>
+                      建议主用：{nodeById.get(suggestedPrimaryNodeId)?.name}。这是未保存的建议，可自行调整后保存。
+                    </FieldDescription>
+                  )}
+                </Field>
+
+                <FieldSet className="gap-2">
+                  <FieldLegend>备用顺序</FieldLegend>
+                  <FieldDescription>所有其他具备完整能力的外部节点都会加入备用顺序。</FieldDescription>
+                  <ol className="flex flex-col gap-2">
+                    {orderedBackupIds.map((nodeId, index) => {
+                      const node = nodeById.get(nodeId);
+                      return (
+                        <li key={nodeId} className="flex items-center gap-3 rounded-lg border p-3 text-sm">
+                          <span className="w-6 text-center font-semibold">{index + 1}</span>
+                          <span className="min-w-0 flex-1 truncate">{node?.name ?? nodeId}</span>
+                          <Badge tone={node?.online ? 'success' : 'muted'}>
+                            {node ? (node.online ? '在线' : '离线') : '节点不可用'}
+                          </Badge>
+                          {node && !supportsTaskGeneration(node) && <Badge tone="warning">需升级 · 等待协议能力</Badge>}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={saving || index === 0}
+                            aria-label={`上移备用节点 ${node?.name ?? nodeId}`}
+                            onClick={() => moveBackup(index, -1)}
+                          >
+                            上移
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={saving || index === orderedBackupIds.length - 1}
+                            aria-label={`下移备用节点 ${node?.name ?? nodeId}`}
+                            onClick={() => moveBackup(index, 1)}
+                          >
+                            下移
+                          </Button>
+                        </li>
+                      );
+                    })}
+                    <li className="flex items-center gap-3 rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+                      <span className="w-6 text-center font-semibold">{orderedBackupIds.length + 1}</span>
+                      <span className="min-w-0 flex-1">主控 Console（最终备用）</span>
+                      <Badge tone="muted">固定</Badge>
+                    </li>
+                  </ol>
+                </FieldSet>
+              </FieldGroup>
+
+              <Separator />
+              <div className="flex flex-wrap items-center gap-3">
+                <Button onClick={() => void savePolicy()} disabled={!primaryNodeId || saving}>
+                  {saving ? '保存中…' : '保存主备策略'}
+                </Button>
+                {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
+                {!policyError && !notice && policyLoaded && policyConfigured && !dirty.current && primaryNodeId && (
+                  <p className="text-sm text-muted-foreground">当前主用与备用测试节点已保存。</p>
+                )}
+                {!policyError && !notice && policyLoaded && !policyConfigured && primaryNodeId && (
+                  <p role="status" className="text-sm text-muted-foreground">当前选择尚未保存，请点击“保存主备策略”。</p>
+                )}
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center gap-2">
+            <CardTitle>任务转移历史</CardTitle>
+            <Badge tone="muted">共 {failoverTotal} 条</Badge>
+            <Button variant="outline" size="sm" className="ml-auto" onClick={() => void loadFailovers()} disabled={failoverLoading}>
+              刷新
+            </Button>
           </div>
-        </>}
-      </CardContent>
-    </Card>
+          <p className="text-sm text-muted-foreground">
+            这里只记录已转移到备用节点的任务。未声明 task-generation-v1 的备用节点会显示为等待升级；这不表示旧版主用节点上的所有任务都已阻塞。
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {failoverError && (
+            <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+              任务转移历史加载失败：{failoverError} <Button variant="link" onClick={() => void loadFailovers()}>重试</Button>
+            </p>
+          )}
+          {failoverLoading && <p role="status" className="text-sm text-muted-foreground">正在加载任务转移历史…</p>}
+          {failovers.map((item) => (
+            <div key={item.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border p-3 text-sm">
+              <span className="font-mono text-xs text-muted-foreground">{item.taskId}</span>
+              <span>{nodeById.get(item.fromNodeId)?.name ?? item.fromNodeId} → {nodeById.get(item.toNodeId)?.name ?? item.toNodeId}</span>
+              <Badge tone="muted">第 {item.generation} 代</Badge>
+              <span className="text-muted-foreground">{failoverReason(item.reason)}</span>
+              <span className="ml-auto text-muted-foreground" title={item.transferredAt}>{formatLastSeen(item.transferredAt)}</span>
+            </div>
+          ))}
+          {!failoverLoading && !failoverError && failovers.length === 0 && (
+            <p className="py-6 text-center text-sm text-muted-foreground">暂无任务转移记录</p>
+          )}
+          <div className="flex items-center justify-end gap-2 text-sm">
+            <span>第 {failoverPage} 页 / 共 {Math.max(1, Math.ceil(failoverTotal / 20))} 页</span>
+            <Button variant="outline" size="sm" disabled={failoverPage <= 1 || failoverLoading} onClick={() => setFailoverPage((page) => Math.max(1, page - 1))}>
+              上一页
+            </Button>
+            <Button variant="outline" size="sm" disabled={failoverLoading || failoverPage * 20 >= failoverTotal} onClick={() => setFailoverPage((page) => page + 1)}>
+              下一页
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-center gap-2">
-          <CardTitle>任务转移历史</CardTitle>
-          <Badge tone="muted">共 {failoverTotal} 条</Badge>
-          <Button variant="outline" size="sm" className="ml-auto" onClick={() => void loadFailovers()} disabled={failoverLoading}>刷新</Button>
-        </div>
-        <p className="text-sm text-muted-foreground">这里只记录已转移到备用节点的任务。未声明 task-generation-v1 的备用节点会显示为等待升级；这不表示旧版主用节点上的所有任务都已阻塞。</p>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {failoverError && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">任务转移历史加载失败：{failoverError} <Button variant="link" onClick={() => void loadFailovers()}>重试</Button></p>}
-        {failoverLoading && <p role="status" className="text-sm text-muted-foreground">正在加载任务转移历史…</p>}
-        {failovers.map((item) => <div key={item.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border p-3 text-sm">
-          <span className="font-mono text-xs text-muted-foreground">{item.taskId}</span>
-          <span>{nodeById.get(item.fromNodeId)?.name ?? item.fromNodeId} → {nodeById.get(item.toNodeId)?.name ?? item.toNodeId}</span>
-          <Badge tone="muted">第 {item.generation} 代</Badge>
-          <span className="text-muted-foreground">{failoverReason(item.reason)}</span>
-          <span className="ml-auto text-muted-foreground" title={item.transferredAt}>{formatLastSeen(item.transferredAt)}</span>
-        </div>)}
-        {!failoverLoading && !failoverError && failovers.length === 0 && <p className="py-6 text-center text-sm text-muted-foreground">暂无任务转移记录</p>}
-        <div className="flex items-center justify-end gap-2 text-sm">
-          <span>第 {failoverPage} 页 / 共 {Math.max(1, Math.ceil(failoverTotal / 20))} 页</span>
-          <Button variant="outline" size="sm" disabled={failoverPage <= 1 || failoverLoading} onClick={() => setFailoverPage((page) => Math.max(1, page - 1))}>上一页</Button>
-          <Button variant="outline" size="sm" disabled={failoverLoading || failoverPage * 20 >= failoverTotal} onClick={() => setFailoverPage((page) => page + 1)}>下一页</Button>
-        </div>
-      </CardContent>
-    </Card>
-
-    <div className="grid gap-4 md:grid-cols-2">
-      {nodes.map((node) => {
-        const role = roleFor(node.id);
-        return <Card key={node.id}>
-          <CardHeader><CardTitle className="flex flex-wrap items-center gap-2">{node.name}<Badge tone={node.online ? 'success' : 'muted'}>{node.online ? '在线' : '离线'}</Badge>{role && <Badge tone="success">{role}{dirty.current || policyConfigured !== true ? ' · 未保存' : ''}</Badge>}</CardTitle></CardHeader>
-          <CardContent className="flex flex-col gap-2 text-sm">
-            <p>{node.id === 'console' ? '主控测试节点' : node.kind === 'legacy' ? '旧版路由节点' : '外部测试节点'} · 版本 {node.version || '未知'}</p>
-            <p className="text-muted-foreground">最近在线：{node.lastSeen ? formatLastSeen(node.lastSeen) : '尚未连接'}</p>
-            <div className="flex flex-wrap gap-2">{node.capabilities.map((cap) => <Badge key={cap} tone="muted">{cap}</Badge>)}</div>
-          </CardContent>
-        </Card>;
-      })}
-    </div>
-    {open && <TestNodesDialog nodes={nodes} onClose={close} onChanged={load} />}
-  </main>;
+      <div className="grid gap-4 md:grid-cols-2">
+        {nodes.map((node) => {
+          const role = roleFor(node.id);
+          return (
+            <Card key={node.id}>
+              <CardHeader>
+                <CardTitle className="flex flex-wrap items-center gap-2">
+                  {node.name}
+                  <Badge tone={node.online ? 'success' : 'muted'}>{node.online ? '在线' : '离线'}</Badge>
+                  {role && <Badge tone="success">{role}{dirty.current || policyConfigured !== true ? ' · 未保存' : ''}</Badge>}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-2 text-sm">
+                <p>{node.id === 'console' ? '主控测试节点' : node.kind === 'legacy' ? '旧版路由节点' : '外部测试节点'} · 版本 {node.version || '未知'}</p>
+                <p className="text-muted-foreground">最近在线：{node.lastSeen ? formatLastSeen(node.lastSeen) : '尚未连接'}</p>
+                <div className="flex flex-wrap gap-2">
+                  {node.capabilities.map((cap) => <Badge key={cap} tone="muted">{cap}</Badge>)}
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+      {open && <TestNodesDialog nodes={nodes} onClose={close} onChanged={load} />}
+    </PageShell>
+  );
 }

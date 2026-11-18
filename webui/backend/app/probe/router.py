@@ -46,7 +46,7 @@ def probe_store() -> ProbeStore:
     return ProbeStore(settings.database_path)
 
 
-def _enrich_source(items, node_id):
+def _enrich_source(items, node_id, *, include_domain: bool = False):
     store=job_store()
     if node_id is not None:
         try:name=store.get_node(node_id)['name']
@@ -78,7 +78,28 @@ def _enrich_source(items, node_id):
         })
     from ..geoip.store import GeoStore, enrich
     with GeoStore(settings.database_path).db() as connection:
-        return enrich(connection, enriched)
+        geo_items = enrich(connection, enriched)
+        if not include_domain:
+            return geo_items
+        server_ids = [int(item['id']) for item in geo_items if isinstance(item.get('id'), int)]
+        domain_map: dict[int, tuple[int, str]] = {}
+        if server_ids:
+            placeholders = ','.join('?' for _ in server_ids)
+            for row in connection.execute(
+                f"SELECT ds.server_id, d.id AS domain_id, d.name AS domain_name "
+                f"FROM lb_domain_servers ds JOIN lb_domains d ON d.id = ds.domain_id "
+                f"WHERE ds.server_id IN ({placeholders})",
+                server_ids,
+            ):
+                domain_map[int(row['server_id'])] = (int(row['domain_id']), str(row['domain_name']))
+        return [
+            {
+                **item,
+                'domainId': domain_map[item['id']][0] if item.get('id') in domain_map else None,
+                'domainName': domain_map[item['id']][1] if item.get('id') in domain_map else None,
+            }
+            for item in geo_items
+        ]
 
 
 def audit(username: str, action: str, *, success: bool = True, message: str = "") -> None:
@@ -282,6 +303,7 @@ class ServerSelectionCreate(BaseModel):
     excludeTagIds: list[str] = []
     tagMode: Literal["any", "all"] = "any"
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all"
+    domainStatus: Literal["all", "assigned", "unassigned"] = "all"
 
 
 class ServerBulkJobCreate(BaseModel):
@@ -311,7 +333,7 @@ def create_server_selection(payload: ServerSelectionCreate, user: Annotated[str,
                "groupIds": payload.groupIds,
                "tagId": payload.tagId, "includeTagIds": payload.includeTagIds,
                "excludeTagIds": payload.excludeTagIds, "tagMode": payload.tagMode,
-               "conn": payload.conn}
+               "conn": payload.conn, "domainStatus": payload.domainStatus}
     try:
         return store.create_selection(user, filters=filters)
     except ValueError as exc:
@@ -406,6 +428,7 @@ def list_servers(
     excludeTagIds: str = "",
     tagMode: Literal["any", "all"] = "any",
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
+    domainStatus: Literal["all", "assigned", "unassigned"] = "all",
     sort: Literal["ip", "group", "conn", "speed", "time"] = "group",
     order: Literal["asc", "desc"] = "asc",
     nodeId: str | None = None,
@@ -416,13 +439,13 @@ def list_servers(
             group_ids=tuple(value for value in groupIds.split(",") if value.strip()),
             include_tag_ids=tuple(value for value in includeTagIds.split(",") if value.strip()),
             exclude_tag_ids=tuple(value for value in excludeTagIds.split(",") if value.strip()), tag_mode=tagMode,
-            conn=conn, sort=sort, order=order,
+            conn=conn, domain_status=domainStatus, sort=sort, order=order,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = source_store(nodeId).query_servers(query)
     return {
-        "items": _enrich_source([_public_server(row) for row in result["items"]], nodeId),
+        "items": _enrich_source([_public_server(row) for row in result["items"]], nodeId, include_domain=True),
         "page": result["page"], "pageSize": result["pageSize"],
         "total": result["total"], "sort": result["sort"], "order": result["order"],
     }
@@ -441,6 +464,7 @@ def list_servers_cursor(
     excludeTagIds: str = "",
     tagMode: Literal["any", "all"] = "any",
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
+    domainStatus: Literal["all", "assigned", "unassigned"] = "all",
     sort: Literal["ip", "group", "conn", "speed", "time"] = "ip",
     order: Literal["asc", "desc"] = "asc",
     nodeId: str | None = None,
@@ -450,12 +474,12 @@ def list_servers_cursor(
             page_size=page_size, q=q, group=group, group_ids=tuple(v for v in groupIds.split(",") if v.strip()),
             label=label, tag_id=tagId, include_tag_ids=tuple(v for v in includeTagIds.split(",") if v.strip()),
             exclude_tag_ids=tuple(v for v in excludeTagIds.split(",") if v.strip()), tag_mode=tagMode,
-            conn=conn, sort=sort, order=order,
+            conn=conn, domain_status=domainStatus, sort=sort, order=order,
         )
         result = source_store(nodeId).query_servers_cursor(query, cursor)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    result["items"] = _enrich_source([_public_server(row) for row in result["items"]], nodeId)
+    result["items"] = _enrich_source([_public_server(row) for row in result["items"]], nodeId, include_domain=True)
     return result
 
 
@@ -465,6 +489,7 @@ def count_servers(
     tagId: str | None = None, includeTagIds: str = "", excludeTagIds: str = "",
     tagMode: Literal["any", "all"] = "any",
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
+    domainStatus: Literal["all", "assigned", "unassigned"] = "all",
     nodeId: str | None = None,
 ):
     try:
@@ -472,7 +497,7 @@ def count_servers(
                                 label=label, tag_id=tagId,
                                 include_tag_ids=tuple(v for v in includeTagIds.split(",") if v.strip()),
                                 exclude_tag_ids=tuple(v for v in excludeTagIds.split(",") if v.strip()),
-                                tag_mode=tagMode, conn=conn)
+                                tag_mode=tagMode, conn=conn, domain_status=domainStatus)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"total": source_store(nodeId).count_servers(query)}
@@ -484,6 +509,7 @@ def server_facets(
     tagId: str | None = None, includeTagIds: str = "", excludeTagIds: str = "",
     tagMode: Literal["any", "all"] = "any",
     conn: Literal["all", "pass", "partial", "fail", "untested"] = "all",
+    domainStatus: Literal["all", "assigned", "unassigned"] = "all",
     tagSearch: str = "", tagPage: int | None = Query(default=None, ge=1, le=1_000_000),
     tagPageSize: int | None = Query(default=None, ge=1, le=100),
     nodeId: str | None = None,
@@ -494,7 +520,7 @@ def server_facets(
             group_ids=tuple(value for value in groupIds.split(",") if value.strip()),
             include_tag_ids=tuple(value for value in includeTagIds.split(",") if value.strip()),
             exclude_tag_ids=tuple(value for value in excludeTagIds.split(",") if value.strip()),
-            tag_mode=tagMode, conn=conn,
+            tag_mode=tagMode, conn=conn, domain_status=domainStatus,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

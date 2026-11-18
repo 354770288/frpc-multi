@@ -48,4 +48,14 @@ describe('useServers URL state authority', () => {
     expect(cleared.has('group')).toBe(false);
     expect(cleared.has('label')).toBe(false);
   });
+
+  it('round-trips domainStatus filter only when non-default', () => {
+    const unassigned = parseServerQuery('domainStatus=unassigned');
+    expect(unassigned.domainStatus).toBe('unassigned');
+    const params = writeServerQueryParams(new URLSearchParams(), unassigned);
+    expect(params.get('domainStatus')).toBe('unassigned');
+
+    const reset = writeServerQueryParams(params, { ...unassigned, domainStatus: undefined });
+    expect(reset.has('domainStatus')).toBe(false);
+  });
 });

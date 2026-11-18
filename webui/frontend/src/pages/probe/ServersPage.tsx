@@ -1,22 +1,55 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
-  FolderCog, Gauge, ListPlus, Pencil, Play, Plus, RefreshCw, Rocket, Tag, Trash2, X, Zap,
+  Eye,
+  FolderCog,
+  Gauge,
+  Globe,
+  ListPlus,
+  Pencil,
+  Play,
+  Plus,
+  RefreshCw,
+  Rocket,
+  Route,
+  Search,
+  Snowflake,
+  Tag,
+  Trash2,
+  X,
+  Zap,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { probeApi } from '../../lib/api';
 import { formatLastSeen } from '../../lib/format';
 import { probeEndpointHost } from '../../lib/probeEndpoint';
+import { CopyableText } from '../../components/CopyableText';
+import { PageHeader, PageShell } from '../../components/PageHeader';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import { Card, CardContent, CardHeader } from '../../components/ui/card';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../../components/ui/dropdown-menu';
 import { Input } from '../../components/ui/input';
+import { InputGroup, InputGroupAddon, InputGroupInput } from '../../components/ui/input-group';
 import {
   Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue,
 } from '../../components/ui/select';
 import { ConfirmOverlay } from '../../components/Overlay';
 import type {
-  GroupColor, GroupInfo, ProbeDashboard, ProbeServer, ServerConn, ServerView, ServerViewColumn,
+  GroupColor,
+  GroupInfo,
+  ProbeDashboard,
+  ProbeMode,
+  ProbeServer,
+  ServerConn,
+  ServerDomainStatus,
+  ServerView,
+  ServerViewColumn,
 } from '../../lib/types';
 import { GeoInfo } from './GeoInfo';
 import {
@@ -27,6 +60,7 @@ import {
   GroupDot, groupVariant, IndeterminateCheckbox, latestServerObservationTime, Td, Th, ThSort,
 } from './ProbeTableShared';
 import { canFreezeServerSelection } from './serverBulkUi';
+import { AssignDomainDialog, ServerDetailSheet } from './ServerDetailSheet';
 import { ServerAdvancedFilters, ServerTagCloud } from './ServerFilterControls';
 import {
   queryFromSavedView, savedViewPayload, SERVER_VIEW_COLUMNS, serverViewDraftSignature,
@@ -192,8 +226,11 @@ export function ServersPage() {
     }
   };
 
-  // 弹窗状态
+  // 弹窗与抽屉状态
   const [editing, setEditing] = useState<ProbeServer | 'new' | null>(null);
+  const [inspectingServer, setInspectingServer] = useState<ProbeServer | null>(null);
+  const [assignDomainIds, setAssignDomainIds] = useState<number[] | null>(null);
+  const [retestingId, setRetestingId] = useState<number | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [deleting, setDeleting] = useState<ProbeServer | null>(null);
   const [deletingSelected, setDeletingSelected] = useState(false);
@@ -276,6 +313,27 @@ export function ServersPage() {
     navigate(`/tests/new?selected=1&mode=${mode}`);
   }
 
+  async function retestSingleServer(server: ProbeServer, mode: ProbeMode) {
+    setRetestingId(server.id);
+    try {
+      const job = await probeApi.createJob({
+        mode,
+        ips: [server.ip],
+        targetScope: 'explicit',
+      });
+      toast.success(`已为 ${server.ip} 提交探测任务`, {
+        action: {
+          label: '查看批次',
+          onClick: () => navigate(`/tests/${job.id}`),
+        },
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '提交单机探测失败');
+    } finally {
+      setRetestingId(null);
+    }
+  }
+
   async function deleteServer() {
     if (!deleting) return;
     const target = deleting;
@@ -328,149 +386,290 @@ export function ServersPage() {
   }
 
   return (
-    <div className="mx-auto max-w-[1600px] px-6 py-6">
-      <div className="mb-5 flex flex-wrap items-center gap-3">
-        <h2 className="text-lg font-semibold">服务器库</h2>
-        <Badge tone="muted">frps 验收</Badge>
-        <div className="ml-auto flex items-center gap-3">
-          <Button size="sm" variant="outline" onClick={() => navigate('/test-nodes')}>测试节点</Button>
-          <ProbeStatCards stats={stats} />
-          <Button size="sm" variant="outline" onClick={() => { void loadDashboard(); servers.refreshAll().catch(() => {}); }} disabled={loading}>
-            <RefreshCw size={13} />刷新
-          </Button>
-        </div>
-      </div>
+    <PageShell maxWidth="full" className="max-w-[1600px]">
+      <PageHeader
+        title="服务器库"
+        badge={
+          <Badge tone="muted">
+            {servers.totalCount === null
+              ? (servers.countError ? '总数暂不可用' : '总数加载中…')
+              : `${servers.totalCount} 台`}
+          </Badge>
+        }
+        description="当前结果反映最近一次被接受的主用或备用测量；支持按优选域名状态筛选、单机重测与右侧详情抽屉"
+        actions={
+          <>
+            <ProbeStatCards stats={stats} />
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => { void loadDashboard(); servers.refreshAll().catch(() => {}); }}
+              disabled={loading}
+            >
+              <RefreshCw className="size-3.5" data-icon="inline-start" />刷新
+            </Button>
+          </>
+        }
+      />
 
-      {dashboardError && <p role="alert" className="mb-3 text-sm text-destructive">{dashboardError}；统计不可用，请重试。</p>}
-      <p className="mb-3 text-sm text-muted-foreground">当前结果反映最近一次被接受的主用或备用测量；执行来源与任务进度请查看测试任务和历史记录。</p>
+      {dashboardError && (
+        <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+          {dashboardError}；统计不可用，请重试。
+        </p>
+      )}
 
-      <div className="mt-4">
-        <Card>
-          <CardHeader className="flex-row flex-wrap items-center gap-2">
-            <CardTitle className="text-sm">候选 frps 服务器</CardTitle>
-            <Badge tone="muted">{servers.totalCount === null ? (servers.countError ? '总数暂不可用' : '总数加载中…') : `${servers.totalCount} 台`}</Badge>
-            <div className="ml-auto flex flex-wrap items-center gap-2">
-              <div className="w-40">
-                <Select value={servers.query.group ?? 'all'} onValueChange={servers.setGroup}>
-                  <SelectTrigger size="sm" aria-label="单一分组筛选"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="all">全部分组</SelectItem>
-                      {groups.map((group) => (
-                        <SelectItem key={group.id ?? group.name} value={group.name}>
-                          <span className="flex items-center gap-1.5"><GroupDot color={group.color} />{group.name}{servers.facetsCurrent ? ` (${servers.facets.groups.find((facet) => facet.group === group.name)?.count ?? 0})` : ''}</span>
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="w-36">
-                <Select value={servers.query.conn} onValueChange={(value) => servers.setConn(value as ServerConn)}>
-                  <SelectTrigger size="sm"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="all">全部状态</SelectItem>
-                      <SelectItem value="pass">连通性通过</SelectItem>
-                      <SelectItem value="partial">部分通过</SelectItem>
-                      <SelectItem value="fail">未通过</SelectItem>
-                      <SelectItem value="untested">未测试</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </div>
-              <Input
-                className="h-8 w-44" value={serverSearch} onChange={(e) => setServerSearch(e.target.value)}
-                placeholder="搜索 IP / 标签 / 分组"
-              />
-              <Button size="sm" variant="outline" onClick={() => setGroupsOpen(true)}>
-                <FolderCog size={13} />分组管理
+      <Card>
+        {/* 第一层：高频过滤与核心资产动作 */}
+        <CardHeader className="flex-row flex-wrap items-center gap-2 border-b pb-3.5">
+          <InputGroup className="h-8 w-full sm:w-52">
+            <InputGroupAddon><Search className="size-3.5" /></InputGroupAddon>
+            <InputGroupInput
+              value={serverSearch}
+              onChange={(e) => setServerSearch(e.target.value)}
+              placeholder="搜索 IP / 标签 / 分组"
+            />
+          </InputGroup>
+
+          <div className="w-36 sm:w-40">
+            <Select value={servers.query.group ?? 'all'} onValueChange={servers.setGroup}>
+              <SelectTrigger size="sm" aria-label="单一分组筛选"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="all">全部分组</SelectItem>
+                  {groups.map((group) => (
+                    <SelectItem key={group.id ?? group.name} value={group.name}>
+                      <span className="flex items-center gap-1.5">
+                        <GroupDot color={group.color} />
+                        {group.name}
+                        {servers.facetsCurrent ? ` (${servers.facets.groups.find((facet) => facet.group === group.name)?.count ?? 0})` : ''}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="w-32 sm:w-36">
+            <Select value={servers.query.conn} onValueChange={(value) => servers.setConn(value as ServerConn)}>
+              <SelectTrigger size="sm" aria-label="连通性状态筛选"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="all">全部状态</SelectItem>
+                  <SelectItem value="pass">连通性通过</SelectItem>
+                  <SelectItem value="partial">部分通过</SelectItem>
+                  <SelectItem value="fail">未通过</SelectItem>
+                  <SelectItem value="untested">未测试</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="w-34 sm:w-36">
+            <Select
+              value={servers.query.domainStatus ?? 'all'}
+              onValueChange={(value) => servers.setDomainStatus(value as ServerDomainStatus)}
+            >
+              <SelectTrigger size="sm" aria-label="域名归属筛选"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="all">全部域名状态</SelectItem>
+                  <SelectItem value="unassigned">未分配域名</SelectItem>
+                  <SelectItem value="assigned">已分配域名</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            {servers.totalCount !== null && servers.totalCount > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={freezingSelection || !!serverBulk.pending || !freezeReady}
+                onClick={() => void freezeMatchingServers()}
+                title="固定当前筛选结果为持久快照，之后修改筛选不会改变快照范围"
+              >
+                <Snowflake className="size-3.5" data-icon="inline-start" />
+                {freezingSelection ? '正在冻结…' : `冻结全部匹配 (${servers.totalCount})`}
               </Button>
-              <Button size="sm" variant="outline" onClick={() => setTagsOpen(true)}>
-                <Tag size={13} />标签管理
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setImportOpen(true)} disabled={!serverImport.canStartNew && !serverImport.hasPendingSubmission}>
-                <ListPlus size={13} />{serverImport.hasPendingSubmission ? '恢复待提交导入' : serverImport.hasPendingRetry ? '先恢复失败项重试' : '批量导入'}
-              </Button>
-              <Button size="sm" onClick={() => setEditing('new')}><Plus size={13} />添加</Button>
-            </div>
-          </CardHeader>
-          <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2" aria-label="保存的服务器视图">
-            <span className="text-xs font-medium">保存视图</span>
-            <div className="w-48">
-              <Select value={savedViewId || 'none'} disabled={viewsLoading || creatingView || savingViewName || deletingViewBusy} onValueChange={(value) => {
+            )}
+            <Button size="sm" variant="outline" onClick={() => setGroupsOpen(true)}>
+              <FolderCog className="size-3.5" />分组管理
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setTagsOpen(true)}>
+              <Tag className="size-3.5" />标签管理
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setImportOpen(true)}
+              disabled={!serverImport.canStartNew && !serverImport.hasPendingSubmission}
+            >
+              <ListPlus className="size-3.5" />
+              {serverImport.hasPendingSubmission ? '恢复待提交导入' : serverImport.hasPendingRetry ? '先恢复失败项重试' : '批量导入'}
+            </Button>
+            <Button size="sm" onClick={() => setEditing('new')}>
+              <Plus className="size-3.5" />添加
+            </Button>
+          </div>
+        </CardHeader>
+
+        {/* 第二层：紧凑保存视图与胶囊列选择器 */}
+        <div className="flex flex-wrap items-center gap-2 border-b bg-muted/20 px-4 py-1.5" aria-label="保存的服务器视图">
+          <span className="text-xs font-medium text-muted-foreground">视图</span>
+          <div className="w-40">
+            <Select
+              value={savedViewId || 'none'}
+              disabled={viewsLoading || creatingView || savingViewName || deletingViewBusy}
+              onValueChange={(value) => {
                 if (value === 'none') { setSavedViewId(''); return; }
                 const view = savedViews.find((item) => item.id === value);
                 if (view) applyServerView(view);
-              }}>
-                <SelectTrigger size="sm" aria-label="加载保存视图"><SelectValue placeholder="选择视图" /></SelectTrigger>
-                <SelectContent><SelectGroup>
+              }}
+            >
+              <SelectTrigger size="sm" aria-label="加载保存视图"><SelectValue placeholder="选择视图" /></SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
                   <SelectItem value="none">当前筛选</SelectItem>
                   {savedViews.map((view) => <SelectItem key={view.id} value={view.id}>{view.name}</SelectItem>)}
-                </SelectGroup></SelectContent>
-              </Select>
-            </div>
-            {viewsLoading && <span role="status" className="text-xs text-muted-foreground">正在加载…</span>}
-            <Input aria-label="新视图名称" className="h-8 w-36" placeholder="新视图名称" value={savedViewName} disabled={creatingView} onChange={(event) => setSavedViewName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createServerView(); }} />
-            <Button size="sm" variant="outline" disabled={!savedViewName.trim() || creatingView} onClick={() => void createServerView()}>{creatingView ? '保存中…' : '保存当前视图'}</Button>
-            {activeSavedView && (renamingView ? <>
-              <Input aria-label="视图新名称" className="h-8 w-36" value={renameViewName} disabled={savingViewName} onChange={(event) => setRenameViewName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void renameServerView(); }} />
-              <Button size="sm" variant="outline" disabled={savingViewName || !renameViewName.trim()} onClick={() => void renameServerView()}>{savingViewName ? '重命名中…' : '确认重命名'}</Button>
-              <Button size="sm" variant="ghost" disabled={savingViewName} onClick={() => setRenamingView(false)}>取消</Button>
-            </> : <>
-              <Button size="sm" variant="ghost" disabled={savingViewName || deletingViewBusy} onClick={() => { setRenameViewName(activeSavedView.name); setRenamingView(true); }}>重命名</Button>
-              <Button size="sm" variant="ghost" className="text-destructive" disabled={deletingViewBusy || savingViewName} onClick={() => setDeletingView(activeSavedView)}>删除视图</Button>
-            </>)}
-            <fieldset className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-              <legend className="sr-only">服务器表格显示列</legend>
-              <span className="text-muted-foreground">显示列</span>
-              {SERVER_VIEW_COLUMNS.map((column) => <label key={column.id} className="flex items-center gap-1.5">
-                <input type="checkbox" aria-label={`显示列 ${column.label}`} checked={visibleServerColumns.includes(column.id)} disabled={visibleServerColumns.length === 1 && visibleServerColumns.includes(column.id)} onChange={() => setVisibleServerColumns((current) => current.includes(column.id) ? current.filter((id) => id !== column.id) : [...current, column.id])} />
-                {column.label}
-              </label>)}
-            </fieldset>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
           </div>
-          <ServerAdvancedFilters
-            query={servers.query}
-            groups={groups}
-            facets={servers.facets}
-            facetsCurrent={servers.facetsCurrent}
-            facetsLoading={servers.facetsLoading}
-            facetsError={servers.facetsError}
-            tagSearch={servers.tagSearch}
-            tagPage={servers.tagPage}
-            tagPageSize={servers.tagPageSize}
-            tagTotal={servers.tagTotal}
-            tagCandidatesCurrent={servers.tagCandidatesCurrent}
-            onTagSearch={servers.setTagCandidateSearch}
-            onTagPage={servers.setTagCandidatePage}
-            open={serverAdvancedOpen}
-            onOpenChange={setServerAdvancedOpen}
-            onGroupIds={servers.setGroupIds}
-            onIncludeTagIds={servers.setIncludeTagIds}
-            onExcludeTagIds={servers.setExcludeTagIds}
-            onTagMode={servers.setTagMode}
-            onSingleGroup={servers.setGroup}
-            onQuickTag={servers.setTagId}
-            onRetryFacets={() => servers.refreshFacets().catch(() => {})}
+          {viewsLoading && <span role="status" className="text-xs text-muted-foreground">正在加载…</span>}
+          <Input
+            aria-label="新视图名称"
+            className="h-7 w-32 text-xs"
+            placeholder="新视图名称"
+            value={savedViewName}
+            disabled={creatingView}
+            onChange={(event) => setSavedViewName(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') void createServerView(); }}
           />
-          <ServerTagCloud tags={servers.facets.tagItems} active={servers.query.tagId ?? null} candidatesCurrent={servers.tagCandidatesCurrent} candidateLoading={servers.facetsLoading} candidateError={servers.facetsError} tagSearch={servers.tagSearch} tagPage={servers.tagPage} tagPageSize={servers.tagPageSize} tagTotal={servers.tagTotal} onToggle={servers.setTagId} onManage={() => setTagsOpen(true)} onOpenAdvanced={() => setServerAdvancedOpen(true)} />
-          {(servers.pageError || servers.countError) && <div className="flex flex-wrap items-center gap-3 border-b bg-destructive/5 px-4 py-2 text-xs" role="alert">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-2.5 text-xs"
+            disabled={!savedViewName.trim() || creatingView}
+            onClick={() => void createServerView()}
+          >
+            {creatingView ? '保存中…' : '保存当前视图'}
+          </Button>
+          {activeSavedView && (renamingView ? <>
+            <Input
+              aria-label="视图新名称"
+              className="h-7 w-32 text-xs"
+              value={renameViewName}
+              disabled={savingViewName}
+              onChange={(event) => setRenameViewName(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') void renameServerView(); }}
+            />
+            <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={savingViewName || !renameViewName.trim()} onClick={() => void renameServerView()}>
+              {savingViewName ? '重命名中…' : '确认重命名'}
+            </Button>
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={savingViewName} onClick={() => setRenamingView(false)}>取消</Button>
+          </> : <>
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={savingViewName || deletingViewBusy} onClick={() => { setRenameViewName(activeSavedView.name); setRenamingView(true); }}>重命名</Button>
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-destructive" disabled={deletingViewBusy || savingViewName} onClick={() => setDeletingView(activeSavedView)}>删除视图</Button>
+          </>)}
+
+          <fieldset className="ml-auto flex flex-wrap items-center gap-1.5 text-xs">
+            <legend className="sr-only">服务器表格显示列</legend>
+            <span className="mr-0.5 text-muted-foreground">显示列</span>
+            {SERVER_VIEW_COLUMNS.map((column) => {
+              const checked = visibleServerColumns.includes(column.id);
+              const lockDisabled = visibleServerColumns.length === 1 && checked;
+              return (
+                <label
+                  key={column.id}
+                  className={`inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                    checked
+                      ? 'border-primary/30 bg-primary/10 font-medium text-foreground'
+                      : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                  } ${lockDisabled ? 'cursor-not-allowed opacity-60' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label={`显示列 ${column.label}`}
+                    className="size-3 accent-[var(--primary)]"
+                    checked={checked}
+                    disabled={lockDisabled}
+                    onChange={() =>
+                      setVisibleServerColumns((current) =>
+                        current.includes(column.id)
+                          ? current.filter((id) => id !== column.id)
+                          : [...current, column.id],
+                      )
+                    }
+                  />
+                  {column.label}
+                </label>
+              );
+            })}
+          </fieldset>
+        </div>
+
+        <ServerAdvancedFilters
+          query={servers.query}
+          groups={groups}
+          facets={servers.facets}
+          facetsCurrent={servers.facetsCurrent}
+          facetsLoading={servers.facetsLoading}
+          facetsError={servers.facetsError}
+          tagSearch={servers.tagSearch}
+          tagPage={servers.tagPage}
+          tagPageSize={servers.tagPageSize}
+          tagTotal={servers.tagTotal}
+          tagCandidatesCurrent={servers.tagCandidatesCurrent}
+          onTagSearch={servers.setTagCandidateSearch}
+          onTagPage={servers.setTagCandidatePage}
+          open={serverAdvancedOpen}
+          onOpenChange={setServerAdvancedOpen}
+          onGroupIds={servers.setGroupIds}
+          onIncludeTagIds={servers.setIncludeTagIds}
+          onExcludeTagIds={servers.setExcludeTagIds}
+          onTagMode={servers.setTagMode}
+          onSingleGroup={servers.setGroup}
+          onQuickTag={servers.setTagId}
+          onRetryFacets={() => servers.refreshFacets().catch(() => {})}
+        />
+
+        <ServerTagCloud
+          tags={servers.facets.tagItems}
+          active={servers.query.tagId ?? null}
+          candidatesCurrent={servers.tagCandidatesCurrent}
+          candidateLoading={servers.facetsLoading}
+          candidateError={servers.facetsError}
+          tagSearch={servers.tagSearch}
+          tagPage={servers.tagPage}
+          tagPageSize={servers.tagPageSize}
+          tagTotal={servers.tagTotal}
+          onToggle={servers.setTagId}
+          onManage={() => setTagsOpen(true)}
+          onOpenAdvanced={() => setServerAdvancedOpen(true)}
+        />
+
+        {(servers.pageError || servers.countError) && (
+          <div className="flex flex-wrap items-center gap-3 border-b bg-destructive/5 px-4 py-2 text-xs" role="alert">
             {servers.pageError && <span>服务器列表读取失败：{servers.pageError}</span>}
             {servers.pageError && <Button size="sm" variant="outline" onClick={() => servers.refreshPage().catch(() => {})}>重试列表</Button>}
             {servers.countError && <span>服务器总数读取失败：{servers.countError}</span>}
             {servers.countError && <Button size="sm" variant="outline" onClick={() => servers.refreshCount().catch(() => {})}>重试总数</Button>}
-          </div>}
-          {servers.totalCount !== null && servers.totalCount > 0 && <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
-            <Button size="sm" variant="outline" disabled={freezingSelection || !!serverBulk.pending || !freezeReady} onClick={() => void freezeMatchingServers()}>
-              {freezingSelection ? '正在冻结…' : `冻结全部匹配 (${servers.totalCount})`}
-            </Button>
-            <span className="text-[11px] text-muted-foreground">固定当前筛选结果；之后更改筛选条件不会改变快照。</span>
-          </div>}
-          {serverBulk.selection && <div className="border-b bg-primary/5 px-4 py-3 text-xs" aria-label="服务器选择快照">
+          </div>
+        )}
+
+        {serverBulk.selection && (
+          <div className="border-b bg-primary/5 px-4 py-2.5 text-xs" aria-label="服务器选择快照">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge tone={serverBulk.selection.state === 'ready' ? 'muted' : serverBulk.selection.state === 'failed' || serverBulk.selection.state === 'expired' ? 'muted' : 'warning'}>
-                {serverBulk.selection.state === 'ready' ? `冻结快照 ${serverBulk.selection.count} 台` : serverBulk.selection.state === 'failed' ? '快照生成失败' : serverBulk.selection.state === 'expired' ? '快照已过期' : `快照生成中 ${serverBulk.selection.processed}/${serverBulk.selection.count || '…'}`}
+              <Badge tone={serverBulk.selection.state === 'ready' ? 'info' : serverBulk.selection.state === 'failed' || serverBulk.selection.state === 'expired' ? 'muted' : 'warning'}>
+                {serverBulk.selection.state === 'ready'
+                  ? `冻结快照 ${serverBulk.selection.count} 台`
+                  : serverBulk.selection.state === 'failed'
+                    ? '快照生成失败'
+                    : serverBulk.selection.state === 'expired'
+                      ? '快照已过期'
+                      : `快照生成中 ${serverBulk.selection.processed}/${serverBulk.selection.count || '…'}`}
               </Badge>
               {serverBulk.selection.error && <span role="alert" className="text-destructive">{serverBulk.selection.error}</span>}
               {serverBulk.selection.state === 'ready' && <>
@@ -479,152 +678,368 @@ export function ServersPage() {
                 <Button size="sm" variant="outline" disabled={bulkActionBusy} onClick={() => setBatchEditSnapshot('label')}>改旧标签</Button>
                 <Button size="sm" variant="outline" disabled={bulkActionBusy} onClick={() => setBatchTagsSnapshotOpen(true)}>分类标签</Button>
                 <Button size="sm" variant="destructive" disabled={bulkActionBusy} onClick={() => setDeletingSnapshot(true)}>删除</Button>
+                <Button size="sm" variant="ghost" disabled={bulkActionBusy} onClick={() => serverBulk.clearSelection()}>关闭快照</Button>
               </>}
-              {(serverBulk.selection.state === 'failed' || serverBulk.selection.state === 'expired') && <Button size="sm" variant="outline" onClick={() => serverBulk.clearSelection()}>清除快照</Button>}
+              {(serverBulk.selection.state === 'failed' || serverBulk.selection.state === 'expired') && (
+                <Button size="sm" variant="outline" onClick={() => serverBulk.clearSelection()}>清除快照</Button>
+              )}
             </div>
-            {serverBulk.selection.state === 'ready' && <p className="mt-1 text-[11px] text-muted-foreground">快照固定于 {new Date(serverBulk.selection.createdAt).toLocaleString()}，有效期至 {new Date(serverBulk.selection.expiresAt).toLocaleString()}。</p>}
-          </div>}
-          {serverBulk.pending && <div className="flex flex-wrap items-center gap-2 border-b bg-destructive/5 px-4 py-2 text-xs">
+            {serverBulk.selection.state === 'ready' && (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                快照固定于 {new Date(serverBulk.selection.createdAt).toLocaleString()}，有效期至 {new Date(serverBulk.selection.expiresAt).toLocaleString()}。
+              </p>
+            )}
+          </div>
+        )}
+
+        {serverBulk.pending && (
+          <div className="flex flex-wrap items-center gap-2 border-b bg-destructive/5 px-4 py-2 text-xs">
             <span role="alert">批量任务提交结果尚未确认。重试会沿用原幂等键。</span>
             <Button size="sm" variant="outline" onClick={() => void serverBulk.retryPending().catch((err) => toast.error(err instanceof Error ? err.message : '重试提交失败'))}>重试提交</Button>
-          </div>}
-          {serverBulk.job && <div className="border-b bg-muted/30 px-4 py-3 text-xs" aria-label="批量任务进度" aria-live="polite">
+          </div>
+        )}
+
+        {serverBulk.job && (
+          <div className="border-b bg-muted/30 px-4 py-2.5 text-xs" aria-label="批量任务进度" aria-live="polite">
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={serverBulk.job.state === 'done' ? 'success' : serverBulk.job.state === 'partial' || serverBulk.job.state === 'failed' ? 'warning' : 'muted'}>
                 {serverBulk.job.operation === 'delete' ? '删除' : '更新'}任务：{serverBulk.job.state === 'done' ? '完成' : serverBulk.job.state === 'partial' ? '部分失败' : serverBulk.job.state === 'failed' ? '失败' : `${serverBulk.job.processed}/${serverBulk.job.total}`}
               </Badge>
               <span>成功 {serverBulk.job.succeeded} · 失败 {serverBulk.job.failed} · 共 {serverBulk.job.total}</span>
               {serverBulk.job.error && <span role="alert" className="text-destructive">{serverBulk.job.error}</span>}
-              {['partial', 'failed'].includes(serverBulk.job.state) && serverBulk.job.failed > 0 && <Button size="sm" variant="outline" onClick={() => void serverBulk.retryFailed().catch((err) => toast.error(err instanceof Error ? err.message : '重试失败项失败'))}>仅重试失败项</Button>}
-              {serverBulk.failureCursor !== null && <Button size="sm" variant="ghost" onClick={() => void serverBulk.loadMoreFailures().catch((err) => toast.error(err instanceof Error ? err.message : '失败明细读取失败'))}>加载更多失败项</Button>}
+              {['partial', 'failed'].includes(serverBulk.job.state) && serverBulk.job.failed > 0 && (
+                <Button size="sm" variant="outline" onClick={() => void serverBulk.retryFailed().catch((err) => toast.error(err instanceof Error ? err.message : '重试失败项失败'))}>仅重试失败项</Button>
+              )}
+              {serverBulk.failureCursor !== null && (
+                <Button size="sm" variant="ghost" onClick={() => void serverBulk.loadMoreFailures().catch((err) => toast.error(err instanceof Error ? err.message : '失败明细读取失败'))}>加载更多失败项</Button>
+              )}
             </div>
-            {serverBulk.failures.length > 0 && <ul className="mt-2 max-h-24 overflow-y-auto text-[11px] text-destructive">
-              {serverBulk.failures.map((failure) => <li key={`${failure.serverId}-${failure.ip}`}>{failure.ip}: {failure.error}</li>)}
-            </ul>}
+            {serverBulk.failures.length > 0 && (
+              <ul className="mt-2 max-h-24 overflow-y-auto text-[11px] text-destructive">
+                {serverBulk.failures.map((failure) => <li key={`${failure.serverId}-${failure.ip}`}>{failure.ip}: {failure.error}</li>)}
+              </ul>
+            )}
             {serverBulk.error && <p role="alert" className="mt-1 text-destructive">{serverBulk.error}</p>}
-          </div>}
-          {selectedIps.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 border-b bg-primary/5 px-4 py-2">
-              <Badge tone="muted">已选 {selectedIps.length} 台（跨页保持）</Badge>
-              <Button size="sm" variant="outline" onClick={() => quickTest('connectivity')}>
-                <Play size={13} />测连通
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => quickTest('speed')}>
-                <Gauge size={13} />测速率
-              </Button>
-              <Button size="sm" onClick={() => quickTest('full')}>
-                <Zap size={13} />完整测试
-              </Button>
-              <Button size="sm" variant="outline" disabled={manualBulkDisabled} onClick={() => setBatchEdit('group')}>
-                <FolderCog size={13} />改分组
-              </Button>
-              <Button size="sm" variant="outline" disabled={manualBulkDisabled} onClick={() => setBatchEdit('label')}>
-                <Tag size={13} />改旧标签
-              </Button>
-              <Button size="sm" variant="outline" disabled={manualBulkDisabled} onClick={() => setBatchTagsOpen(true)}>
-                <Tag size={13} />分类标签
-              </Button>
-              <Button size="sm" variant="destructive" disabled={manualBulkDisabled} onClick={() => setDeletingSelected(true)}>
-                <Trash2 size={13} />删除
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => servers.setSelected(new Map())}>
-                <X size={13} />清除勾选
-              </Button>
-              {servers.selected.size > 5000 && <span className="text-[11px] text-muted-foreground">显式勾选最多支持 5000 台；请使用上方“冻结全部匹配”。</span>}
-              <span className="ml-auto text-[11px] text-muted-foreground">启动后自动跳转测试进度</span>
-            </div>
-          )}
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[960px]">
-                <thead>
-                  <tr className="border-b bg-muted/50">
-                    <Th>
-                      <IndeterminateCheckbox
-                        aria-label="全选"
+          </div>
+        )}
+
+        {selectedIps.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 border-b bg-primary/5 px-4 py-2">
+            <Badge tone="info">已选 {selectedIps.length} 台（跨页保持）</Badge>
+            <Button size="sm" variant="outline" onClick={() => quickTest('connectivity')}>
+              <Play className="size-3.5" />测连通
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => quickTest('speed')}>
+              <Gauge className="size-3.5" />测速率
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => quickTest('full')}>
+              <Zap className="size-3.5" />完整测试
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={manualBulkDisabled}
+              onClick={() => setAssignDomainIds([...servers.selected.keys()])}
+            >
+              <Globe className="size-3.5" />加入域名池
+            </Button>
+            <Button size="sm" variant="outline" disabled={manualBulkDisabled} onClick={() => setBatchEdit('group')}>
+              <FolderCog className="size-3.5" />改分组
+            </Button>
+            <Button size="sm" variant="outline" disabled={manualBulkDisabled} onClick={() => setBatchEdit('label')}>
+              <Tag className="size-3.5" />改旧标签
+            </Button>
+            <Button size="sm" variant="outline" disabled={manualBulkDisabled} onClick={() => setBatchTagsOpen(true)}>
+              <Tag className="size-3.5" />分类标签
+            </Button>
+            <Button size="sm" variant="destructive" disabled={manualBulkDisabled} onClick={() => setDeletingSelected(true)}>
+              <Trash2 className="size-3.5" />删除
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => servers.setSelected(new Map())}>
+              <X className="size-3.5" />清除勾选
+            </Button>
+            {servers.selected.size > 5000 && (
+              <span className="text-[11px] text-muted-foreground">显式勾选最多支持 5000 台；请使用上方“冻结全部匹配”。</span>
+            )}
+          </div>
+        )}
+
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px]">
+              <thead>
+                <tr className="border-b bg-muted/40">
+                  <Th>
+                    <IndeterminateCheckbox
+                      aria-label="全选"
+                      className="size-3.5 accent-[var(--primary)]"
+                      checked={allPageSelected}
+                      indeterminate={somePageSelected}
+                      onChange={(e) => servers.toggleCurrentPage(e.target.checked)}
+                    />
+                  </Th>
+                  {visibleServerColumns.includes('ip') && (
+                    <ThSort
+                      label="服务器"
+                      sortKey="ip"
+                      activeKey={servers.query.sort}
+                      asc={servers.query.order === 'asc'}
+                      onSort={() => servers.setSort('ip', servers.query.sort === 'ip' && servers.query.order === 'asc' ? 'desc' : 'asc')}
+                    />
+                  )}
+                  {visibleServerColumns.includes('group') && (
+                    <ThSort
+                      label="分组"
+                      sortKey="group"
+                      activeKey={servers.query.sort}
+                      asc={servers.query.order === 'asc'}
+                      onSort={() => servers.setSort('group', servers.query.sort === 'group' && servers.query.order === 'asc' ? 'desc' : 'asc')}
+                    />
+                  )}
+                  {visibleServerColumns.includes('tags') && <Th>标签</Th>}
+                  {visibleServerColumns.includes('route') && <Th>路由</Th>}
+                  {visibleServerColumns.includes('connectivity') && (
+                    <ThSort
+                      label="连通性"
+                      sortKey="conn"
+                      activeKey={servers.query.sort}
+                      asc={servers.query.order === 'asc'}
+                      onSort={() => servers.setSort('conn', servers.query.sort === 'conn' && servers.query.order === 'asc' ? 'desc' : 'asc')}
+                    />
+                  )}
+                  {visibleServerColumns.includes('speed') && (
+                    <ThSort
+                      label="速率"
+                      sortKey="speed"
+                      activeKey={servers.query.sort}
+                      asc={servers.query.order === 'asc'}
+                      onSort={() => servers.setSort('speed', servers.query.sort === 'speed' && servers.query.order === 'desc' ? 'asc' : 'desc')}
+                    />
+                  )}
+                  {visibleServerColumns.includes('lastTestTime') && (
+                    <ThSort
+                      label="测速时间"
+                      sortKey="time"
+                      activeKey={servers.query.sort}
+                      asc={servers.query.order === 'asc'}
+                      onSort={() => servers.setSort('time', servers.query.sort === 'time' && servers.query.order === 'desc' ? 'asc' : 'desc')}
+                    />
+                  )}
+                  <Th align="right">操作</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {serverRows.map((item) => (
+                  <tr key={item.id} className="border-b transition-colors last:border-b-0 hover:bg-muted/40">
+                    <Td>
+                      <input
+                        type="checkbox"
+                        aria-label={`选择 ${item.ip}`}
                         className="size-3.5 accent-[var(--primary)]"
-                        checked={allPageSelected}
-                        indeterminate={somePageSelected}
-                        onChange={(e) => servers.toggleCurrentPage(e.target.checked)}
+                        checked={servers.selected.has(item.id)}
+                        onChange={() => servers.toggleSelected(item.id, item.ip)}
                       />
-                    </Th>
-                    {visibleServerColumns.includes('ip') && <ThSort label="服务器" sortKey="ip" activeKey={servers.query.sort} asc={servers.query.order === 'asc'} onSort={() => servers.setSort('ip', servers.query.sort === 'ip' && servers.query.order === 'asc' ? 'desc' : 'asc')} />}
-                    {visibleServerColumns.includes('group') && <ThSort label="分组" sortKey="group" activeKey={servers.query.sort} asc={servers.query.order === 'asc'} onSort={() => servers.setSort('group', servers.query.sort === 'group' && servers.query.order === 'asc' ? 'desc' : 'asc')} />}
-                    {visibleServerColumns.includes('tags') && <Th>标签</Th>}
-                    {visibleServerColumns.includes('route') && <Th>路由</Th>}
-                    {visibleServerColumns.includes('connectivity') && <ThSort label="连通性" sortKey="conn" activeKey={servers.query.sort} asc={servers.query.order === 'asc'} onSort={() => servers.setSort('conn', servers.query.sort === 'conn' && servers.query.order === 'asc' ? 'desc' : 'asc')} />}
-                    {visibleServerColumns.includes('speed') && <ThSort label="速率" sortKey="speed" activeKey={servers.query.sort} asc={servers.query.order === 'asc'} onSort={() => servers.setSort('speed', servers.query.sort === 'speed' && servers.query.order === 'desc' ? 'asc' : 'desc')} />}
-                    {visibleServerColumns.includes('lastTestTime') && <ThSort label="测速时间" sortKey="time" activeKey={servers.query.sort} asc={servers.query.order === 'asc'} onSort={() => servers.setSort('time', servers.query.sort === 'time' && servers.query.order === 'desc' ? 'asc' : 'desc')} />}
-                    <Th align="right">操作</Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {serverRows.map((item) => (
-                    <tr key={item.id} className="border-b last:border-b-0 hover:bg-muted/50 transition-colors">
+                    </Td>
+                    {visibleServerColumns.includes('ip') && (
                       <Td>
-                        <input
-                          type="checkbox" aria-label={`选择 ${item.ip}`}
-                          className="size-3.5 accent-[var(--primary)]"
-                          checked={servers.selected.has(item.id)}
-                          onChange={() => servers.toggleSelected(item.id, item.ip)}
-                        />
+                        <div className="flex flex-col gap-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <CopyableText
+                              value={item.ip}
+                              label={item.ip}
+                              textClassName="text-[12.5px] font-medium text-foreground"
+                            />
+                            {item.domainId && item.domainName && (
+                              <Link
+                                to={`/lb/${item.domainId}`}
+                                title={`已归属优选域名 ${item.domainName}`}
+                                className="inline-flex items-center gap-1 rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-medium text-primary hover:bg-primary/15"
+                              >
+                                <Globe className="size-2.5" />
+                                {item.domainName}
+                              </Link>
+                            )}
+                          </div>
+                          <GeoInfo geo={item.geo} labels={item.labels} />
+                        </div>
                       </Td>
-                      {visibleServerColumns.includes('ip') && <Td><div className="flex flex-col gap-1"><div className="font-mono text-[12px] font-medium">{item.ip}</div><GeoInfo geo={item.geo} labels={item.labels} /></div></Td>}
-                      {visibleServerColumns.includes('group') && <Td>{item.group ? <Badge variant={groupVariant(groupColorMap.get(item.group))} dot>{item.group}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</Td>}
-                      {visibleServerColumns.includes('tags') && <Td>{item.labels.length ? <div className="flex flex-wrap gap-1">{item.labels.map((label) => <Badge key={label} tone="muted">{label}</Badge>)}</div> : <span className="text-xs text-muted-foreground">—</span>}</Td>}
-                      {visibleServerColumns.includes('route') && <Td>{item.latestRoute ? <Badge tone={item.latestRoute.ok ? item.latestRoute.isCn2 ? 'success' : 'warning' : 'muted'}>{item.latestRoute.ok ? item.latestRoute.isCn2 ? 'CN2' : '非 CN2' : '路由失败'}</Badge> : <span className="text-xs text-muted-foreground">未测试</span>}</Td>}
-                      {visibleServerColumns.includes('connectivity') && <Td><ConnBadge latest={item.latestConnectivity} /></Td>}
-                      {visibleServerColumns.includes('speed') && <Td><SpeedText latest={item.latestSpeed} /></Td>}
-                      {visibleServerColumns.includes('lastTestTime') && <Td>
+                    )}
+                    {visibleServerColumns.includes('group') && (
+                      <Td>
+                        {item.group ? (
+                          <Badge variant={groupVariant(groupColorMap.get(item.group))} dot>
+                            {item.group}
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </Td>
+                    )}
+                    {visibleServerColumns.includes('tags') && (
+                      <Td>
+                        {item.labels.length ? (
+                          <div className="flex flex-wrap gap-1">
+                            {item.labels.map((label) => (
+                              <Badge key={label} tone="muted">{label}</Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </Td>
+                    )}
+                    {visibleServerColumns.includes('route') && (
+                      <Td>
+                        {item.latestRoute ? (
+                          <Badge tone={item.latestRoute.ok ? (item.latestRoute.isCn2 ? 'success' : 'warning') : 'muted'}>
+                            {item.latestRoute.ok ? (item.latestRoute.isCn2 ? 'CN2' : '非 CN2') : '路由失败'}
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">未测试</span>
+                        )}
+                      </Td>
+                    )}
+                    {visibleServerColumns.includes('connectivity') && <Td><ConnBadge latest={item.latestConnectivity} /></Td>}
+                    {visibleServerColumns.includes('speed') && <Td><SpeedText latest={item.latestSpeed} /></Td>}
+                    {visibleServerColumns.includes('lastTestTime') && (
+                      <Td>
                         <span className="whitespace-nowrap text-xs text-muted-foreground">
                           {latestServerObservationTime(item) ? formatLastSeen(latestServerObservationTime(item)!) : '—'}
                         </span>
-                      </Td>}
-                      <Td align="right">
-                        <div className="flex items-center justify-end gap-1">
-                          <Button size="sm" variant="outline" onClick={() => navigate(`/instances/new?${new URLSearchParams({ server: probeEndpointHost(item.ip), port: String(item.port) })}`)} title="用此服务器创建 frpc 实例">
-                            <Rocket size={13} />创建实例
-                          </Button>
-                          <Button size="icon-sm" variant="secondary" onClick={() => setEditing(item)} aria-label="编辑"><Pencil size={13} /></Button>
-                          <Button size="icon-sm" variant="destructive" onClick={() => setDeleting(item)} aria-label="删除"><Trash2 size={13} /></Button>
-                        </div>
                       </Td>
-                    </tr>
-                  ))}
-                  {!serverRows.length && (
-                    <tr><td colSpan={visibleServerColumns.length + 2} className="px-4 py-10 text-center text-xs text-muted-foreground">
-                      {servers.pageLoading ? '服务器列表加载中…' : servers.pageError ? '服务器列表读取失败' : servers.totalCount === null ? (servers.countLoading ? '服务器总数加载中…' : '服务器总数暂不可用') : servers.totalCount ? '当前筛选条件下没有匹配的记录' : '暂无服务器，点击「添加」或「批量导入」开始'}
-                    </td></tr>
-                  )}
-                </tbody>
-              </table>
+                    )}
+                    <Td align="right">
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          aria-label={`查看 ${item.ip} 详情`}
+                          title="查看服务器详情与近期测速"
+                          onClick={() => setInspectingServer(item)}
+                        >
+                          <Eye className="size-3.5" />
+                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              size="icon-sm"
+                              variant="ghost"
+                              aria-label={`重测 ${item.ip}`}
+                              title="单机快捷重测"
+                              disabled={retestingId === item.id}
+                            >
+                              <Zap className="size-3.5" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onSelect={() => void retestSingleServer(item, 'full')}>
+                              <Zap className="size-3.5" />完整测试（连通+速率）
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => void retestSingleServer(item, 'connectivity')}>
+                              <Play className="size-3.5" />仅测连通性
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => void retestSingleServer(item, 'speed')}>
+                              <Gauge className="size-3.5" />仅测上下行速率
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => void retestSingleServer(item, 'route')}>
+                              <Route className="size-3.5" />路由追踪
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => navigate(`/instances/new?${new URLSearchParams({ server: probeEndpointHost(item.ip), port: String(item.port) })}`)}
+                          title="用此服务器创建 frpc 实例"
+                        >
+                          <Rocket className="size-3.5" />创建实例
+                        </Button>
+                        <Button size="icon-sm" variant="secondary" onClick={() => setEditing(item)} aria-label="编辑">
+                          <Pencil className="size-3.5" />
+                        </Button>
+                        <Button size="icon-sm" variant="destructive" onClick={() => setDeleting(item)} aria-label="删除">
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+                {!serverRows.length && (
+                  <tr>
+                    <td colSpan={visibleServerColumns.length + 2} className="px-4 py-12 text-center text-xs text-muted-foreground">
+                      {servers.pageLoading
+                        ? '服务器列表加载中…'
+                        : servers.pageError
+                          ? '服务器列表读取失败'
+                          : servers.totalCount === null
+                            ? (servers.countLoading ? '服务器总数加载中…' : '服务器总数暂不可用')
+                            : servers.totalCount
+                              ? '当前筛选条件下没有匹配的记录'
+                              : '暂无服务器，点击「添加」或「批量导入」开始'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3">
+            <span className="text-xs text-muted-foreground">
+              第 {servers.page.page} 页{servers.cursorMode ? '' : ` / ${Math.max(1, Math.ceil(servers.page.total / servers.page.pageSize))}`} · 共 {servers.totalCount === null ? (servers.countError ? '总数暂不可用' : '总数加载中…') : `${servers.totalCount} 台`}
+            </span>
+            <div className="flex items-center gap-2">
+              <Select value={String(servers.query.pageSize)} onValueChange={(value) => servers.setPageSize(Number(value))}>
+                <SelectTrigger size="sm" className="w-24"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="25">25 / 页</SelectItem>
+                  <SelectItem value="50">50 / 页</SelectItem>
+                  <SelectItem value="100">100 / 页</SelectItem>
+                  <SelectItem value="200">200 / 页</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={servers.cursorMode ? !servers.cursorCanPrevious : servers.page.page <= 1}
+                onClick={() => servers.cursorMode ? servers.previousCursorPage() : servers.setPageNumber(servers.page.page - 1)}
+              >
+                上一页
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={servers.cursorMode ? !servers.cursorHasMore : servers.page.page >= Math.max(1, Math.ceil(servers.page.total / servers.page.pageSize))}
+                onClick={() => servers.cursorMode ? servers.nextCursorPage() : servers.setPageNumber(servers.page.page + 1)}
+              >
+                下一页
+              </Button>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3">
-              <span className="text-xs text-muted-foreground">
-                第 {servers.page.page} 页{servers.cursorMode ? '' : ` / ${Math.max(1, Math.ceil(servers.page.total / servers.page.pageSize))}`} · 共 {servers.totalCount === null ? (servers.countError ? '总数暂不可用' : '总数加载中…') : `${servers.totalCount} 台`}
-              </span>
-              <div className="flex items-center gap-2">
-                <Select value={String(servers.query.pageSize)} onValueChange={(value) => servers.setPageSize(Number(value))}>
-                  <SelectTrigger size="sm" className="w-24"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="25">25 / 页</SelectItem>
-                    <SelectItem value="50">50 / 页</SelectItem>
-                    <SelectItem value="100">100 / 页</SelectItem>
-                    <SelectItem value="200">200 / 页</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Button size="sm" variant="outline" disabled={servers.cursorMode ? !servers.cursorCanPrevious : servers.page.page <= 1}
-                  onClick={() => servers.cursorMode ? servers.previousCursorPage() : servers.setPageNumber(servers.page.page - 1)}>上一页</Button>
-                <Button size="sm" variant="outline"
-                  disabled={servers.cursorMode ? !servers.cursorHasMore : servers.page.page >= Math.max(1, Math.ceil(servers.page.total / servers.page.pageSize))}
-                  onClick={() => servers.cursorMode ? servers.nextCursorPage() : servers.setPageNumber(servers.page.page + 1)}>下一页</Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {serverImport.job && <ServerImportStatus task={serverImport} />}
+
+      <ServerDetailSheet
+        server={inspectingServer}
+        onClose={() => setInspectingServer(null)}
+        onRetest={(srv, mode) => void retestSingleServer(srv, mode)}
+        onAssignDomain={(srv) => {
+          setInspectingServer(null);
+          setAssignDomainIds([srv.id]);
+        }}
+      />
+
+      {assignDomainIds && (
+        <AssignDomainDialog
+          serverIds={assignDomainIds}
+          onClose={() => setAssignDomainIds(null)}
+          onAssigned={() => {
+            setAssignDomainIds(null);
+            servers.refreshAll().catch(() => {});
+            void loadGroups();
+          }}
+        />
+      )}
 
       {editing && (
         <ServerDialog
@@ -651,8 +1066,10 @@ export function ServersPage() {
         <ConfirmOverlay
           title={`删除服务器 ${deleting.ip}`}
           description="只移除清单记录，历史测试结果保留。"
-          confirmLabel="删除" variant="destructive"
-          onCancel={() => setDeleting(null)} onConfirm={deleteServer}
+          confirmLabel="删除"
+          variant="destructive"
+          onCancel={() => setDeleting(null)}
+          onConfirm={deleteServer}
         />
       )}
       {deletingView && (
@@ -732,18 +1149,22 @@ export function ServersPage() {
         <ConfirmOverlay
           title={`删除勾选的 ${selectedIps.length} 台服务器`}
           description="只移除清单记录，历史测试结果保留。"
-          confirmLabel="删除" variant="destructive"
-          onCancel={() => setDeletingSelected(false)} onConfirm={deleteSelected}
+          confirmLabel="删除"
+          variant="destructive"
+          onCancel={() => setDeletingSelected(false)}
+          onConfirm={deleteSelected}
         />
       )}
       {deletingSnapshot && serverBulk.selection && (
         <ConfirmOverlay
           title={`删除冻结快照中的 ${serverBulk.selection.count} 台服务器`}
           description="任务将按该快照固定的服务器列表执行，并显示进度及失败明细。"
-          confirmLabel="提交删除任务" variant="destructive"
-          onCancel={() => setDeletingSnapshot(false)} onConfirm={submitSnapshotDelete}
+          confirmLabel="提交删除任务"
+          variant="destructive"
+          onCancel={() => setDeletingSnapshot(false)}
+          onConfirm={submitSnapshotDelete}
         />
       )}
-    </div>
+    </PageShell>
   );
 }

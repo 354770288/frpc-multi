@@ -2,24 +2,28 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { useLocation } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { toast as sonnerToast } from 'sonner';
-import { api, nodesApi } from '../lib/api';
+import { api, nodesApi, workspaceApi } from '../lib/api';
 import { actionLabel, instanceStateBadge, parsePercent } from '../lib/format';
 import type {
   AuthState,
   ConsoleInfo,
   InstanceRef,
   InstanceStats,
+  InstanceSummary,
+  LbDomain,
   Node,
   NodeInstanceHealth,
   StatsMap,
   SummaryResponse,
   SystemInfo,
+  WorkspaceBadges,
 } from '../lib/types';
 
 // ── types ──────────────────────────────────────────────────────────────────
 
 type SummaryCounts = { total: number; running: number; stopped: number; error: number };
 const EMPTY_COUNTS: SummaryCounts = { total: 0, running: 0, stopped: 0, error: 0 };
+const EMPTY_BADGES: WorkspaceBadges = { anomalies: 0, activeJobs: 0, offlineNodes: 0, errorInstances: 0 };
 type NodeSystemSnapshot = Record<number, { info: SystemInfo | null; error: string | null }>;
 
 export type StatsPoint = { cpu: number; mem: number };
@@ -39,6 +43,9 @@ interface ConsoleContextValue {
   // data
   nodes: Node[];
   instances: InstanceRef[];
+  instanceSummaries: Record<string, InstanceSummary>;
+  overviewDomains: LbDomain[];
+  navBadges: WorkspaceBadges;
   summaryLoading: boolean;
   summaryLoaded: boolean;
   summaryError: string;
@@ -51,6 +58,9 @@ interface ConsoleContextValue {
   pendingAction: Record<string, string>;
   nodeSystems: NodeSystemSnapshot;
   nodeHealthById: Record<number, NodeInstanceHealth>;
+  // command palette
+  commandOpen: boolean;
+  setCommandOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
   // workspace filters
   workspaceNodeId: number | 'all';
   setWorkspaceNodeId: (val: number | 'all') => void;
@@ -62,6 +72,7 @@ interface ConsoleContextValue {
   deleteInstance: (item: InstanceRef) => Promise<void>;
   refreshAll: () => Promise<void>;
   loadSummary: () => Promise<void>;
+  refreshBadges: () => Promise<void>;
 }
 
 const ConsoleContext = createContext<ConsoleContextValue | null>(null);
@@ -75,10 +86,13 @@ export function useConsole() {
 // ── provider ───────────────────────────────────────────────────────────────
 
 export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthState; onAuthRefresh: (state: AuthState) => void; children: ReactNode }) {
-  const {pathname}=useLocation();
-  const instanceArea=/^\/(instances|nodes|system|audit)(\/|$)/.test(pathname);
+  const { pathname } = useLocation();
+  const instanceArea = /^\/(instances|nodes|system|audit)(\/|$)/.test(pathname);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [instances, setInstances] = useState<InstanceRef[]>([]);
+  const [overviewDomains, setOverviewDomains] = useState<LbDomain[]>([]);
+  const [navBadges, setNavBadges] = useState<WorkspaceBadges>(EMPTY_BADGES);
+  const [commandOpen, setCommandOpen] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryLoaded, setSummaryLoaded] = useState(false);
   const [summaryError, setSummaryError] = useState('');
@@ -93,45 +107,79 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
   const [workspaceNodeId, setWorkspaceNodeId] = useState<number | 'all'>('all');
   const [workspaceSearch, setWorkspaceSearch] = useState('');
 
-  async function loadSummary() {
-    setSummaryLoading(true);
-    try {
-      const [nodeList, data] = await Promise.all([
-        nodesApi.list(),
-        api<SummaryResponse>('/api/summary')
-      ]);
-      const summaryByNodeId = new Map((data.nodes || []).map((node) => [node.id, node]));
+  const applySummaryPayload = useCallback((data: SummaryResponse, nodeList?: Node[]) => {
+    const summaryByNodeId = new Map((data.nodes || []).map((node) => [node.id, node]));
+    if (nodeList) {
       setNodes(
         nodeList.map((node) => {
           const summary = summaryByNodeId.get(node.id);
           return summary
             ? { ...node, status: summary.status, online: summary.status === 'online', lastSeenAt: summary.lastSeenAt }
             : node;
-        })
+        }),
       );
-      const list: InstanceRef[] = [];
-      const statMap: StatsMap = {};
-      for (const item of data.instances) {
-        const { runtime, nodeId, nodeName, ...rest } = item;
-        const id = typeof nodeId === 'number' ? nodeId : 0;
-        list.push({ ...rest, nodeId: id, nodeName: nodeName || '本机' });
-        if (runtime && Object.keys(runtime).length) statMap[instanceKey(id, item.name)] = runtime as InstanceStats;
-      }
-      setInstances(list);
-      setStats(statMap);
-      setStatsHistory((prev) => {
-        const next: StatsHistoryMap = {};
-        for (const [statKey, stat] of Object.entries(statMap)) {
-          next[statKey] = [
-            ...(prev[statKey] || []),
-            { cpu: parsePercent(stat.cpuPercent), mem: parsePercent(stat.memPercent) },
-          ].slice(-STATS_HISTORY_LEN);
+    } else if (Array.isArray(data.nodes)) {
+      setNodes((prev) => {
+        if (prev.length) {
+          return prev.map((node) => {
+            const summary = summaryByNodeId.get(node.id);
+            return summary
+              ? { ...node, status: summary.status, online: summary.status === 'online', lastSeenAt: summary.lastSeenAt }
+              : node;
+          });
         }
-        return next;
+        return data.nodes!.map((n) => ({
+          id: n.id,
+          name: n.name,
+          uuid: n.uuid,
+          status: n.status,
+          online: n.status === 'online',
+          lastSeenAt: n.lastSeenAt,
+          createdAt: '',
+          updatedAt: '',
+        }));
       });
-      setCounts({ total: data.total, running: data.running, stopped: data.stopped, error: data.error });
-      setDockerAvailable(!!data.dockerAvailable);
-      setDockerError(data.dockerError || '');
+    }
+    const list: InstanceRef[] = [];
+    const statMap: StatsMap = {};
+    for (const item of data.instances || []) {
+      const { runtime, nodeId, nodeName, ...rest } = item;
+      const id = typeof nodeId === 'number' ? nodeId : 0;
+      list.push({ ...rest, nodeId: id, nodeName: nodeName || '本机' });
+      if (runtime && Object.keys(runtime).length) statMap[instanceKey(id, item.name)] = runtime as InstanceStats;
+    }
+    setInstances(list);
+    setStats(statMap);
+    setStatsHistory((prev) => {
+      const next: StatsHistoryMap = {};
+      for (const [statKey, stat] of Object.entries(statMap)) {
+        next[statKey] = [
+          ...(prev[statKey] || []),
+          { cpu: parsePercent(stat.cpuPercent), mem: parsePercent(stat.memPercent) },
+        ].slice(-STATS_HISTORY_LEN);
+      }
+      return next;
+    });
+    setCounts({
+      total: Number(data.total ?? 0),
+      running: Number(data.running ?? 0),
+      stopped: Number(data.stopped ?? 0),
+      error: Number(data.error ?? 0),
+    });
+    setDockerAvailable(!!data.dockerAvailable);
+    setDockerError(data.dockerError || '');
+  }, []);
+
+  async function loadSummary() {
+    setSummaryLoading(true);
+    try {
+      const [nodeList, data] = await Promise.all([
+        nodesApi.list(),
+        api<SummaryResponse>('/api/summary'),
+      ]);
+      if (data && Array.isArray(data.instances)) {
+        applySummaryPayload(data, Array.isArray(nodeList) ? nodeList : undefined);
+      }
       setSummaryError('');
     } catch {
       // Keep the last successful snapshot; consumers mark it stale separately.
@@ -145,24 +193,60 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
 
   async function loadSystem() {
     const data = await api<ConsoleInfo>('/api/console-info').catch(() => null);
-    setSystem(data);
+    if (data && typeof data === 'object' && 'version' in data) {
+      setSystem(data);
+    }
   }
 
+  const refreshBadges = useCallback(async () => {
+    try {
+      const data = await workspaceApi.overview();
+      if (!data || typeof data !== 'object') return;
+      if (data.badges && typeof data.badges.anomalies === 'number') {
+        setNavBadges({
+          anomalies: data.badges.anomalies ?? 0,
+          activeJobs: data.badges.activeJobs ?? 0,
+          offlineNodes: data.badges.offlineNodes ?? 0,
+          errorInstances: data.badges.errorInstances ?? 0,
+        });
+      }
+      if (Array.isArray(data.domains)) {
+        setOverviewDomains(data.domains);
+      }
+      if (!instanceArea && data.summary && Array.isArray(data.summary.instances)) {
+        applySummaryPayload(data.summary);
+        setSummaryLoaded(true);
+      }
+    } catch {
+      // 忽略轻量导航徽标拉取异常，不影响主界面
+    }
+  }, [applySummaryPayload, instanceArea]);
+
   async function refreshAll() {
-    await Promise.all([loadSummary(), loadSystem()]);
+    await Promise.all([loadSummary(), loadSystem(), refreshBadges()]);
   }
 
   useEffect(() => {
-    if(!instanceArea)return;
-    void refreshAll();
-    const timer = window.setInterval(() => {if(document.visibilityState==='visible')void loadSummary();}, 5000);
+    void refreshBadges();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshBadges();
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [refreshBadges]);
+
+  useEffect(() => {
+    if (!instanceArea) return;
+    void Promise.all([loadSummary(), loadSystem()]);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void loadSummary();
+    }, 5000);
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instanceArea]);
 
   const nodeSystemKey = useMemo(
     () => nodes.map((node) => `${node.id}:${node.online || node.status === 'online'}`).join('|'),
-    [nodes]
+    [nodes],
   );
 
   useEffect(() => {
@@ -177,14 +261,24 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
           } catch (err) {
             return [node.id, { info: null, error: err instanceof Error ? err.message : '节点系统信息不可达' }] as const;
           }
-        })
+        }),
       );
       if (!cancelled) setNodeSystems(Object.fromEntries(entries));
     }
     loadNodeSystems();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodeSystemKey,instanceArea]);
+  }, [nodeSystemKey, instanceArea]);
+
+  const instanceSummaries = useMemo<Record<string, InstanceSummary>>(() => {
+    const map: Record<string, InstanceSummary> = {};
+    for (const inst of instances) {
+      if (inst.summary) {
+        map[instanceKey(inst.nodeId, inst.name)] = inst.summary;
+      }
+    }
+    return map;
+  }, [instances]);
 
   const action = useCallback(async (item: InstanceRef, verb: string) => {
     const key = instanceKey(item.nodeId, item.name);
@@ -204,7 +298,7 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
 
   const patchInstance = useCallback(async (
     item: InstanceRef,
-    patch: { displayName?: string; description?: string; enabled?: boolean; applyImmediately?: boolean }
+    patch: { displayName?: string; description?: string; enabled?: boolean; applyImmediately?: boolean },
   ) => {
     const key = patch.enabled !== undefined ? 'toggle' : 'patch';
     const pendingKey = instanceKey(item.nodeId, item.name);
@@ -255,9 +349,11 @@ export function ConsoleProvider({ auth, onAuthRefresh, children }: { auth: AuthS
 
   const value: ConsoleContextValue = {
     auth, onAuthRefresh,
-    nodes, instances, summaryLoading, summaryLoaded, summaryError, stats, statsHistory, counts, dockerAvailable, dockerError, system, pendingAction, nodeSystems, nodeHealthById,
+    nodes, instances, instanceSummaries, overviewDomains, navBadges,
+    summaryLoading, summaryLoaded, summaryError, stats, statsHistory, counts, dockerAvailable, dockerError, system, pendingAction, nodeSystems, nodeHealthById,
+    commandOpen, setCommandOpen,
     workspaceNodeId, setWorkspaceNodeId, workspaceSearch, setWorkspaceSearch,
-    action, patchInstance, deleteInstance, refreshAll, loadSummary,
+    action, patchInstance, deleteInstance, refreshAll, loadSummary, refreshBadges,
   };
 
   return (

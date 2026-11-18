@@ -237,6 +237,59 @@ def create_node(
     return {**_public_node(record), "install": _install_info(record, include_secret=True)}
 
 
+class BatchUpgradePayload(BaseModel):
+    nodeIds: list[int] | None = None
+
+
+@router.post("/upgrade-outdated")
+async def upgrade_outdated_agents(
+    user: Annotated[str, Depends(require_auth)],
+    store: Annotated[NodeStore, Depends(node_store)],
+    audits: Annotated[AuditStore, Depends(audit_store)],
+    payload: BatchUpgradePayload | None = None,
+):
+    """批量升级指定（或所有版本落后于当前 Console 构建版本的）在线 Agent 节点。"""
+    import os
+
+    target_version = os.environ.get("AGENT_VERSION", "dev")
+    explicit_ids = set(payload.nodeIds) if payload and payload.nodeIds is not None else None
+    upgraded: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    for node in store.list_nodes():
+        if explicit_ids is not None and node.id not in explicit_ids:
+            continue
+        if not hub.is_online(node.uuid):
+            skipped.append({"id": node.id, "name": node.name, "reason": "offline"})
+            continue
+        if explicit_ids is None:
+            try:
+                sys_info = await hub.get(node.uuid).call(wsproto.M_GET_SYSTEM, timeout=10.0)
+                agent_ver = str((sys_info or {}).get("agentVersion") or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                failed.append({"id": node.id, "name": node.name, "error": str(exc)})
+                continue
+            if target_version in {"", "dev"} or agent_ver == target_version:
+                skipped.append({"id": node.id, "name": node.name, "reason": "up_to_date", "agentVersion": agent_ver})
+                continue
+
+        try:
+            res = await hub.get(node.uuid).call(wsproto.M_UPGRADE_AGENT, timeout=30.0)
+            audits.create_log(username=user, action="upgrade_agent", node_id=node.id, success=True, message="batch_upgrade")
+            upgraded.append({"id": node.id, "name": node.name, "image": (res or {}).get("image")})
+        except Exception as exc:  # noqa: BLE001
+            audits.create_log(username=user, action="upgrade_agent", node_id=node.id, success=False, message=str(exc))
+            failed.append({"id": node.id, "name": node.name, "error": str(exc)})
+
+    return {
+        "targetVersion": target_version,
+        "upgraded": upgraded,
+        "skipped": skipped,
+        "failed": failed,
+    }
+
+
 @router.get("/{node_id}")
 def get_node(
     node_id: int,

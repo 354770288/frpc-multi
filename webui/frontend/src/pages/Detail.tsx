@@ -4,6 +4,8 @@ import { toast } from 'sonner';
 import {
   ArrowLeft,
   CheckCircle2,
+  Copy,
+  Download,
   FileCode2,
   History,
   Play,
@@ -12,11 +14,12 @@ import {
   Search,
   Square,
   TerminalSquare,
-  XCircle
+  XCircle,
 } from 'lucide-react';
 import { api, auditLogsApi, nodesApi } from '../lib/api';
 import { instanceStateBadge, parsePercent } from '../lib/format';
 import { parseProxies, splitTomlAtProxies, type ProxyDraft } from '../lib/proxyToml';
+import { CopyableText } from '../components/CopyableText';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { EmptyState } from '../components/EmptyState';
@@ -40,13 +43,14 @@ import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Panel } from '../components/ui/Panel';
 import { ConfigEditorPanel } from './ConfigEditor';
 import { useConsole } from '../context/ConsoleContext';
-import type { AuditLog, InstanceDetail, InstanceRef } from '../lib/types';
+import type { AuditLog, InstanceDetail } from '../lib/types';
 
 const TAIL_OPTIONS = [100, 300, 1000] as const;
 type TailOption = (typeof TAIL_OPTIONS)[number];
 export type DetailTab = 'logs' | 'config' | 'proxies' | 'audit';
 
 const LOG_REFRESH_MS = 7000;
+const AUDIT_PAGE_SIZE = 20;
 
 const ACTION_LABEL: Record<string, string> = {
   create_instance: '创建实例',
@@ -56,13 +60,26 @@ const ACTION_LABEL: Record<string, string> = {
   start_instance: '启动',
   stop_instance: '停止',
   restart_instance: '重启',
-  recreate_instance: '重建'
+  recreate_instance: '重建',
 };
 
-// ponytail: 只 strip 不着色；docker logs 常丢 ESC 字节只剩 "[1;31m" 字面量，两种形态都匹配
 const ANSI_RE = /\x1b\[[0-9;]*m|\[[0-9;]{1,8}m/g;
 function stripAnsi(line: string): string {
   return line.replace(ANSI_RE, '');
+}
+
+function logLineClass(line: string): string {
+  const lower = line.toLowerCase();
+  if (/\[e\]|\berror\b|\bfatal\b|\bpanic\b|connect to server error|failed to/.test(lower)) {
+    return 'text-rose-400';
+  }
+  if (/\[w\]|\bwarn(?:ing)?\b|reconnect/.test(lower)) {
+    return 'text-amber-300';
+  }
+  if (/start proxy success|login to server success/.test(lower)) {
+    return 'text-emerald-300';
+  }
+  return 'text-slate-200';
 }
 
 function parseDetailTab(value: string | null): DetailTab {
@@ -78,17 +95,16 @@ export function Detail() {
     statsHistory,
     pendingAction,
     action,
-    loadSummary
+    loadSummary,
   } = useConsole();
   const navigate = useNavigate();
   const params = useParams<{ nodeId: string; name: string }>();
-  const [searchParams,setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const routeNodeId = Number(params.nodeId);
   const routeName = params.name ? decodeURIComponent(params.name) : '';
   const instance = useMemo(
-    () =>
-      instances.find((item) => item.nodeId === routeNodeId && item.name === routeName) || null,
-    [instances, routeName, routeNodeId]
+    () => instances.find((item) => item.nodeId === routeNodeId && item.name === routeName) || null,
+    [instances, routeName, routeNodeId],
   );
   const initialTab = parseDetailTab(searchParams.get('tab'));
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
@@ -105,6 +121,8 @@ export function Detail() {
   const [logOrder, setLogOrder] = useState<'newest' | 'oldest'>('newest');
   const [proxyDrafts, setProxyDrafts] = useState<ProxyDraft[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditPage, setAuditPage] = useState(1);
   const [auditLoading, setAuditLoading] = useState(false);
 
   const name = instance?.name || '';
@@ -128,36 +146,56 @@ export function Detail() {
     } finally {
       setDetailLoading(false);
     }
-  }, [instance?.name, instance?.nodeId]);
+  }, [instance]);
 
   const loadAuditLogs = useCallback(async () => {
     if (!instance) return;
     setAuditLoading(true);
     try {
-      setAuditLogs(await auditLogsApi.list(200));
+      const query: Record<string, string | number | boolean> = {
+        page: auditPage,
+        pageSize: AUDIT_PAGE_SIZE,
+        instanceName: instance.name,
+      };
+      if (instance.nodeId > 0) query.nodeId = instance.nodeId;
+      else query.local = true;
+      const res = await auditLogsApi.page(query);
+      if (res && Array.isArray(res.items)) {
+        setAuditLogs(res.items);
+        setAuditTotal(res.total ?? res.items.length);
+      } else {
+        // 兼容未提供分页结构的测试夹具回退
+        const fallback = await auditLogsApi.list(200);
+        const matched = fallback.filter(
+          (log) =>
+            log.instanceName === instance.name &&
+            (instance.nodeId > 0 ? log.nodeId === instance.nodeId : log.nodeId === null || log.nodeId === 0),
+        );
+        setAuditLogs(matched);
+        setAuditTotal(matched.length);
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '操作记录加载失败');
     } finally {
       setAuditLoading(false);
     }
-  }, [instance?.name, instance?.nodeId]);
+  }, [auditPage, instance]);
 
   const loadLogs = useCallback(async () => {
     if (!instance || logsPaused) return;
     setLogsLoading(true);
-    const params = new URLSearchParams({ tail: String(tail) });
-    if (appliedKeyword) params.set('keyword', appliedKeyword);
+    const q = new URLSearchParams({ tail: String(tail) });
+    if (appliedKeyword) q.set('keyword', appliedKeyword);
     try {
       const data =
         instance.nodeId > 0
-          ? await nodesApi.instances.logs(instance.nodeId, instance.name, params)
-          : await api<{ lines: string[] }>(`/api/instances/${instance.name}/logs?${params.toString()}`);
-      const lines = data.lines.map(stripAnsi);
+          ? await nodesApi.instances.logs(instance.nodeId, instance.name, q)
+          : await api<{ lines: string[] }>(`/api/instances/${instance.name}/logs?${q.toString()}`);
+      const lines = (data.lines || []).map(stripAnsi);
       setLogs(lines);
       setViewLogs(lines);
     } catch (err) {
       setLogs([]);
-      // 7s 轮询失败会反复进入，固定 id 让 sonner 复用同一条 toast 避免刷屏
       toast.error(err instanceof Error ? err.message : '日志加载失败', { id: 'detail-logs-error' });
     } finally {
       setLogsLoading(false);
@@ -171,6 +209,7 @@ export function Detail() {
     setKeywordInput('');
     setAppliedKeyword('');
     setAuditLogs([]);
+    setAuditPage(1);
     setLogsPaused(false);
     setFollowLogs(false);
     setLogOrder('newest');
@@ -178,22 +217,20 @@ export function Detail() {
   }, [initialTab, key]);
 
   useEffect(() => {
-    loadDetail();
+    void loadDetail();
   }, [loadDetail]);
 
   useEffect(() => {
     if (tab !== 'audit') return;
-    loadAuditLogs();
+    void loadAuditLogs();
   }, [loadAuditLogs, tab]);
 
   useEffect(() => {
     if (tab !== 'logs') return;
-    loadLogs();
+    void loadLogs();
     if (logsPaused) return;
-    const timer = window.setInterval(loadLogs, LOG_REFRESH_MS);
-    return () => {
-      window.clearInterval(timer);
-    };
+    const timer = window.setInterval(() => void loadLogs(), LOG_REFRESH_MS);
+    return () => window.clearInterval(timer);
   }, [loadLogs, logsPaused, tab]);
 
   useEffect(() => {
@@ -212,16 +249,11 @@ export function Detail() {
         if (!cancelled) setProxyDrafts([]);
       }
     }
-    loadProxyDrafts();
+    void loadProxyDrafts();
     return () => {
       cancelled = true;
     };
   }, [instance, tab]);
-
-  const filteredAuditLogs = useMemo(() => {
-    if (!instance) return [];
-    return auditLogs.filter((log) => auditMatchesInstance(log, instance));
-  }, [auditLogs, instance]);
 
   if (!instance) {
     const invalidRoute = !Number.isFinite(routeNodeId) || !routeName;
@@ -236,7 +268,7 @@ export function Detail() {
     const message = summaryError
       ? summaryError
       : invalidRoute
-        ? '请从节点工作台重新打开实例'
+        ? '请从实例列表重新打开实例'
         : isInitialLoading
           ? '正在加载实例列表…'
           : '实例可能已被删除或移动到其他节点';
@@ -249,13 +281,11 @@ export function Detail() {
             <div className="flex flex-wrap items-center gap-2">
               {summaryError && (
                 <Button onClick={loadSummary}>
-                  <RefreshCw size={13} />
-                  重试
+                  <RefreshCw size={13} />重试
                 </Button>
               )}
-              <Button variant="ghost" onClick={() => navigate('/workspace')}>
-                <ArrowLeft size={13} />
-                返回工作台
+              <Button variant="ghost" onClick={() => navigate('/instances')}>
+                <ArrowLeft size={13} />返回实例列表
               </Button>
             </div>
           }
@@ -278,19 +308,35 @@ export function Detail() {
   }
 
   return (
-    <main className="px-4 sm:px-6 py-5 sm:py-6 max-w-[1720px] mx-auto">
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => navigate('/workspace')}
-        className="mb-4 -ml-3 text-muted-foreground"
-      >
-        <ArrowLeft data-icon="inline-start" />
-        返回节点工作台
-      </Button>
+    <main className="mx-auto max-w-[1720px] px-4 py-5 sm:px-6 sm:py-6">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => navigate('/instances')}
+          className="-ml-3 text-muted-foreground"
+        >
+          <ArrowLeft data-icon="inline-start" />
+          返回实例列表
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            navigate(
+              `/instances/new?${new URLSearchParams({
+                cloneNode: String(instance.nodeId),
+                cloneName: instance.name,
+              })}`,
+            )
+          }
+        >
+          <Copy className="size-3.5" data-icon="inline-start" />克隆此实例
+        </Button>
+      </div>
 
-      <section className="mb-4 overflow-hidden rounded-lg border border-border bg-card">
-        <div className="grid gap-4 border-b border-border bg-muted/50 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
+      <section className="mb-4 overflow-hidden rounded-xl border border-border bg-card shadow-2xs">
+        <div className="grid gap-4 border-b border-border bg-muted/35 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <Badge tone={badge.tone} dot>{badge.label}</Badge>
@@ -314,7 +360,7 @@ export function Detail() {
                 variant="outline"
                 disabled={!!pending || !enabled}
                 onClick={() => action(instance, 'start')}
-                title={!enabled ? '实例已停用，请先在节点工作台启用' : undefined}
+                title={!enabled ? '实例已停用，请先启用' : undefined}
               >
                 <Play size={13} />
                 {pending === 'start' ? '启动中…' : '启动'}
@@ -364,30 +410,39 @@ export function Detail() {
         </div>
       </section>
 
-      <Tabs value={tab} onValueChange={(value) => {setTab(value as DetailTab);setSearchParams((current)=>{const next=new URLSearchParams(current);next.set('tab',value);return next;});}} className="mb-4">
+      <Tabs
+        value={tab}
+        onValueChange={(value) => {
+          setTab(value as DetailTab);
+          setSearchParams((current) => {
+            const next = new URLSearchParams(current);
+            next.set('tab', value);
+            return next;
+          });
+        }}
+        className="mb-4"
+      >
         <TabsList>
           <TabsTrigger value="logs">
-            <TerminalSquare />
-            日志
+            <TerminalSquare />日志
           </TabsTrigger>
           <TabsTrigger value="config">
-            <FileCode2 />
-            配置
+            <FileCode2 />配置
           </TabsTrigger>
           <TabsTrigger value="proxies">
-            <RefreshCw />
-            代理
+            <RefreshCw />代理
           </TabsTrigger>
           <TabsTrigger value="audit">
-            <History />
-            操作记录
+            <History />操作记录
           </TabsTrigger>
         </TabsList>
       </Tabs>
 
       {tab === 'logs' && (
         <LogsPanel
+          instanceName={instance.name}
           logs={viewLogs}
+          rawCount={logs.length}
           loading={logsLoading}
           tail={tail}
           keywordInput={keywordInput}
@@ -421,8 +476,12 @@ export function Detail() {
 
       {tab === 'audit' && (
         <AuditPanel
-          logs={filteredAuditLogs}
+          logs={auditLogs}
+          total={auditTotal}
+          page={auditPage}
+          pageSize={AUDIT_PAGE_SIZE}
           loading={auditLoading}
+          onPageChange={setAuditPage}
           onRefresh={loadAuditLogs}
         />
       )}
@@ -431,6 +490,7 @@ export function Detail() {
 }
 
 function LogsPanel({
+  instanceName,
   logs,
   loading,
   paused,
@@ -447,9 +507,11 @@ function LogsPanel({
   onFollowChange,
   onLogOrderChange,
   onClearView,
-  onClearKeyword
+  onClearKeyword,
 }: {
+  instanceName: string;
   logs: string[];
+  rawCount: number;
   loading: boolean;
   paused: boolean;
   follow: boolean;
@@ -467,21 +529,44 @@ function LogsPanel({
   onClearView: () => void;
   onClearKeyword: () => void;
 }) {
+  const orderedLines = useMemo(
+    () => (logOrder === 'oldest' ? logs : logs.slice().reverse()),
+    [logOrder, logs],
+  );
+
+  async function copyAllLogs() {
+    if (!orderedLines.length) return;
+    try {
+      await navigator.clipboard.writeText(orderedLines.join('\n'));
+      toast.success(`已复制 ${orderedLines.length} 行日志`);
+    } catch {
+      toast.error('复制日志失败');
+    }
+  }
+
+  function downloadLogs() {
+    if (!orderedLines.length) return;
+    const blob = new Blob([orderedLines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${instanceName}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.log`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <Panel
       title={
         <span className="inline-flex items-center gap-2">
           日志
-          {loading && (
-            <span className="text-[11px] font-normal text-muted-foreground">加载中…</span>
-          )}
+          {loading && <span className="text-[11px] font-normal text-muted-foreground">加载中…</span>}
         </span>
       }
       actions={
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           <Button size="sm" variant="outline" onClick={onRefresh} disabled={loading || paused}>
-            <RefreshCw size={13} />
-            刷新
+            <RefreshCw size={13} />刷新
           </Button>
           <Button size="sm" variant="outline" onClick={() => onPausedChange(!paused)}>
             {paused ? <Play size={13} /> : <Square size={13} />}
@@ -494,6 +579,12 @@ function LogsPanel({
             title={follow ? '关闭新日志定位' : '自动定位到最新日志'}
           >
             {follow ? '跟随中' : '跟随'}
+          </Button>
+          <Button size="sm" variant="outline" disabled={!orderedLines.length} onClick={() => void copyAllLogs()}>
+            <Copy size={13} />复制
+          </Button>
+          <Button size="sm" variant="outline" disabled={!orderedLines.length} onClick={downloadLogs}>
+            <Download size={13} />导出
           </Button>
           <Select value={logOrder} onValueChange={(value) => onLogOrderChange(value as 'newest' | 'oldest')}>
             <SelectTrigger size="sm" aria-label="日志排序">
@@ -528,7 +619,7 @@ function LogsPanel({
               event.preventDefault();
               onApplyKeyword();
             }}
-            className="min-w-0 flex-1 basis-[160px] max-w-[240px]"
+            className="min-w-0 max-w-[240px] flex-1 basis-[160px]"
           >
             <InputGroup>
               <InputGroupAddon>
@@ -554,19 +645,24 @@ function LogsPanel({
       }
       bodyClassName="p-0"
     >
-      {/* ponytail: 日志终端区按终端惯例固定深色，不随主题切换 */}
-      <pre
+      <div
         tabIndex={0}
         role="log"
         aria-label="实例日志"
-        className="m-0 h-[560px] overflow-auto bg-zinc-950 px-4 py-3 font-mono text-[12px] leading-[1.65] text-slate-200 whitespace-pre-wrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+        className="m-0 h-[560px] overflow-auto bg-zinc-950 px-4 py-3 font-mono text-[12px] leading-[1.65] whitespace-pre-wrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
       >
-        {logs.length
-          ? (logOrder === 'oldest' ? logs : logs.slice().reverse()).join('\n')
-          : appliedKeyword
-            ? `没有匹配「${appliedKeyword}」的日志`
-            : '暂无日志或 Docker 未连接'}
-      </pre>
+        {orderedLines.length ? (
+          orderedLines.map((line, idx) => (
+            <div key={idx} className={logLineClass(line)}>
+              {line}
+            </div>
+          ))
+        ) : (
+          <span className="text-slate-400">
+            {appliedKeyword ? `没有匹配「${appliedKeyword}」的日志` : '暂无日志或 Docker 未连接'}
+          </span>
+        )}
+      </div>
     </Panel>
   );
 }
@@ -574,7 +670,7 @@ function LogsPanel({
 function ProxySummaryPanel({
   detail,
   loading,
-  proxies
+  proxies,
 }: {
   detail: InstanceDetail | null;
   loading: boolean;
@@ -609,7 +705,7 @@ function ProxySummaryPanel({
           <SummaryItem label="代理数量" value={detail.summary.proxyCount} mono />
         </dl>
 
-        <div className="mt-5 grid gap-3 2xl:hidden">
+        <div className="mt-5 grid gap-3 lg:hidden">
           {proxies.map((proxy, index) => (
             <div key={`${proxy.name || 'proxy'}:${index}`} className="min-w-0 rounded-lg border border-border bg-muted/40 p-3">
               <div className="flex min-w-0 items-center justify-between gap-2">
@@ -629,36 +725,45 @@ function ProxySummaryPanel({
           )}
         </div>
 
-        <div className="mt-5 hidden rounded-lg border border-border 2xl:block">
-          <table className="w-full min-w-[720px]">
+        <div className="mt-5 hidden overflow-x-auto rounded-lg border border-border lg:block">
+          <table className="w-full min-w-[680px]">
             <thead>
-              <tr className="border-b border-border bg-muted">
+              <tr className="border-b border-border bg-muted/50">
                 <Th>代理名</Th>
                 <Th>类型</Th>
                 <Th>本地目标</Th>
-                <Th>远端</Th>
+                <Th>远端暴露</Th>
               </tr>
             </thead>
             <tbody>
-              {proxies.map((proxy, index) => (
-                <tr
-                  key={`${proxy.name || 'proxy'}:${index}`}
-                  className="border-b border-border last:border-b-0 hover:bg-muted"
-                >
-                  <Td mono>{proxy.name.trim() || '未命名'}</Td>
-                  <Td>
-                    <Badge tone="muted">{proxy.type || '--'}</Badge>
-                  </Td>
-                  <Td mono>{formatProxyLocalTarget(proxy)}</Td>
-                  <Td mono>{formatProxyRemoteTarget(proxy)}</Td>
-                </tr>
-              ))}
+              {proxies.map((proxy, index) => {
+                const remoteEndpoint =
+                  detail.summary.serverAddr && proxy.remotePort.trim()
+                    ? `${detail.summary.serverAddr}:${proxy.remotePort.trim()}`
+                    : '';
+                return (
+                  <tr
+                    key={`${proxy.name || 'proxy'}:${index}`}
+                    className="border-b border-border last:border-b-0 hover:bg-muted/40"
+                  >
+                    <Td mono>{proxy.name.trim() || '未命名'}</Td>
+                    <Td>
+                      <Badge tone="muted">{proxy.type || '--'}</Badge>
+                    </Td>
+                    <Td mono>{formatProxyLocalTarget(proxy)}</Td>
+                    <Td mono>
+                      {remoteEndpoint ? (
+                        <CopyableText value={remoteEndpoint} label={remoteEndpoint} />
+                      ) : (
+                        formatProxyRemoteTarget(proxy)
+                      )}
+                    </Td>
+                  </tr>
+                );
+              })}
               {!proxies.length && (
                 <tr>
-                  <td
-                    colSpan={4}
-                    className="px-4 py-8 text-center text-[12px] text-muted-foreground"
-                  >
+                  <td colSpan={4} className="px-4 py-8 text-center text-[12px] text-muted-foreground">
                     {detail.summary.proxyCount > 0 ? '未能解析代理表格' : '暂无代理'}
                   </td>
                 </tr>
@@ -682,26 +787,33 @@ function ProxySummaryPanel({
 
 function AuditPanel({
   logs,
+  total,
+  page,
+  pageSize,
   loading,
-  onRefresh
+  onPageChange,
+  onRefresh,
 }: {
   logs: AuditLog[];
+  total: number;
+  page: number;
+  pageSize: number;
   loading: boolean;
+  onPageChange: (next: number) => void;
   onRefresh: () => void;
 }) {
   return (
     <Panel
-      title="操作记录"
+      title={`操作记录（共 ${total} 条）`}
       actions={
         <Button size="sm" variant="outline" onClick={onRefresh} disabled={loading}>
-          <RefreshCw size={13} />
-          刷新
+          <RefreshCw size={13} />刷新
         </Button>
       }
       bodyClassName="p-0"
     >
       <div>
-        <div className="grid gap-3 p-3 2xl:hidden">
+        <div className="grid gap-3 p-3 lg:hidden">
           {logs.map((log) => (
             <div key={log.id} className="min-w-0 rounded-lg border border-border bg-card p-3">
               <div className="flex min-w-0 items-center justify-between gap-2">
@@ -709,15 +821,9 @@ function AuditPanel({
                   {formatTime(log.createdAt)}
                 </span>
                 {log.success ? (
-                  <Badge tone="success">
-                    <CheckCircle2 size={12} />
-                    成功
-                  </Badge>
+                  <Badge tone="success"><CheckCircle2 size={12} />成功</Badge>
                 ) : (
-                  <Badge tone="danger">
-                    <XCircle size={12} />
-                    失败
-                  </Badge>
+                  <Badge tone="danger"><XCircle size={12} />失败</Badge>
                 )}
               </div>
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
@@ -727,72 +833,71 @@ function AuditPanel({
               </div>
             </div>
           ))}
-          {!logs.length && (
-            <EmptyState title={loading ? '加载中…' : '该实例暂无操作记录'} />
-          )}
+          {!logs.length && <EmptyState title={loading ? '加载中…' : '该实例暂无操作记录'} />}
         </div>
-        <div className="hidden 2xl:block">
-        <table className="w-full min-w-[780px]">
-          <thead>
-            <tr className="border-b border-border bg-muted">
-              <Th>时间</Th>
-              <Th>操作人</Th>
-              <Th>动作</Th>
-              <Th>结果</Th>
-              <Th>消息</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {logs.map((log) => (
-              <tr
-                key={log.id}
-                className="border-b border-border transition-colors last:border-b-0 hover:bg-muted"
-              >
-                <Td mono>{formatTime(log.createdAt)}</Td>
-                <Td>{log.username || '--'}</Td>
-                <Td>{ACTION_LABEL[log.action] || log.action}</Td>
-                <Td>
-                  {log.success ? (
-                    <Badge tone="success">
-                      <CheckCircle2 size={12} />
-                      成功
-                    </Badge>
-                  ) : (
-                    <Badge tone="danger">
-                      <XCircle size={12} />
-                      失败
-                    </Badge>
-                  )}
-                </Td>
-                <Td>
-                  <span className="text-[12px] text-muted-foreground">
-                    {log.message || '--'}
-                  </span>
-                </Td>
+
+        <div className="hidden overflow-x-auto lg:block">
+          <table className="w-full min-w-[760px]">
+            <thead>
+              <tr className="border-b border-border bg-muted/50">
+                <Th>时间</Th>
+                <Th>操作人</Th>
+                <Th>动作</Th>
+                <Th>结果</Th>
+                <Th>消息</Th>
               </tr>
-            ))}
-            {!logs.length && (
-              <tr>
-                <td
-                  colSpan={5}
-                  className="px-4 py-10 text-center text-[12px] text-muted-foreground"
+            </thead>
+            <tbody>
+              {logs.map((log) => (
+                <tr
+                  key={log.id}
+                  className="border-b border-border transition-colors last:border-b-0 hover:bg-muted/40"
                 >
-                  {loading ? '加载中…' : '该实例暂无操作记录'}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+                  <Td mono>{formatTime(log.createdAt)}</Td>
+                  <Td>{log.username || '--'}</Td>
+                  <Td>{ACTION_LABEL[log.action] || log.action}</Td>
+                  <Td>
+                    {log.success ? (
+                      <Badge tone="success"><CheckCircle2 size={12} />成功</Badge>
+                    ) : (
+                      <Badge tone="danger"><XCircle size={12} />失败</Badge>
+                    )}
+                  </Td>
+                  <Td>
+                    <span className="text-[12px] text-muted-foreground">{log.message || '--'}</span>
+                  </Td>
+                </tr>
+              ))}
+              {!logs.length && (
+                <tr>
+                  <td colSpan={5} className="px-4 py-10 text-center text-[12px] text-muted-foreground">
+                    {loading ? '加载中…' : '该实例暂无操作记录'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
+
+        {total > pageSize && (
+          <div className="flex items-center justify-end gap-2 border-t px-4 py-2.5 text-xs text-muted-foreground">
+            <span>第 {page} / {Math.max(1, Math.ceil(total / pageSize))} 页</span>
+            <Button size="sm" variant="outline" disabled={page <= 1 || loading} onClick={() => onPageChange(page - 1)}>
+              上一页
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={page * pageSize >= total || loading}
+              onClick={() => onPageChange(page + 1)}
+            >
+              下一页
+            </Button>
+          </div>
+        )}
       </div>
     </Panel>
   );
-}
-
-function auditMatchesInstance(log: AuditLog, instance: InstanceRef): boolean {
-  if (log.instanceName !== instance.name) return false;
-  if (instance.nodeId > 0) return log.nodeId === instance.nodeId;
-  return log.nodeId === null || log.nodeId === 0;
 }
 
 function proxyTypeEntries(types: Record<string, number> | undefined): { key: string; label: string }[] {
@@ -812,7 +917,7 @@ function portEntries(ports: number[] | undefined): { key: string; label: string 
     .sort((a, b) => a[0] - b[0])
     .map(([port, count]) => ({
       key: String(port),
-      label: count > 1 ? `${port} x${count}` : String(port)
+      label: count > 1 ? `${port} x${count}` : String(port),
     }));
 }
 
@@ -839,7 +944,7 @@ function formatProxyRemoteTarget(proxy: ProxyDraft): string {
 function MobileFact({
   label,
   value,
-  mono = false
+  mono = false,
 }: {
   label: string;
   value: string;
@@ -872,7 +977,7 @@ function ActionGroup({ title, children }: { title: string; children: React.React
 function ChipGroup({
   label,
   entries,
-  mono = false
+  mono = false,
 }: {
   label: string;
   entries: { key: string; label: string }[];
@@ -907,13 +1012,12 @@ function StatTile({
   mono = false,
   truncate = false,
   meter,
-  trend
+  trend,
 }: {
   label: string;
   value: string;
   mono?: boolean;
   truncate?: boolean;
-  /** 0–100 占比；null 表示暂无数据（渲染空轨道） */
   meter?: number | null;
   trend?: number[];
 }) {
@@ -939,7 +1043,7 @@ function StatTile({
 function SummaryItem({
   label,
   value,
-  mono = false
+  mono = false,
 }: {
   label: string;
   value?: string | number | null;
@@ -965,15 +1069,13 @@ function Th({ children }: { children: React.ReactNode }) {
 
 function Td({
   children,
-  mono = false
+  mono = false,
 }: {
   children: React.ReactNode;
   mono?: boolean;
 }) {
   return (
-    <td
-      className={`px-4 py-2.5 text-[13px] text-foreground ${mono ? 'font-mono text-[12px] tabular-nums text-muted-foreground' : ''}`}
-    >
+    <td className={`px-4 py-2.5 text-[13px] text-foreground ${mono ? 'font-mono text-[12px] tabular-nums text-muted-foreground' : ''}`}>
       {children}
     </td>
   );

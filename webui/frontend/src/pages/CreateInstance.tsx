@@ -3,17 +3,17 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  Code2,
   FileCode2,
   Network,
   Plus,
   Rocket,
   Server,
-  Settings2,
-  XCircle
+  XCircle,
 } from 'lucide-react';
 import { Link, useBlocker, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { api, nodesApi } from '../lib/api';
+import { api, lbApi, nodesApi } from '../lib/api';
 import { shortNodeUuid } from '../lib/format';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -31,26 +31,22 @@ import {
 import { Switch } from '../components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Badge } from '../components/ui/badge';
-import {
-  ToggleGroup,
-  ToggleGroupItem,
-} from '../components/ui/toggle-group';
-import { lbApi } from '../lib/api';
-import type { LbDomain } from '../lib/types';
+import { ToggleGroup, ToggleGroupItem } from '../components/ui/toggle-group';
 import { EmptyState } from '../components/EmptyState';
 import { ConfirmOverlay } from '../components/Overlay';
+import { PageHeader, PageShell } from '../components/PageHeader';
 import { ProxyList } from '../components/ProxyList';
 import { useConsole } from '../context/ConsoleContext';
 import {
-  emptyFrpcConfig,
   canEditFullConfigStructurally,
+  emptyFrpcConfig,
   parseFrpcConfig,
   serializeFrpcConfig,
   validateFrpcDraft,
   type FrpcConfigDraft,
-  type ProxyDraft
+  type ProxyDraft,
 } from '../lib/proxyToml';
-import type { InstanceRef, Node } from '../lib/types';
+import type { InstanceDetail, InstanceRef, LbDomain, Node } from '../lib/types';
 
 const INSTANCE_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$/;
 
@@ -61,8 +57,10 @@ export function CreateInstance() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialNodeId = workspaceNodeId === 'all' ? undefined : workspaceNodeId;
+  const cloneNodeParam = searchParams.get('cloneNode');
+  const cloneNameParam = searchParams.get('cloneName')?.trim() || '';
   const defaultName = useMemo(() => nextClientName(instances), [instances]);
-  // 穿透测试页联动：/create?server=<ip>&port=<port> 预填 frps 地址
+
   const initialConfigText = useMemo(() => {
     const draft = emptyFrpcConfig();
     const server = searchParams.get('server')?.trim();
@@ -71,13 +69,14 @@ export function CreateInstance() {
     if (server && port && /^\d+$/.test(port)) draft.serverPort = port;
     return serializeFrpcConfig(draft);
   }, [searchParams]);
-  const resolvedInitialNodeId = useMemo(
-    () =>
-      initialNodeId && nodes.some((node) => node.id === initialNodeId)
-        ? initialNodeId
-        : nodes.find((node) => node.online || node.status === 'online')?.id || nodes[0]?.id || 0,
-    [initialNodeId, nodes]
-  );
+
+  const resolvedInitialNodeId = useMemo(() => {
+    const cloneNid = cloneNodeParam ? Number(cloneNodeParam) : NaN;
+    if (Number.isFinite(cloneNid) && nodes.some((n) => n.id === cloneNid)) return cloneNid;
+    return initialNodeId && nodes.some((node) => node.id === initialNodeId)
+      ? initialNodeId
+      : nodes.find((node) => node.online || node.status === 'online')?.id || nodes[0]?.id || 0;
+  }, [cloneNodeParam, initialNodeId, nodes]);
 
   const [name, setName] = useState(defaultName);
   const [nameDirty, setNameDirty] = useState(false);
@@ -85,29 +84,76 @@ export function CreateInstance() {
   const [description, setDescription] = useState('');
   const [enabled, setEnabled] = useState(true);
   const [configText, setConfigText] = useState(initialConfigText);
-  const [step,setStep] = useState(1);
+  const [baselineConfigText, setBaselineConfigText] = useState(initialConfigText);
   const [mode, setMode] = useState<EditorMode>('structured');
   const [submitting, setSubmitting] = useState(false);
+  const [cloningLoading, setCloningLoading] = useState(false);
   const [nodeId, setNodeId] = useState<number>(resolvedInitialNodeId);
   const [nodeDirty, setNodeDirty] = useState(false);
-  const draftDirty=nameDirty || nodeDirty || !!displayName || !!description || configText!==initialConfigText || !enabled;
-  const blocker=useBlocker(draftDirty && !submitting);
-  useEffect(()=>{
-    const beforeUnload=(event:BeforeUnloadEvent)=>{if(!draftDirty)return;event.preventDefault();event.returnValue='';};
-    window.addEventListener('beforeunload',beforeUnload);
-    return()=>window.removeEventListener('beforeunload',beforeUnload);
-  },[draftDirty]);
-  const structuredSafe=canEditFullConfigStructurally(configText);
-  useEffect(()=>{if(!structuredSafe && mode==='structured')setMode('raw');},[structuredSafe,mode]);
 
-  // 负载均衡候选域名（地址来源切换）
+  const draftDirty =
+    nameDirty || nodeDirty || !!displayName || !!description || configText !== baselineConfigText || !enabled;
+  const blocker = useBlocker(draftDirty && !submitting);
+
+  useEffect(() => {
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (!draftDirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', beforeUnload);
+    return () => window.removeEventListener('beforeunload', beforeUnload);
+  }, [draftDirty]);
+
+  const structuredSafe = canEditFullConfigStructurally(configText);
+  useEffect(() => {
+    if (!structuredSafe && mode === 'structured') setMode('raw');
+  }, [structuredSafe, mode]);
+
   const [addrSource, setAddrSource] = useState<'manual' | 'lb'>('manual');
   const [lbDomains, setLbDomains] = useState<LbDomain[]>([]);
   useEffect(() => {
-    lbApi.domains()
+    lbApi
+      .domains()
       .then((list) => setLbDomains(list.filter((domain) => domain.enabled)))
-      .catch(() => { /* 未配置 Cloudflare 时静默，手动输入不受影响 */ });
+      .catch(() => {});
   }, []);
+
+  // 支持一键克隆现有实例配置
+  useEffect(() => {
+    if (!cloneNameParam) return;
+    const sourceNodeId = Number(cloneNodeParam || 0);
+    let cancelled = false;
+    setCloningLoading(true);
+    Promise.all([
+      sourceNodeId > 0
+        ? nodesApi.instances.get(sourceNodeId, cloneNameParam).catch(() => null)
+        : api<InstanceDetail>(`/api/instances/${encodeURIComponent(cloneNameParam)}`).catch(() => null),
+      sourceNodeId > 0
+        ? nodesApi.instances.getConfig(sourceNodeId, cloneNameParam)
+        : api<{ configText: string }>(`/api/instances/${encodeURIComponent(cloneNameParam)}/config`),
+    ])
+      .then(([detail, cfg]) => {
+        if (cancelled) return;
+        if (detail?.displayName) setDisplayName(`${detail.displayName}-副本`);
+        if (detail?.description) setDescription(detail.description);
+        if (cfg?.configText) {
+          setConfigText(cfg.configText);
+          setBaselineConfigText(cfg.configText);
+          setMode(canEditFullConfigStructurally(cfg.configText) ? 'structured' : 'raw');
+        }
+        toast.success(`已从实例 ${cloneNameParam} 载入配置草稿`);
+      })
+      .catch((err) => {
+        if (!cancelled) toast.error(err instanceof Error ? err.message : '克隆源实例读取失败');
+      })
+      .finally(() => {
+        if (!cancelled) setCloningLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cloneNameParam, cloneNodeParam]);
 
   useEffect(() => {
     if (!nameDirty) setName(nextClientName(instances));
@@ -127,22 +173,29 @@ export function CreateInstance() {
   const structured = useMemo(() => parseFrpcConfig(configText), [configText]);
   const selectedLbDomain = useMemo(
     () => lbDomains.find((domain) => domain.name === structured.serverAddr) || null,
-    [lbDomains, structured.serverAddr]
+    [lbDomains, structured.serverAddr],
   );
+
+  // 若克隆或预填地址刚好匹配某个优选域名，自动切换到候选域名模式显示
+  useEffect(() => {
+    if (structured.serverAddr && lbDomains.some((d) => d.name === structured.serverAddr)) {
+      setAddrSource('lb');
+    }
+  }, [lbDomains, structured.serverAddr]);
+
   const structuredErrors = useMemo(() => validateFrpcDraft(structured), [structured]);
-  const selectedNode = useMemo(
-    () => nodes.find((node) => node.id === nodeId) || null,
-    [nodeId, nodes]
-  );
+  const selectedNode = useMemo(() => nodes.find((node) => node.id === nodeId) || null, [nodeId, nodes]);
   const remotePorts = useMemo(() => {
-    const ports = structured.proxies
-      .map((proxy) => proxy.remotePort.trim())
-      .filter(Boolean);
+    const ports = structured.proxies.map((proxy) => proxy.remotePort.trim()).filter(Boolean);
     return Array.from(new Set(ports));
   }, [structured.proxies]);
 
   function updateStructured(patch: Partial<FrpcConfigDraft>) {
-    if(!structuredSafe){setMode('raw');toast.error('当前 TOML 含有无法由结构化表单保留的内容，请使用原始文本编辑');return;}
+    if (!structuredSafe) {
+      setMode('raw');
+      toast.error('当前 TOML 含有无法由结构化表单保留的内容，请使用原始文本编辑');
+      return;
+    }
     const next = { ...structured, ...patch };
     setConfigText(serializeFrpcConfig(next));
   }
@@ -151,48 +204,46 @@ export function CreateInstance() {
     updateStructured({ proxies });
   }
 
-  const nameError = name.trim() === ''
-    ? '请填写实例名'
-    : INSTANCE_NAME_RE.test(name.trim())
-      ? instances.some((item) => item.nodeId === nodeId && item.name === name.trim())
-        ? '该实例名已存在'
-        : null
-      : '只能包含小写字母、数字和短横线，长度 3-40，且不能以短横线开头或结尾';
+  const nameError =
+    name.trim() === ''
+      ? '请填写实例名'
+      : INSTANCE_NAME_RE.test(name.trim())
+        ? instances.some((item) => item.nodeId === nodeId && item.name === name.trim())
+          ? '该实例名已存在'
+          : null
+        : '只能包含小写字母、数字和短横线，长度 3-40，且不能以短横线开头或结尾';
   const nodeError = nodes.length > 0 && !nodeId ? '请选择节点' : null;
-  const validationCount = structuredErrors.length + (nameError ? 1 : 0) + (nodeError ? 1 : 0);
-
-  const canSubmit = !submitting && !nodeError && !nameError && structuredErrors.length === 0;
+  const validationErrors = mode === 'structured' ? structuredErrors : [];
+  const validationCount = validationErrors.length + (nameError ? 1 : 0) + (nodeError ? 1 : 0);
+  const canSubmit = !submitting && !cloningLoading && !nodeError && !nameError && validationErrors.length === 0 && !!configText.trim();
 
   if (nodes.length === 0) {
     return (
-      <main className="mx-auto max-w-[1600px] px-6 py-6">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => navigate('/workspace')}
-          className="mb-4 -ml-3 text-muted-foreground"
-        >
-          <ArrowLeft data-icon="inline-start" />
-          返回实例列表
-        </Button>
-
+      <PageShell>
+        <PageHeader
+          back={
+            <Button variant="ghost" size="sm" onClick={() => navigate('/instances')} className="-ml-2 text-muted-foreground">
+              <ArrowLeft data-icon="inline-start" />返回实例列表
+            </Button>
+          }
+          title="创建 frpc 实例"
+        />
         <EmptyState
           title="还没有可用节点"
           actions={
             <div className="flex flex-wrap justify-center gap-2">
               <Button onClick={() => navigate('/nodes')}>
-                <Plus size={13} />
-                添加节点
+                <Plus size={13} />添加节点
               </Button>
               <Button variant="outline" onClick={() => navigate('/instances')}>返回实例列表</Button>
             </div>
           }
         />
-      </main>
+      </PageShell>
     );
   }
 
-  async function create(startImmediately:boolean) {
+  async function create(startImmediately: boolean) {
     if (nameError) {
       toast.error(nameError);
       return;
@@ -201,8 +252,8 @@ export function CreateInstance() {
       toast.error(nodeError);
       return;
     }
-    if (structuredErrors.length) {
-      toast.error(structuredErrors[0]);
+    if (validationErrors.length) {
+      toast.error(validationErrors[0]);
       return;
     }
     setSubmitting(true);
@@ -213,14 +264,14 @@ export function CreateInstance() {
         description,
         configText,
         enabled,
-        startAfterCreate: enabled && startImmediately
+        startAfterCreate: enabled && startImmediately,
       };
       if (nodeId > 0) {
         await nodesApi.instances.create(nodeId, payload);
       } else {
         await api('/api/instances', {
           method: 'POST',
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
         });
       }
       toast.success('实例创建成功');
@@ -234,124 +285,127 @@ export function CreateInstance() {
   }
 
   return (
-    <main className="mx-auto max-w-[1600px] px-6 py-6">
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => navigate('/instances')}
-        className="mb-4 -ml-3 text-muted-foreground"
-      >
-        <ArrowLeft data-icon="inline-start" />
-        返回实例列表
-      </Button>
+    <PageShell maxWidth="full" className="max-w-[1550px]">
+      <PageHeader
+        back={
+          <Button variant="ghost" size="sm" onClick={() => navigate('/instances')} className="-ml-2 h-7 text-xs text-muted-foreground">
+            <ArrowLeft className="size-3.5" data-icon="inline-start" />返回实例列表
+          </Button>
+        }
+        title={cloneNameParam ? `克隆创建实例（源：${cloneNameParam}）` : '创建 frpc 实例'}
+        badge={
+          validationCount === 0 ? (
+            <Badge tone="success">校验通过</Badge>
+          ) : (
+            <Badge tone="warning">{validationCount} 项待完善</Badge>
+          )
+        }
+        description="一屏配置部署节点、frps 连接（支持绑定优选域名）与代理规则，右侧实时预览 TOML 并一键创建"
+        actions={
+          <Tabs value={mode} onValueChange={(value) => setMode(value as EditorMode)}>
+            <TabsList>
+              <TabsTrigger value="structured" disabled={!structuredSafe} className="text-xs">
+                结构化表单
+              </TabsTrigger>
+              <TabsTrigger value="raw" className="text-xs">
+                原始 TOML
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        }
+      />
 
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold tracking-tight text-foreground">
-            创建 frpc 实例
-          </h2>
-        </div>
-        {validationCount === 0 ? (
-          <Badge tone="success">校验通过</Badge>
-        ) : (
-          <Badge tone="warning">
-            {validationCount} 项待完善
-          </Badge>
-        )}
-      </div>
-      <p className="mb-4 text-sm text-muted-foreground">第 {step} 步 / 3 步 · {['基本信息与 frps 连接','代理配置','核对并提交'][step-1]}</p>
+      {!structuredSafe && (
+        <p role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-300">
+          配置含有结构化编辑无法保留的内容，已切换为原始 TOML 编辑。
+        </p>
+      )}
 
-      {step===2 && <Tabs value={mode} onValueChange={(value) => setMode(value as EditorMode)} className="mb-4">
-        <TabsList>
-          <TabsTrigger value="structured" disabled={!structuredSafe}>结构化</TabsTrigger>
-          <TabsTrigger value="raw">原始 TOML</TabsTrigger>
-        </TabsList>
-      </Tabs>}
-      {!structuredSafe && <p role="status" className="mb-4 rounded-md border border-warning/40 p-3 text-sm text-warning">配置含有结构化编辑无法保留的内容，已切换为原始 TOML 编辑。</p>}
-
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="flex flex-col gap-4">
-          {mode === 'structured' || step===1 ? (
-            <>
-              <div className={step===1 ? 'flex flex-col gap-4' : 'hidden'}>
-              <FormSection title={<SectionTitle icon={<Server size={14} />} title="1. 基本信息" />}>
-                <div className="flex flex-col gap-4">
-                  <Field label="节点">
-                    <Select
-                      value={String(nodeId)}
-                      onValueChange={(value) => {
-                        setNodeId(Number(value));
-                        setNodeDirty(true);
-                      }}
-                    >
-                      <SelectTrigger aria-label="节点" className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value="0">请选择节点</SelectItem>
-                          {nodes.map((node) => (
-                            <SelectItem key={node.id} value={String(node.id)}>
-                              {node.name} ({nodeLabel(node)})
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  {selectedNode && (
-                    <div className="rounded-lg border border-border bg-muted p-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-[12px] font-semibold text-foreground">
-                          {selectedNode.name}
-                        </span>
-                        <Badge tone={nodeIsOnline(selectedNode) ? 'success' : 'danger'}>
-                          {nodeLabel(selectedNode)}
-                        </Badge>
-                      </div>
-                      <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-                        uuid {shortNodeUuid(selectedNode.uuid, 8)} · {selectedNode.lastSeenAt ? `最近 ${formatLastSeen(selectedNode.lastSeenAt)}` : '未连接'}
-                      </div>
-                    </div>
-                  )}
+      <section className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_390px] lg:items-start">
+        <div className="flex flex-col gap-5">
+          {/* 1. 基本信息 */}
+          <FormSection title={<SectionTitle icon={<Server size={14} />} title="1. 部署节点与实例标识" />}>
+            <div className="flex flex-col gap-4">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <Field label="节点">
+                  <Select
+                    value={String(nodeId)}
+                    onValueChange={(value) => {
+                      setNodeId(Number(value));
+                      setNodeDirty(true);
+                    }}
+                  >
+                    <SelectTrigger aria-label="节点" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="0">请选择节点</SelectItem>
+                        {nodes.map((node) => (
+                          <SelectItem key={node.id} value={String(node.id)}>
+                            {node.name} ({nodeLabel(node)})
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
                   {nodeError && <ErrorLine>{nodeError}</ErrorLine>}
-                  <Field label="实例名">
-                    <Input
-                      value={name}
-                      aria-label="实例名"
-                      onChange={(event) => {
-                        setName(event.target.value);
-                        setNameDirty(true);
-                      }}
-                      placeholder="client-001"
-                      aria-invalid={!!nameError}
-                    />
-                  </Field>
-                  {nameError && (
-                    <ErrorLine>{nameError}</ErrorLine>
-                  )}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <Field label="显示名称">
-                      <Input
-                        value={displayName}
-                        aria-label="显示名称"
-                        onChange={(event) => setDisplayName(event.target.value)}
-                        placeholder="家里 NAS"
-                      />
-                    </Field>
-                    <Field label="备注描述">
-                      <Input
-                        value={description}
-                        aria-label="备注描述"
-                        onChange={(event) => setDescription(event.target.value)}
-                        placeholder="家中 NAS，SSH + 文件下载"
-                      />
-                    </Field>
-                  </div>
-                </div>
-              </FormSection>
+                </Field>
 
-              <FormSection title={<SectionTitle icon={<Network size={14} />} title="2. frps 连接" />}>
+                <Field label="实例名">
+                  <Input
+                    value={name}
+                    aria-label="实例名"
+                    onChange={(event) => {
+                      setName(event.target.value);
+                      setNameDirty(true);
+                    }}
+                    placeholder="client-001"
+                    aria-invalid={!!nameError}
+                  />
+                  {nameError && <ErrorLine>{nameError}</ErrorLine>}
+                </Field>
+              </div>
+
+              {selectedNode && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-foreground">{selectedNode.name}</span>
+                    <Badge tone={nodeIsOnline(selectedNode) ? 'success' : 'danger'}>
+                      {nodeLabel(selectedNode)}
+                    </Badge>
+                  </div>
+                  <span className="font-mono text-[11px] text-muted-foreground">
+                    uuid {shortNodeUuid(selectedNode.uuid, 8)} · {selectedNode.lastSeenAt ? `最近 ${formatLastSeen(selectedNode.lastSeenAt)}` : '未连接'}
+                  </span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <Field label="显示名称">
+                  <Input
+                    value={displayName}
+                    aria-label="显示名称"
+                    onChange={(event) => setDisplayName(event.target.value)}
+                    placeholder="如：家里 NAS / 深圳 ERP"
+                  />
+                </Field>
+                <Field label="备注描述">
+                  <Input
+                    value={description}
+                    aria-label="备注描述"
+                    onChange={(event) => setDescription(event.target.value)}
+                    placeholder="如：SSH + Web 业务转发"
+                  />
+                </Field>
+              </div>
+            </div>
+          </FormSection>
+
+          {mode === 'structured' ? (
+            <>
+              {/* 2. frps 连接 */}
+              <FormSection title={<SectionTitle icon={<Network size={14} />} title="2. frps 服务端连接" />}>
                 <div className="mb-3 flex flex-wrap items-center gap-2">
                   <span className="text-xs text-muted-foreground">地址来源</span>
                   <ToggleGroup
@@ -362,27 +416,35 @@ export function CreateInstance() {
                     }}
                   >
                     <ToggleGroupItem value="manual" className="text-xs">手动输入</ToggleGroupItem>
-                    <ToggleGroupItem value="lb" className="text-xs" disabled={!lbDomains.length}
-                      title={lbDomains.length ? undefined : '暂无候选域名'}>候选域名</ToggleGroupItem>
+                    <ToggleGroupItem
+                      value="lb"
+                      className="text-xs"
+                      disabled={!lbDomains.length}
+                      title={lbDomains.length ? undefined : '暂无候选域名'}
+                    >
+                      优选域名
+                    </ToggleGroupItem>
                   </ToggleGroup>
                   {!lbDomains.length && (
                     <span className="text-[11px] text-muted-foreground">
-                      还没有候选域名，<Link to="/lb" className="text-primary underline underline-offset-2">去域名选优创建 →</Link>
+                      还没有优选域名，<Link to="/lb" className="text-primary underline underline-offset-2">去域名选优创建 →</Link>
                     </span>
                   )}
                   {addrSource === 'lb' && selectedLbDomain && (
                     selectedLbDomain.poolSize > 0 ? (
                       <Badge tone="success">
-                        {selectedLbDomain.name} · 池 {selectedLbDomain.poolSize} 台
+                        {selectedLbDomain.name} · 候选池 {selectedLbDomain.poolSize} 台
+                        {selectedLbDomain.currentIp ? ` · 当前 ${selectedLbDomain.currentIp}` : ''}
                       </Badge>
                     ) : (
                       <Badge tone="warning">
-                        {selectedLbDomain.name} · 空池，<Link to="/servers" className="underline underline-offset-2">去服务器库入组 →</Link>
+                        {selectedLbDomain.name} · 空池，<Link to="/lb" className="underline underline-offset-2">去配置候选 →</Link>
                       </Badge>
                     )
                   )}
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_140px] gap-4">
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_140px]">
                   {addrSource === 'manual' ? (
                     <Field label="服务器地址">
                       <Input
@@ -394,19 +456,19 @@ export function CreateInstance() {
                       />
                     </Field>
                   ) : (
-                    <Field label="候选域名（DNS 主备切换）">
+                    <Field label="优选域名（故障与 GFW 屏蔽自动切换）">
                       <Select
                         value={lbDomains.some((d) => d.name === structured.serverAddr) ? structured.serverAddr : ''}
                         onValueChange={(value) => updateStructured({ serverAddr: value })}
                       >
-                        <SelectTrigger aria-invalid={!structured.serverAddr.trim()}>
-                          <SelectValue placeholder="选择候选域名" />
+                        <SelectTrigger aria-label="候选域名" aria-invalid={!structured.serverAddr.trim()}>
+                          <SelectValue placeholder="选择优选域名" />
                         </SelectTrigger>
                         <SelectContent>
                           <SelectGroup>
                             {lbDomains.map((domain) => (
                               <SelectItem key={domain.id} value={domain.name}>
-                                {domain.name}（池 {domain.poolSize} 台）
+                                {domain.name}（池 {domain.poolSize} 台{domain.currentIp ? ` · ${domain.currentIp}` : ''}）
                               </SelectItem>
                             ))}
                           </SelectGroup>
@@ -424,10 +486,9 @@ export function CreateInstance() {
                     />
                   </Field>
                 </div>
+
                 <div className="mt-4">
-                  <Field
-                    label="认证密钥 (auth.token)"
-                  >
+                  <Field label="认证密钥 (auth.token)">
                     <Input
                       type="password"
                       value={structured.authToken}
@@ -439,44 +500,32 @@ export function CreateInstance() {
                   </Field>
                 </div>
               </FormSection>
-              </div>
 
-              {step===2 &&
-              <FormSection title={<SectionTitle icon={<FileCode2 size={14} />} title="3. 代理规则" />}>
-                  <ProxyList
-                    proxies={structured.proxies}
-                    onChange={updateProxies}
-                    emptyHint="还没有代理。点击「新增代理」开始配置内网穿透。"
-                  />
-              </FormSection>}
+              {/* 3. 代理规则 */}
+              <FormSection title={<SectionTitle icon={<FileCode2 size={14} />} title="3. 穿透代理规则 ([[proxies]])" />}>
+                <ProxyList
+                  proxies={structured.proxies}
+                  onChange={updateProxies}
+                  emptyHint="还没有代理。点击「新增代理」添加内网穿透映射（也可以创建空代理实例后续再配）。"
+                />
+              </FormSection>
             </>
           ) : (
-            step===2 && <FormSection
-              title={<SectionTitle icon={<FileCode2 size={14} />} title="原始 TOML" />}
-            >
+            <FormSection title={<SectionTitle icon={<FileCode2 size={14} />} title="2. 原始 TOML 配置" />}>
               <Textarea
                 value={configText}
+                aria-label="原始 TOML 配置"
                 onChange={(event) => setConfigText(event.target.value)}
                 spellCheck={false}
-                className="min-h-[480px]"
+                className="min-h-[420px] font-mono text-xs"
               />
             </FormSection>
           )}
-
-          {step===3 && <FormSection title={<SectionTitle icon={<Settings2 size={14} />} title="4. 启动选项" />}>
-            <div className="flex flex-col gap-2">
-              <Toggle
-                checked={enabled}
-                onChange={setEnabled}
-                label="启用该实例"
-              />
-              <p className="text-sm text-muted-foreground">提交时明确选择仅创建或创建并启动。</p>
-            </div>
-          </FormSection>}
         </div>
 
-        {step===3 && <aside className="flex flex-col gap-4 lg:sticky lg:top-20 lg:self-start">
-          <FormSection title={<SectionTitle icon={<Rocket size={14} />} title="创建摘要" />}>
+        {/* 右侧粘性预览与提交区 */}
+        <aside className="flex flex-col gap-4 lg:sticky lg:top-20">
+          <FormSection title={<SectionTitle icon={<Rocket size={14} />} title="创建摘要与启动策略" />}>
             <div className="flex flex-col gap-3 text-[12px]">
               <SummaryRow label="目标节点">
                 <span className="font-medium text-foreground">
@@ -488,52 +537,56 @@ export function CreateInstance() {
                   </Badge>
                 )}
               </SummaryRow>
-              <SummaryRow label="frps">
+              <SummaryRow label="实例名">
+                <span className="font-mono text-foreground">{name.trim() || '未填写'}</span>
+              </SummaryRow>
+              <SummaryRow label="frps 目标">
                 <span className="font-mono text-[11px] text-foreground">
                   {structured.serverAddr.trim() || '未填写'}:{structured.serverPort.trim() || '7000'}
                 </span>
               </SummaryRow>
-              <SummaryRow label="代理数量">
-                <span className="font-mono text-foreground">{structured.proxies.length}</span>
-              </SummaryRow>
-              <SummaryRow label="远端端口">
+              <SummaryRow label="代理 / 远端端口">
                 <span className="font-mono text-[11px] text-foreground">
-                  {remotePorts.length ? remotePorts.join(', ') : '无'}
+                  {structured.proxies.length} 条{remotePorts.length ? ` · :${remotePorts.join(', :')}` : ''}
                 </span>
               </SummaryRow>
-              <SummaryRow label="将执行">
-                <span className="text-right text-foreground">
-                  {enabled ? '由提交按钮明确选择是否启动' : '仅保存配置，不启用实例'}
-                </span>
-              </SummaryRow>
+
+              <div className="rounded-lg border bg-muted/30 px-3 py-2.5">
+                <Toggle
+                  checked={enabled}
+                  onChange={setEnabled}
+                  label="启用该实例"
+                  hint="停用状态下仅保存配置，不会拉起 Docker 容器"
+                />
+              </div>
             </div>
           </FormSection>
 
-          <FormSection title="校验结果">
+          <FormSection title="实时校验">
             <div role="status" aria-live="polite">
-              {structuredErrors.length === 0 && !nameError && !nodeError ? (
+              {validationErrors.length === 0 && !nameError && !nodeError ? (
                 <div className="flex items-start gap-2 text-[12px] text-primary">
                   <CheckCircle2 size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
-                  <span>可创建</span>
+                  <span>配置完整合法，可立即创建</span>
                 </div>
               ) : (
                 <ul className="flex flex-col gap-2">
                   {nameError && (
-                    <li className="flex items-start gap-2 p-2 rounded-md bg-destructive/10 text-[12px] text-destructive">
+                    <li className="flex items-start gap-2 rounded-md bg-destructive/10 p-2 text-[12px] text-destructive">
                       <XCircle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
                       <span>{nameError}</span>
                     </li>
                   )}
                   {nodeError && (
-                    <li className="flex items-start gap-2 p-2 rounded-md bg-destructive/10 text-[12px] text-destructive">
+                    <li className="flex items-start gap-2 rounded-md bg-destructive/10 p-2 text-[12px] text-destructive">
                       <XCircle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
                       <span>{nodeError}</span>
                     </li>
                   )}
-                  {structuredErrors.map((message, idx) => (
+                  {validationErrors.map((message, idx) => (
                     <li
                       key={idx}
-                      className="flex items-start gap-2 p-2 rounded-md bg-secondary text-[12px] text-secondary-foreground"
+                      className="flex items-start gap-2 rounded-md bg-secondary p-2 text-[12px] text-secondary-foreground"
                     >
                       <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
                       <span>{message}</span>
@@ -544,12 +597,35 @@ export function CreateInstance() {
             </div>
           </FormSection>
 
-          <div className="grid gap-2"><Button variant="outline" onClick={()=>void create(false)} disabled={!canSubmit || submitting}>仅创建</Button><Button onClick={()=>void create(true)} disabled={!canSubmit || submitting || !enabled}><Plus size={13} />{submitting ? '创建中…' : '创建并启动'}</Button></div>
-        </aside>}
+          <FormSection title={<SectionTitle icon={<Code2 size={14} />} title="TOML 实时预览" />}>
+            <pre className="max-h-48 overflow-auto rounded-md bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-slate-200 whitespace-pre-wrap">
+              {configText}
+            </pre>
+          </FormSection>
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <Button variant="outline" onClick={() => void create(false)} disabled={!canSubmit}>
+              仅创建
+            </Button>
+            <Button onClick={() => void create(true)} disabled={!canSubmit || !enabled}>
+              <Plus size={14} data-icon="inline-start" />
+              {submitting ? '创建中…' : '创建并启动'}
+            </Button>
+          </div>
+        </aside>
       </section>
-      <div className="mt-5 flex justify-between"><Button variant="outline" disabled={step===1 || submitting} onClick={()=>setStep(step-1)}>上一步</Button>{step<3 && <Button onClick={()=>{if(step===1 && (nameError || nodeError || !structured.serverAddr.trim())){toast.error('请先完成实例名、部署节点和 frps 地址');return;}setStep(step+1);}}>下一步</Button>}</div>
-      {blocker.state==='blocked' && <ConfirmOverlay title="离开未保存的实例配置" description="当前实例草稿尚未保存，离开后填写内容会丢失。" confirmLabel="放弃草稿并离开" variant="destructive" onCancel={()=>blocker.reset()} onConfirm={()=>blocker.proceed()} />}
-    </main>
+
+      {blocker.state === 'blocked' && (
+        <ConfirmOverlay
+          title="离开未保存的实例配置"
+          description="当前实例草稿尚未保存，离开后填写内容会丢失。"
+          confirmLabel="放弃草稿并离开"
+          variant="destructive"
+          onCancel={() => blocker.reset()}
+          onConfirm={() => blocker.proceed()}
+        />
+      )}
+    </PageShell>
   );
 }
 
@@ -561,8 +637,8 @@ function FormSection({
   children: React.ReactNode;
 }) {
   return (
-    <Card className="gap-0 overflow-hidden rounded-lg border border-border py-0 shadow-sm ring-0">
-      <CardHeader className="rounded-t-none border-b bg-muted/50 px-4 py-3">
+    <Card className="gap-0 overflow-hidden rounded-xl border border-border py-0 shadow-2xs ring-0">
+      <CardHeader className="rounded-t-none border-b bg-muted/35 px-4 py-3">
         <CardTitle className="text-sm">{title}</CardTitle>
       </CardHeader>
       <CardContent className="p-4">{children}</CardContent>
@@ -609,7 +685,7 @@ function Field({
 
 function SummaryRow({
   label,
-  children
+  children,
 }: {
   label: string;
   children: React.ReactNode;
@@ -650,7 +726,7 @@ function formatLastSeen(value: string): string {
 
 function ErrorLine({ children }: { children: React.ReactNode }) {
   return (
-    <div className="-mt-2 inline-flex items-start gap-1.5 text-[11px] text-destructive">
+    <div className="inline-flex items-start gap-1.5 text-[11px] text-destructive">
       <XCircle size={11} className="mt-0.5 shrink-0" />
       <span>{children}</span>
     </div>
@@ -662,7 +738,7 @@ function Toggle({
   onChange,
   label,
   hint,
-  disabled
+  disabled,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
@@ -671,9 +747,7 @@ function Toggle({
   disabled?: boolean;
 }) {
   return (
-    <label
-      className={`flex items-start gap-3 ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-    >
+    <label className={`flex items-start gap-3 ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
       <Switch
         checked={checked}
         onCheckedChange={(next) => !disabled && onChange(next)}

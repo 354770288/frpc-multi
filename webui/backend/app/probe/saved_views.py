@@ -17,7 +17,7 @@ SERVER_VIEW_COLUMNS = (
 DEFAULT_SERVER_VIEW_COLUMNS = list(SERVER_VIEW_COLUMNS)
 FILTER_KEYS = {
     "q", "group", "label", "tagId", "groupIds", "includeTagIds",
-    "excludeTagIds", "tagMode", "conn",
+    "excludeTagIds", "tagMode", "conn", "domainStatus",
 }
 SORT_KEYS = {"ip", "group", "conn", "speed", "time"}
 ORDER_KEYS = {"asc", "desc"}
@@ -87,20 +87,25 @@ class ServerViewStore:
         exclude_ids = string_list("excludeTagIds")
         tag_mode = value.get("tagMode", "any")
         conn = value.get("conn", "all")
+        domain_status = value.get("domainStatus", "all")
         if not isinstance(tag_mode, str):
             raise ValueError("筛选字段 tagMode 必须是文本")
         if not isinstance(conn, str):
             raise ValueError("筛选字段 conn 必须是文本")
+        if not isinstance(domain_status, str):
+            raise ValueError("筛选字段 domainStatus 必须是文本")
         # Reuse the same shape and size validation as server listing/counting.
         ServerPageQuery(
             q=q, group=group, label=label, tag_id=tag_id,
             group_ids=tuple(group_ids), include_tag_ids=tuple(include_ids),
             exclude_tag_ids=tuple(exclude_ids), tag_mode=tag_mode, conn=conn,
+            domain_status=domain_status,
         )
         return {
             "q": q, "group": group, "label": label, "tagId": tag_id,
             "groupIds": group_ids, "includeTagIds": include_ids,
             "excludeTagIds": exclude_ids, "tagMode": tag_mode, "conn": conn,
+            **({"domainStatus": domain_status} if domain_status != "all" else {}),
         }
 
     @staticmethod
