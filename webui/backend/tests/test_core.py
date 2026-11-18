@@ -1,6 +1,7 @@
 import json
 import importlib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -374,14 +375,24 @@ class LocalAgentServiceTests(unittest.TestCase):
 
 class AppRoutingTests(unittest.TestCase):
     def test_console_role_mounts_console_api_ws_and_static_frontend(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            app = load_main_app(PROJECT_DIR=tmp, FRPC_MULTI_ROLE="console")
-            routes = {getattr(route, "path", None) for route in app.routes}
+        static_dir = Path(__file__).resolve().parents[1] / "static"
+        created_static = False
+        if not static_dir.exists():
+            static_dir.mkdir(parents=True, exist_ok=True)
+            (static_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+            created_static = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                app = load_main_app(PROJECT_DIR=tmp, FRPC_MULTI_ROLE="console")
+                routes = {getattr(route, "path", None) for route in app.routes}
 
-            self.assertIn("/api/health", routes)
-            self.assertIn("/api/nodes", routes)
-            self.assertIn("/ws/agent", routes)
-            self.assertIn("", routes)  # 静态前端挂载点
+                self.assertIn("/api/health", routes)
+                self.assertIn("/api/nodes", routes)
+                self.assertIn("/ws/agent", routes)
+                self.assertIn("", routes)  # 静态前端挂载点
+        finally:
+            if created_static:
+                shutil.rmtree(static_dir, ignore_errors=True)
 
     def test_agent_role_mounts_no_console_api(self):
         with tempfile.TemporaryDirectory() as tmp:

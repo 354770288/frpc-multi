@@ -34,14 +34,6 @@ jobs:
           cache: 'pip'
           cache-dependency-path: webui/backend/requirements.txt
 
-      - name: 运行后端单元测试
-        env:
-          PROJECT_DIR: /tmp/frpc-multi-ci
-          WEBUI_JWT_SECRET: ci-test-secret-key-for-unit-tests-32c
-        run: |
-          python -m pip install -r webui/backend/requirements.txt
-          cd webui/backend && python -m unittest discover -s tests
-
       - name: 配置 Node.js
         uses: actions/setup-node@v4
         with:
@@ -55,6 +47,14 @@ jobs:
           npm ci
           npm test
           npm run build
+
+      - name: 运行后端单元测试
+        env:
+          PROJECT_DIR: /tmp/frpc-multi-ci
+          WEBUI_JWT_SECRET: ci-test-secret-key-for-unit-tests-32c
+        run: |
+          python -m pip install -r webui/backend/requirements.txt
+          cd webui/backend && python -m unittest discover -s tests
 
   build-and-push:
     needs: verify

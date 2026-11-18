@@ -803,9 +803,9 @@ class CoordinatorLifecycleTests(unittest.TestCase):
         coordinator = DiscoverScanCoordinator(runner, Store, lambda _ip: True)
         with patch("app.probe.discover.asyncio.open_connection", new=succeeds):
             state = coordinator.start(
-                DiscoverParams(["10.0.0.1-10.0.1.44"], [], 7000, 1, 0.5), auto_route=False,
+                DiscoverParams(["10.0.0.1-10.0.9.200"], [], 7000, 1, 0.5), auto_route=False,
             )
-            self.assertTrue(wait_finished(state, 2))
+            self.assertTrue(wait_finished(state, 5))
         status = coordinator.status()
         self.assertFalse(status["running"])
         self.assertIn("DiscoverPersistenceError", status["error"])
