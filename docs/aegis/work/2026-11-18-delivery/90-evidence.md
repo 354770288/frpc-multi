@@ -41,11 +41,20 @@
   - `e2e/test-creation.spec.ts` 中 `server cursor restores browser back and forward URLs` 在加强断言（明确校验 `page.goBack()` 后新增一条不含 `cursor` 参数的 `/api/probe/servers/cursor` 请求并渲染第 1 页行数据，再 `page.goForward()` 新增一条 `cursor=cursor-page2` 请求并渲染第 2 页行数据）后稳定通过；
   - 全套 **60 项 Playwright 测试**（覆盖高级分组/标签多选、标签分页搜索、冻结快照、保存视图、批量任务、候选池排他同步、主页异常窗口）一次性全部通过。
 
-### 2.3 备份恢复演练与目标网络分布边界说明
+## 3. 线上生产部署与首轮巡检实测证据（2026-11-18）
 
-- **环境边界**：遵循生产零扰动原则，本次演练与分布统计均在本地隔离 SQLite 数据库上完成，未连接生产主机 `23.19.228.204` 或调用真实 Cloudflare API。
-- **恢复演练关键发现**：在 SQLite WAL 模式下恢复 `.db` 备份时，必须同步移除目标目录残留的 `-wal` 与 `-shm` 文件（已在 `scripts/rehearse-restore.py` 与 `docs/OPERATIONS.md` 固化并由 `tests/test_ops_tools.py` 单测守卫），否则重启后会重放故障现场的未检查点日志。
-- **线上实库复用方式**：后续在维护窗口如需对线上备份生成真实公网响应分布报告，只需对只读备份文件运行：
-  ```bash
-  ./.venv/bin/python scripts/analyze_probe_distributions.py --db /path/to/console-backup.db --dataset-label production_readonly_backup --md-out response-distributions-prod.md
-  ```
+- **CI 与镜像发布**：
+  - [CI Run 44213247647](https://github.com/354770288/frpc-multi/actions/runs/44213247647) 与 [Publish Run 44213247581](https://github.com/354770288/frpc-multi/actions/runs/44213247581) 均成功完成，多架构镜像 `ghcr.io/354770288/frpc-multi:latest`（Digest `sha256:fc25a81364d7adfe41135e093bbd003d21f7e437975b6871ad9098682aad4b23`，内嵌 `AGENT_VERSION=e8081e3`）发布就位。
+- **停机前备份、回滚保留与禁网预检**：
+  - 升级前确认 `probe_jobs` 无 `queued`/`running` 活跃任务。
+  - 在线热备 `/data/console-before-e8081e3-20261118.db`（大小 `49,917,952` 字节，权限 `0600`，`PRAGMA integrity_check=ok`），`.env` 备份为 `.env.before-e8081e3-20261118`。
+  - 原运行镜像 `frpc-multi:fixes-b75b558` 额外保留回滚标签 `frpc-multi:rollback-before-e8081e3`；停止态禁网预检容器 `frpc-e8081e3-preflight-20261118` 验证新表与既有 2,319 台资产、3,179 条测试历史、35,939 条发现记录及 4 个域名候选完整性通过。
+- **切换与接口验收**：
+  - `frpc-console` 切换至 `frpc-multi:release-e8081e3`（同时同步 `.env` 的 `CONSOLE_IMAGE`），容器 `status=running`、`restarts=0`；外网首页 `http://23.19.228.204:8081/` 返回 HTTP `200`，静态产物包含 `DiscoveryPage-*.js`、`ServersPage-*.js`、`TestsPage-*.js`、`ResourceOverview-*.js`。
+  - 4 台部署节点（`onlineCount=4`）与外部国内主测试节点（`深圳电信-ubuntu-work`）全部在线；数据库 `PRAGMA integrity_check=ok`，`probe_discover_results` 行数保持 `35,939`（单点 `tcping` 零污染）。
+- **上线首轮业务端口健康巡检真实命中与自愈结果**：
+  1. `us1.zmfrp.eu.org`（`23.106.156.186`，自动识别端口 `10894, 13340, 13341, 13342`）：主节点顺序 `tcping` 4 个端口全通 → `healthy`；
+  2. `hk1.zmfrp.eu.org`（原 `191.222.219.63`，自动识别端口 `1255, 1256`，实例 `Hytron-HK/client-005`）：主节点 `深圳电信-ubuntu-work` 探测 `1255` 不通，备用节点 `Console` 探测 `151.3ms` 连通 → 精准判定 `gfw_blocked`，自动隔离 `191.222.219.63` 并成功将 Cloudflare A 记录切换至健康候选 `1.32.216.28`；
+  3. `eu1.zmfrp.eu.org`（`38.59.224.216`，自动识别端口 `2235`，实例 `h2.nexus/client-006`）：主节点与备用节点均连接超时 → 精准判定 `port_unreachable`（业务端口异常，未盲目切换 IP），已在主页异常监控窗口告警；
+  4. `cnix.isp0.de`（`14.18.252.169`）：当前无运行中绑定实例端口 → `no_business_ports`。
+

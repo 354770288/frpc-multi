@@ -4,10 +4,10 @@
 
 ## 当前版本与接续入口
 
-- 仓库：`/Users/zm/Documents/frpc-multi`，分支 `main`；本轮开发在本地隔离环境完成全部代码、测试、演练与文档归档，尚未推送或部署至线上（生产零扰动）。
-- 当前线上运行提交：仍为 `b75b5587081e67c4815e9a62d7fe3f9a2a2f3247`（`frpc-multi:fixes-b75b558`）。
-- 入口：[线上 Console](http://23.19.228.204:8081/)。2026-11-17 发布状态见 [线上修复检查点](../docs/aegis/work/2026-11-17-online-fixes/20-checkpoint.md) 与 [发布证据](../docs/aegis/work/2026-11-17-online-fixes/90-evidence.md)。
-- 最新交付事实（2026-11-18）：[本轮检查点](../docs/aegis/work/2026-11-18-delivery/20-checkpoint.md)、[全量验证证据](../docs/aegis/work/2026-11-18-delivery/90-evidence.md)、[隔离备份恢复演练报告](../docs/aegis/work/2026-11-18-delivery/restore-rehearsal.md)、[目标网络响应分布报告](../docs/aegis/work/2026-11-18-delivery/response-distributions.md)。历史容量依据见 [服务器库容量证据](../docs/aegis/work/2026-10-23-server-library-scale/90-evidence.md)。
+- 仓库：`/Users/zm/Documents/frpc-multi`，分支 `main`，已推送并部署上线。
+- 当前线上功能提交：`e8081e32b08c8fe5e8460def3d8ca4a9e46718d5`（运行镜像标签 `frpc-multi:release-e8081e3`，`AGENT_VERSION=e8081e3`）；文档归档提交使用 `[skip ci]` 不改变运行镜像版本。
+- 入口：[线上 Console](http://23.19.228.204:8081/)。2026-11-18 发布后已核对 revision、外网 HTTP 200、关键认证 API、数据库完整性、4 台在线 Agent 业务端口自动识别及首轮 GFW 屏蔽自动切换与业务端口异常告警。
+- 最新交付事实（2026-11-18）：[本轮检查点](../docs/aegis/work/2026-11-18-delivery/20-checkpoint.md)、[全量验证与上线证据](../docs/aegis/work/2026-11-18-delivery/90-evidence.md)、[隔离备份恢复演练报告](../docs/aegis/work/2026-11-18-delivery/restore-rehearsal.md)、[目标网络响应分布报告](../docs/aegis/work/2026-11-18-delivery/response-distributions.md)。历史容量依据见 [服务器库容量证据](../docs/aegis/work/2026-10-23-server-library-scale/90-evidence.md)。
 
 ## 最新业务规则（优先于历史方案）
 
@@ -41,8 +41,8 @@
 
 - SSH 优先使用 Netcatty：主控 vault 标签 `Hostdzire-LAX`，23.19.228.204:35477；国内主节点标签 `ubuntu-work`，已更新地址为 10.144.1.5:22。8 月记录中的 10.144.1.3 已过时。复用适合会话，收尾仅关闭本次新建的会话。
 - 主控部署目录 `/opt/frpc-multi`，Compose 文件 `compose.console.yaml`，容器 `frpc-console`，数据卷 `frpc-multi-console_console-data`，数据库 `/data/console.db`。
-- 当前线上运行镜像标签 `frpc-multi:fixes-b75b558`；回滚标签 `frpc-multi:rollback-bugs-20261117` 对应旧 `1f09b4e`。
-- 停机前最终备份 `/data/console-before-domain-group-final-20261117.db`，权限 0600，完整性正常；较早备份 `/data/console-before-domain-group-fix-20261117.db` 也保留。日常在线热备可使用新增的 `scripts/backup-console.sh`。
+- 当前线上运行镜像标签 `frpc-multi:release-e8081e3`（已同步写入 `/opt/frpc-multi/.env` 的 `CONSOLE_IMAGE`）；回滚标签 `frpc-multi:rollback-before-e8081e3`（对应 `b75b558`）与 `frpc-multi:rollback-bugs-20261117`（对应 `1f09b4e`）均保留。
+- 2026-11-18 发布前在线备份 `/data/console-before-e8081e3-20261118.db`（权限 0600，integrity_check=ok）及 `.env.before-e8081e3-20261118` 已保留；历史备份 `/data/console-before-domain-group-final-20261117.db` 也保留。日常在线热备可使用新增的 `scripts/backup-console.sh`。
 - 卷在宿主机的目录 `/var/lib/docker/volumes/frpc-multi-console_console-data/_data`。回滚应先停止 Console、另存当前数据库、**删除目标路径残留的 `console.db-wal` 与 `console.db-shm`**，再恢复对应备份并启动旧镜像；标准隔离恢复演练已通过 `scripts/rehearse-restore.py --self-test` 验证（见 [演练报告](../docs/aegis/work/2026-11-18-delivery/restore-rehearsal.md)）。
 - 发布前等待连通性批次自然完成；不要为升级擅自停止用户测试。随后做只读备份隔离迁移、核对镜像 revision，再切换服务。若同步升级 Agent 镜像，`get_summary()` 将直接附带 `tcpRemotePorts`；未升级 Agent 前 Console 亦会自动走 `get_config` 兼容回退采集业务端口。
 - 停止态隔离容器 `frpc-fixes-preflight-20261117` 有意保留为验证证据。远程检查脚本 `/opt/frpc-multi/online-fixes-check-20261117.py` 的 repair 模式会执行已授权 US1 分组修复，不应在普通巡检时随意重跑；verify 模式为核对接口和归属。
